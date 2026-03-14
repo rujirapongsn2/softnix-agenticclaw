@@ -15,7 +15,7 @@ from nanobot.admin.service import AdminService
 
 STATIC_DIR = Path(__file__).with_name("static")
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-SOFTNIX_WHITE_LOGO = PROJECT_ROOT / "Logo Softnix White.png"
+SOFTNIX_WHITE_LOGO = PROJECT_ROOT / "softnix-logo-white.png"
 SOFTNIX_LOGIN_LOGO = STATIC_DIR / "Logo_Softnix.png"
 
 
