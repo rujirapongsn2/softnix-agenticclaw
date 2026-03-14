@@ -229,6 +229,89 @@ class AdminService:
             },
         }
 
+    def get_mobile_pairing_data(self, instance_id: str) -> dict[str, Any]:
+        """Generate temporary pairing data for mobile app QR scan."""
+        # Find instance config to get public URL hint if available
+        config = self.get_instance_config(instance_id)
+        
+        # In a real setup, this would include a short-lived token
+        # For now, we provide the essentials for pairing
+        return {
+            "instance_id": instance_id,
+            "pairing_token": f"pair-{new_csrf_token()[:12]}",
+            "expires_at": (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat(),
+        }
+
+    def relay_mobile_message(self, instance_id: str, sender_id: str, text: str) -> dict[str, Any]:
+        """Relay a message from a mobile app to a specific instance via file-based queue."""
+        target = next((t for t in self._load_targets() if t.id == instance_id), None)
+        if not target:
+            raise ValueError(f"Instance '{instance_id}' not found")
+            
+        relay_dir = target.workspace_path / "mobile_relay"
+        relay_dir.mkdir(parents=True, exist_ok=True)
+        inbound_file = relay_dir / "inbound.jsonl"
+        
+        data = {
+            "text": text,
+            "sender_id": sender_id,
+            "timestamp": iso_now(),
+        }
+        
+        with inbound_file.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(data) + "\n")
+            
+        return {"status": "relayed", "instance_id": instance_id}
+
+    def get_mobile_replies(self, instance_id: str, sender_id: str) -> list[dict[str, Any]]:
+        """Fetch agent replies for a mobile user from the outbound queue."""
+        target = next((t for t in self._load_targets() if t.id == instance_id), None)
+        if not target:
+            return []
+            
+        outbound_file = target.workspace_path / "mobile_relay" / "outbound.jsonl"
+        if not outbound_file.exists():
+            return []
+            
+        all_replies = []
+        remaining_lines = []
+        
+        try:
+            lines = outbound_file.read_text().splitlines()
+            for line in lines:
+                if not line.strip():
+                    continue
+                data = json.loads(line)
+                if data.get("sender_id") == sender_id:
+                    all_replies.append(data)
+                else:
+                    remaining_lines.append(line)
+            
+            # Update file to remove fetched messages
+            if all_replies:
+                outbound_file.write_text("\n".join(remaining_lines) + ("\n" if remaining_lines else ""))
+                
+        except Exception as e:
+            logger.error(f"Error fetching mobile replies: {e}")
+            
+        return all_replies
+
+    def register_mobile_client(self, instance_id: str, device_id: str) -> dict[str, Any]:
+        """Add a mobile device ID to the instance's allow_from list."""
+        config = self.get_instance_config(instance_id)
+        
+        # Ensure softnix_app channel is enabled
+        if not config.channels.softnix_app.enabled:
+            config.channels.softnix_app.enabled = True
+            
+        # Add to allow_from if not already there
+        if device_id not in config.channels.softnix_app.allow_from:
+            config.channels.softnix_app.allow_from.append(device_id)
+            self.update_instance_config(instance_id, config)
+            return {"status": "registered", "new": True}
+            
+        return {"status": "registered", "new": False}
+
     def _sync_workspace_identities(self) -> None:
         """Best-effort sync of per-instance agent identity into workspace prompt files."""
         for target in self._load_targets():
@@ -2772,6 +2855,7 @@ class AdminService:
             "slack",
             "qq",
             "matrix",
+            "softnix_app",
         ):
             channel_cfg = getattr(config.channels, name)
             allow_list = getattr(channel_cfg, "allow_from", None)

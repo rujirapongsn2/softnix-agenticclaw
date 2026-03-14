@@ -4376,6 +4376,9 @@ function renderChannels() {
             (item) => item.instance_id === instance.id && item.name === channel.name,
           );
           const disabled = state.busyKey === key ? "disabled" : "";
+          const isSoftnix = channel.name === "softnix_app";
+          const displayName = isSoftnix ? "Softnix Mobile" : channel.name;
+          const placeholder = isSoftnix ? "One Device ID per line" : "One user identifier per line";
           const currentAllow =
             originalChannel && Array.isArray(originalChannel.allow_from)
               ? originalChannel.allow_from.join("\n")
@@ -4384,7 +4387,7 @@ function renderChannels() {
             <div class="item-card">
               <div class="row-between">
                 <div>
-                  <h4>${escapeHtml(channel.name)}</h4>
+                  <h4>${escapeHtml(displayName)}</h4>
                   <p class="meta">Access mode: ${escapeHtml(channel.allow_from_mode)}</p>
                 </div>
                 <span class="badge ${badgeClass(channel.enabled ? "ok" : "neutral")}">${channel.enabled ? "Enabled" : "Disabled"}</span>
@@ -4397,7 +4400,7 @@ function renderChannels() {
               </div>
               <div class="field">
                 <label for="allow-${escapeHtml(key)}">Allowlist</label>
-                <textarea id="allow-${escapeHtml(key)}" data-channel-allow="${escapeHtml(key)}" ${disabled} placeholder="One user identifier per line">${escapeHtml(currentAllow || allowList)}</textarea>
+                <textarea id="allow-${escapeHtml(key)}" data-channel-allow="${escapeHtml(key)}" ${disabled} placeholder="${escapeHtml(placeholder)}">${escapeHtml(currentAllow || allowList)}</textarea>
               </div>
               <div class="inline-actions">
                 <button class="primary-button" data-channel-save="${escapeHtml(key)}" ${disabled}>Save</button>
