@@ -121,7 +121,14 @@ Reply directly with text for conversations. Only use the 'message' tool to send 
         if isinstance(user_content, str):
             merged = f"{runtime_ctx}\n\n{user_content}"
         else:
-            merged = [{"type": "text", "text": runtime_ctx}] + user_content
+            merged = list(user_content) + [{
+                "type": "text",
+                "text": (
+                    f"{runtime_ctx}\n"
+                    "The metadata above is not the user's request. "
+                    "Use it only as background session information."
+                ),
+            }]
 
         return [
             {"role": "system", "content": self.build_system_prompt(skill_names)},
@@ -135,6 +142,7 @@ Reply directly with text for conversations. Only use the 'message' tool to send 
             return text
 
         images = []
+        image_names: list[str] = []
         for path in media:
             p = Path(path)
             if not p.is_file():
@@ -146,10 +154,27 @@ Reply directly with text for conversations. Only use the 'message' tool to send 
                 continue
             b64 = base64.b64encode(raw).decode()
             images.append({"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}})
+            image_names.append(p.name)
 
         if not images:
             return text
-        return images + [{"type": "text", "text": text}]
+        grounding_text = self._build_attachment_grounding_text(text, image_names)
+        return images + [{"type": "text", "text": grounding_text}]
+
+    @staticmethod
+    def _build_attachment_grounding_text(text: str, image_names: list[str]) -> str:
+        """Add clear grounding instructions when images are attached."""
+        normalized = (text or "").strip() or "Please analyze the attached image(s)."
+        file_list = ", ".join(image_names) if image_names else "unnamed image"
+        return (
+            "[Attachment Context]\n"
+            f"The user attached {len(image_names)} image(s): {file_list}.\n"
+            "Base your answer primarily on the attached image content.\n"
+            "If the image is unreadable or insufficient, say that explicitly instead of guessing.\n"
+            "Do not answer from unrelated prior conversation context when the attachment is the main source.\n\n"
+            "[User Message]\n"
+            f"{normalized}"
+        )
 
     def add_tool_result(
         self, messages: list[dict[str, Any]],

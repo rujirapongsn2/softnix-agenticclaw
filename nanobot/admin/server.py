@@ -165,6 +165,61 @@ def resolve_admin_get(service: AdminService, raw_path: str) -> tuple[HTTPStatus,
             return HTTPStatus.BAD_REQUEST, {"error": "Missing instance_id or sender_id"}
         return HTTPStatus.OK, {"replies": service.get_mobile_replies(instance_id, sender_id)}
 
+    if path == "/admin/mobile/devices":
+        query = parse_qs(parsed.query)
+        instance_id = (query.get("instance_id") or [None])[0]
+        if not instance_id:
+            return HTTPStatus.BAD_REQUEST, {"error": "Missing instance_id"}
+        return HTTPStatus.OK, {"devices": service.list_mobile_devices(instance_id)}
+
+    if path == "/admin/mobile/push/config":
+        return HTTPStatus.OK, service.get_mobile_push_config()
+
+    if path == "/admin/mobile/media":
+        query = parse_qs(parsed.query)
+        instance_id = (query.get("instance_id") or [None])[0]
+        sender_id = (query.get("sender_id") or [None])[0]
+        file_name = (query.get("file") or [None])[0]
+        if not instance_id or not sender_id or not file_name:
+            return HTTPStatus.BAD_REQUEST, {"error": "Missing instance_id, sender_id, or file"}
+        try:
+            media_path, content_type = service.get_mobile_media_file(instance_id, sender_id, file_name)
+        except ValueError as exc:
+            return HTTPStatus.BAD_REQUEST, {"error": str(exc)}
+        return HTTPStatus.OK, {"_file_path": str(media_path), "_content_type": content_type}
+
+    if path == "/admin/mobile/ngrok/status":
+        return HTTPStatus.OK, service.get_ngrok_status()
+
+    if path == "/admin/mobile/network-info":
+        import socket
+        port = service.admin_port if hasattr(service, "admin_port") else 18880
+        addrs: list[dict] = []
+        try:
+            import netifaces
+            for iface in netifaces.interfaces():
+                for af, entries in netifaces.ifaddresses(iface).items():
+                    if af == netifaces.AF_INET:
+                        for entry in entries:
+                            ip = entry.get("addr", "")
+                            if ip and ip != "127.0.0.1":
+                                addrs.append({"iface": iface, "ip": ip, "url": f"http://{ip}:{port}"})
+        except ImportError:
+            # fallback: hostname-based resolution
+            try:
+                hostname = socket.gethostname()
+                local_ips = socket.getaddrinfo(hostname, None, socket.AF_INET)
+                seen: set[str] = set()
+                for item in local_ips:
+                    ip = item[4][0]
+                    if ip and ip != "127.0.0.1" and ip not in seen:
+                        seen.add(ip)
+                        addrs.append({"iface": "eth", "ip": ip, "url": f"http://{ip}:{port}"})
+            except Exception:
+                pass
+        ngrok = service.get_ngrok_status()
+        return HTTPStatus.OK, {"addresses": addrs, "port": port, "ngrok": ngrok}
+
     return HTTPStatus.NOT_FOUND, {"error": "Not found"}
 
 
@@ -367,6 +422,12 @@ def resolve_admin_delete(
             instance_id = payload.get("instance_id") or "default"
             instance = service.delete_mcp_server(instance_id=instance_id, server_name=server_name)
             return HTTPStatus.OK, {"instance": instance}
+        if path.startswith("/admin/mobile/devices/"):
+            device_id = path.rsplit("/", 1)[-1]
+            instance_id = payload.get("instance_id")
+            if not instance_id:
+                return HTTPStatus.BAD_REQUEST, {"error": "instance_id required"}
+            return HTTPStatus.OK, service.delete_mobile_device(instance_id, device_id)
     except ValueError as exc:
         return HTTPStatus.BAD_REQUEST, {"error": str(exc)}
     return HTTPStatus.NOT_FOUND, {"error": "Not found"}
@@ -391,7 +452,9 @@ def resolve_admin_post(
             device_id = payload.get("device_id")
             if not instance_id or not device_id:
                 return HTTPStatus.BAD_REQUEST, {"error": "instance_id and device_id are required"}
-            return HTTPStatus.OK, service.register_mobile_client(instance_id, device_id)
+            pairing_token = payload.get("pairing_token")
+            label = payload.get("label", "")
+            return HTTPStatus.OK, service.register_mobile_client(instance_id, device_id, pairing_token, label)
             
         if path == "/admin/mobile/message":
             instance_id = payload.get("instance_id")
@@ -399,7 +462,59 @@ def resolve_admin_post(
             text = payload.get("text")
             if not all([instance_id, sender_id, text]):
                 return HTTPStatus.BAD_REQUEST, {"error": "instance_id, sender_id, and text are required"}
-            return HTTPStatus.OK, service.relay_mobile_message(instance_id, sender_id, text)
+            attachments = payload.get("attachments")
+            if attachments is not None and not isinstance(attachments, list):
+                return HTTPStatus.BAD_REQUEST, {"error": "attachments must be a list"}
+            return HTTPStatus.OK, service.relay_mobile_message(
+                instance_id,
+                sender_id,
+                text,
+                session_id=payload.get("session_id"),
+                message_id=payload.get("message_id"),
+                reply_to=payload.get("reply_to"),
+                thread_root_id=payload.get("thread_root_id"),
+                attachments=attachments,
+            )
+
+        if path == "/admin/mobile/transfer-session/create":
+            device = payload.get("device")
+            if not isinstance(device, dict):
+                return HTTPStatus.BAD_REQUEST, {"error": "device is required"}
+            return HTTPStatus.OK, service.create_mobile_session_transfer(
+                device=device,
+                active_session_id=payload.get("active_session_id"),
+                conversations=payload.get("conversations"),
+            )
+
+        if path == "/admin/mobile/transfer-session/consume":
+            transfer_token = str(payload.get("transfer_token") or "").strip()
+            if not transfer_token:
+                return HTTPStatus.BAD_REQUEST, {"error": "transfer_token is required"}
+            return HTTPStatus.OK, service.consume_mobile_session_transfer(transfer_token=transfer_token)
+
+        if path == "/admin/mobile/push/subscribe":
+            instance_id = payload.get("instance_id")
+            device_id = payload.get("device_id")
+            subscription = payload.get("subscription")
+            if not instance_id or not device_id or not isinstance(subscription, dict):
+                return HTTPStatus.BAD_REQUEST, {"error": "instance_id, device_id, and subscription are required"}
+            return HTTPStatus.OK, service.subscribe_mobile_push(
+                instance_id=instance_id,
+                device_id=device_id,
+                subscription=subscription,
+            )
+
+        if path == "/admin/mobile/push/unsubscribe":
+            instance_id = payload.get("instance_id")
+            device_id = payload.get("device_id")
+            if not instance_id or not device_id:
+                return HTTPStatus.BAD_REQUEST, {"error": "instance_id and device_id are required"}
+            return HTTPStatus.OK, service.unsubscribe_mobile_push(instance_id=instance_id, device_id=device_id)
+
+        # ngrok management (requires admin session — NOT in mobile unauthenticated block)
+        if path == "/admin/mobile/ngrok/start":
+            port = int(payload.get("port") or (service.admin_port if hasattr(service, "admin_port") else 18880))
+            return HTTPStatus.OK, service.start_ngrok(port)
 
         if path == "/admin/auth/bootstrap":
             user = service.bootstrap_admin_user(
@@ -507,6 +622,8 @@ def resolve_admin_post(
                 sender_id=payload.get("sender_id") or "",
             )
             return HTTPStatus.OK, result
+    except PermissionError as exc:
+        return HTTPStatus.FORBIDDEN, {"error": str(exc)}
     except ValueError as exc:
         return HTTPStatus.BAD_REQUEST, {"error": str(exc)}
     return HTTPStatus.NOT_FOUND, {"error": "Not found"}
@@ -529,6 +646,15 @@ def resolve_static_asset(raw_path: str) -> tuple[Path | None, str]:
         return SOFTNIX_WHITE_LOGO, "image/png"
     if path == "/favicon.ico":
         return SOFTNIX_WHITE_LOGO, "image/png"
+    # Mobile web app
+    if path == "/mobile" or path.startswith("/mobile/"):
+        subpath = path[len("/mobile"):].lstrip("/") or "index.html"
+        asset = STATIC_DIR / "mobile" / subpath
+        if asset.exists() and asset.is_file():
+            ext = asset.suffix.lstrip(".")
+            ct = {"html": "text/html", "js": "application/javascript", "css": "text/css",
+                  "json": "application/json", "png": "image/png"}.get(ext, "application/octet-stream")
+            return asset, f"{ct}; charset=utf-8" if ext != "png" else ct
     return None, ""
 
 
@@ -595,6 +721,8 @@ def _match_permission(method: str, path: str) -> str | None:
         if "/skills/" in path:
             return "skills.delete"
     if method == "POST":
+        if path == "/admin/mobile/ngrok/start":
+            return "config.update"
         if path == "/admin/users":
             return "user.create"
         if path.startswith("/admin/users/") and path.endswith("/reset-password"):
@@ -641,6 +769,8 @@ def create_admin_server(host: str, port: int, service: AdminService) -> Threadin
                     return
                 self._set_audit_context(context)
                 status, payload = resolve_admin_get(service, self.path)
+                if isinstance(payload, dict) and "_file_path" in payload:
+                    return self._send_file(Path(str(payload["_file_path"])), str(payload.get("_content_type") or "application/octet-stream"))
                 self._send_json(payload, status=status)
             finally:
                 clear_request_audit_context()
@@ -693,7 +823,8 @@ def create_admin_server(host: str, port: int, service: AdminService) -> Threadin
                 if context is None:
                     return
                 self._set_audit_context(context)
-                if not self.path.startswith("/admin/mobile/") and not self._authorize_user_mutation(method="POST", path=self.path, payload=payload, context=context):
+                _mobile_unauthenticated = self.path.startswith("/admin/mobile/") and not self.path.rstrip("/").endswith("/pair")
+                if not _mobile_unauthenticated and not self._authorize_user_mutation(method="POST", path=self.path, payload=payload, context=context):
                     return
                 status, response = resolve_admin_post(service, self.path, payload)
                 self._send_json(response, status=status)

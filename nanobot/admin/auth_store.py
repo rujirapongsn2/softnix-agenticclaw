@@ -6,6 +6,8 @@ import secrets
 from pathlib import Path
 from typing import Any
 
+import hmac
+
 from nanobot.admin.auth import get_request_audit_context, iso_in, iso_now, is_session_expired, normalize_email, normalize_role, normalize_username
 from nanobot.admin.layout import get_softnix_admin_dir
 from nanobot.utils.helpers import ensure_dir
@@ -253,6 +255,223 @@ class AdminAuthStore:
             record["detail"] = payload
         with self.audit_path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+    # ── Mobile pairing & device management ──────────────────────────
+
+    @property
+    def pairing_tokens_path(self) -> Path:
+        return self.security_dir / "mobile_pairing_tokens.json"
+
+    @property
+    def mobile_devices_path(self) -> Path:
+        return self.security_dir / "mobile_devices.json"
+
+    @property
+    def mobile_push_keys_path(self) -> Path:
+        return self.security_dir / "mobile_push_keys.json"
+
+    @property
+    def mobile_push_private_key_path(self) -> Path:
+        return self.security_dir / "mobile_push_private.pem"
+
+    @property
+    def mobile_push_subscriptions_path(self) -> Path:
+        return self.security_dir / "mobile_push_subscriptions.json"
+
+    @property
+    def mobile_transfer_tokens_path(self) -> Path:
+        return self.security_dir / "mobile_transfer_tokens.json"
+
+    def create_pairing_token(self, instance_id: str, token: str, expires_at: str) -> None:
+        payload = self._load_json(self.pairing_tokens_path, {"tokens": []})
+        payload["tokens"] = [
+            t for t in payload["tokens"]
+            if not t.get("used") and not is_session_expired(t.get("expires_at"))
+        ]
+        payload["tokens"].append({
+            "token": token,
+            "instance_id": instance_id,
+            "expires_at": expires_at,
+            "used": False,
+        })
+        self._save_json(self.pairing_tokens_path, payload)
+
+    def validate_and_consume_pairing_token(self, instance_id: str, token: str) -> bool:
+        payload = self._load_json(self.pairing_tokens_path, {"tokens": []})
+        for t in payload["tokens"]:
+            if hmac.compare_digest(str(t.get("token", "")), token) and t.get("instance_id") == instance_id:
+                if t.get("used") or is_session_expired(t.get("expires_at")):
+                    return False
+                t["used"] = True
+                self._save_json(self.pairing_tokens_path, payload)
+                return True
+        return False
+
+    def list_mobile_devices(self, instance_id: str) -> list[dict[str, Any]]:
+        payload = self._load_json(self.mobile_devices_path, {"devices": []})
+        return [d for d in payload["devices"] if d.get("instance_id") == instance_id]
+
+    def upsert_mobile_device(self, instance_id: str, device_id: str, label: str) -> None:
+        payload = self._load_json(self.mobile_devices_path, {"devices": []})
+        for d in payload["devices"]:
+            if d.get("device_id") == device_id and d.get("instance_id") == instance_id:
+                d["label"] = label
+                d["last_seen"] = iso_now()
+                self._save_json(self.mobile_devices_path, payload)
+                return
+        payload["devices"].append({
+            "device_id": device_id,
+            "instance_id": instance_id,
+            "label": label,
+            "registered_at": iso_now(),
+            "last_seen": iso_now(),
+        })
+        self._save_json(self.mobile_devices_path, payload)
+
+    def delete_mobile_device(self, instance_id: str, device_id: str) -> None:
+        payload = self._load_json(self.mobile_devices_path, {"devices": []})
+        payload["devices"] = [
+            d for d in payload["devices"]
+            if not (d.get("device_id") == device_id and d.get("instance_id") == instance_id)
+        ]
+        self._save_json(self.mobile_devices_path, payload)
+
+    def update_device_last_seen(self, instance_id: str, device_id: str) -> None:
+        payload = self._load_json(self.mobile_devices_path, {"devices": []})
+        for d in payload["devices"]:
+            if d.get("device_id") == device_id and d.get("instance_id") == instance_id:
+                d["last_seen"] = iso_now()
+                self._save_json(self.mobile_devices_path, payload)
+                return
+
+    def get_mobile_push_keys(self) -> dict[str, Any] | None:
+        payload = self._load_json(self.mobile_push_keys_path, {})
+        public_key = str(payload.get("public_key") or "").strip()
+        subject = str(payload.get("subject") or "").strip()
+        if not public_key or not subject or not self.mobile_push_private_key_path.exists():
+            return None
+        return {
+            "public_key": public_key,
+            "subject": subject,
+            "private_key_path": str(self.mobile_push_private_key_path),
+        }
+
+    def save_mobile_push_keys(self, *, public_key: str, private_key_pem: str, subject: str) -> dict[str, Any]:
+        self.mobile_push_private_key_path.parent.mkdir(parents=True, exist_ok=True)
+        self.mobile_push_private_key_path.write_text(str(private_key_pem or ""), encoding="utf-8")
+        payload = {
+            "public_key": str(public_key or "").strip(),
+            "subject": str(subject or "").strip(),
+            "created_at": iso_now(),
+            "updated_at": iso_now(),
+        }
+        self._save_json(self.mobile_push_keys_path, payload)
+        return {
+            "public_key": payload["public_key"],
+            "subject": payload["subject"],
+            "private_key_path": str(self.mobile_push_private_key_path),
+        }
+
+    def list_mobile_push_subscriptions(self, instance_id: str, device_id: str | None = None) -> list[dict[str, Any]]:
+        payload = self._load_json(self.mobile_push_subscriptions_path, {"subscriptions": []})
+        result = [
+            item
+            for item in payload.get("subscriptions", [])
+            if isinstance(item, dict)
+            and item.get("instance_id") == instance_id
+            and (device_id is None or item.get("device_id") == device_id)
+        ]
+        result.sort(key=lambda item: (str(item.get("device_id") or ""), str(item.get("updated_at") or "")))
+        return result
+
+    def upsert_mobile_push_subscription(
+        self,
+        *,
+        instance_id: str,
+        device_id: str,
+        subscription: dict[str, Any],
+        endpoint: str,
+        user_agent: str | None = None,
+    ) -> dict[str, Any]:
+        payload = self._load_json(self.mobile_push_subscriptions_path, {"subscriptions": []})
+        subscriptions = [item for item in payload.get("subscriptions", []) if isinstance(item, dict)]
+        record = {
+            "instance_id": instance_id,
+            "device_id": device_id,
+            "endpoint": endpoint,
+            "subscription": subscription,
+            "user_agent": (str(user_agent or "").strip()[:300] or None),
+            "updated_at": iso_now(),
+        }
+        replaced = False
+        for index, item in enumerate(subscriptions):
+            if item.get("instance_id") == instance_id and item.get("device_id") == device_id:
+                record["created_at"] = item.get("created_at") or iso_now()
+                subscriptions[index] = record
+                replaced = True
+                break
+        if not replaced:
+            record["created_at"] = iso_now()
+            subscriptions.append(record)
+        payload["subscriptions"] = subscriptions
+        self._save_json(self.mobile_push_subscriptions_path, payload)
+        return record
+
+    def delete_mobile_push_subscription(self, *, instance_id: str, device_id: str) -> bool:
+        payload = self._load_json(self.mobile_push_subscriptions_path, {"subscriptions": []})
+        subscriptions = [item for item in payload.get("subscriptions", []) if isinstance(item, dict)]
+        next_subscriptions = [
+            item
+            for item in subscriptions
+            if not (item.get("instance_id") == instance_id and item.get("device_id") == device_id)
+        ]
+        changed = len(next_subscriptions) != len(subscriptions)
+        if changed:
+            payload["subscriptions"] = next_subscriptions
+            self._save_json(self.mobile_push_subscriptions_path, payload)
+        return changed
+
+    def create_mobile_transfer_token(self, *, token: str, payload: dict[str, Any], expires_at: str) -> None:
+        store = self._load_json(self.mobile_transfer_tokens_path, {"tokens": []})
+        store["tokens"] = [
+            item
+            for item in store.get("tokens", [])
+            if isinstance(item, dict) and not item.get("used") and not is_session_expired(item.get("expires_at"))
+        ]
+        store["tokens"].append(
+            {
+                "token": token,
+                "payload": payload,
+                "expires_at": expires_at,
+                "used": False,
+                "created_at": iso_now(),
+            }
+        )
+        self._save_json(self.mobile_transfer_tokens_path, store)
+
+    def consume_mobile_transfer_token(self, token: str) -> dict[str, Any] | None:
+        store = self._load_json(self.mobile_transfer_tokens_path, {"tokens": []})
+        tokens = [item for item in store.get("tokens", []) if isinstance(item, dict)]
+        found: dict[str, Any] | None = None
+        dirty = False
+        next_tokens: list[dict[str, Any]] = []
+        for item in tokens:
+            if item.get("used") or is_session_expired(item.get("expires_at")):
+                dirty = True
+                continue
+            if hmac.compare_digest(str(item.get("token") or ""), str(token or "").strip()):
+                dirty = True
+                updated = dict(item)
+                updated["used"] = True
+                found = dict(updated.get("payload") or {}) if isinstance(updated.get("payload"), dict) else None
+                continue
+            next_tokens.append(item)
+        if dirty:
+            store["tokens"] = next_tokens
+            self._save_json(self.mobile_transfer_tokens_path, store)
+        return found
+
+    # ── JSON helpers ────────────────────────────────────────────────
 
     @staticmethod
     def _load_json(path: Path, default: dict[str, Any]) -> dict[str, Any]:

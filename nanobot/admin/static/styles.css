@@ -1860,7 +1860,108 @@ th {
 }
 
 @keyframes btnSpinnerRotate {
-  to {
+to {
     transform: rotate(360deg);
   }
+}
+
+/* ── Mobile Device Cards (Channel Editor) ─────── */
+.mobile-device-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  border: 1px solid var(--border-default);
+  border-radius: 10px;
+  background: var(--bg-subtle);
+  margin-bottom: 6px;
+}
+
+/* QR modal — localhost warning */
+.qr-host-warn {
+  background: rgba(243, 144, 63, 0.08);
+  border: 1px solid rgba(243, 144, 63, 0.3);
+  border-radius: 10px;
+  padding: 10px 14px;
+  margin-bottom: 12px;
+  text-align: left;
+}
+
+.qr-host-warn input {
+  font-size: 13px;
+  padding: 6px 10px;
+  border: 1px solid var(--border-default);
+  border-radius: 8px;
+  background: var(--bg-base);
+  color: var(--fg-primary);
+}
+
+/* IP address picker buttons in QR modal */
+.qr-ip-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+
+.qr-ip-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  padding: 6px 10px;
+  cursor: pointer;
+}
+
+.qr-ip-btn.is-active {
+  border-color: var(--brand-blue);
+  background: var(--brand-blue-soft);
+  color: var(--fg-primary);
+}
+
+.qr-ip-iface {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  opacity: 0.65;
+}
+
+.qr-ip-addr {
+  font-size: 13px;
+  font-weight: 600;
+  font-family: "SFMono-Regular", Consolas, monospace;
+}
+
+/* QR modal content */
+.qr-canvas-wrap {
+  display: flex;
+  justify-content: center;
+  padding: 16px 0 8px;
+}
+
+.qr-canvas-wrap canvas {
+  border-radius: 12px;
+}
+
+.qr-instructions {
+  font-size: 14px;
+  color: var(--fg-secondary);
+  margin: 4px 0;
+}
+
+.qr-expiry {
+  font-size: 13px;
+  color: var(--fg-secondary);
+  opacity: 0.7;
+  margin-bottom: 12px;
+}
+
+/* Danger variant for delete buttons */
+.secondary-button.is-danger {
+  color: var(--red, #ef4444);
+  border-color: var(--red, #ef4444);
+}
+.secondary-button.is-danger:hover {
+  background: rgba(239,68,68,0.08);
 }

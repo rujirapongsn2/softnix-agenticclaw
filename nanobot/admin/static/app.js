@@ -1,6 +1,8 @@
 const state = {
-  overview: null,
+overview: null,
   channels: [],
+  mobileDevicesByInstance: {},
+  qrModal: { open: false, instanceId: null, countdownTimer: null },
   accessRequests: { requests: [], count: 0 },
   security: null,
   activity: null,
@@ -35,6 +37,7 @@ const state = {
   currentView: "overview",
   busyKey: "",
   liveInstanceFilter: "all",
+  liveActivityVisibleCount: 20,
   overviewOpsInstanceId: "all",
   liveExpandedEvents: {},
   instanceCreateOpen: false,
@@ -1618,7 +1621,7 @@ function renderSelectedInstanceChannels(instance) {
         class="console-tab ${channel.name === selectedChannel.name ? "is-active" : ""}"
         data-channel-focus="${escapeHtml(instance.id)}:${escapeHtml(channel.name)}"
       >
-        ${escapeHtml(channel.name)}
+        ${escapeHtml(channel.name === "softnix_app" ? "Softnix" : channel.name)}
       </button>
     `)
     .join("");
@@ -1725,7 +1728,7 @@ function renderSelectedInstanceChannels(instance) {
       </div>
       <div class="item-card">
         <div class="row-between">
-          <h4>${escapeHtml(selectedChannel.name)}</h4>
+          <h4>${escapeHtml(selectedChannel.name === "softnix_app" ? "Softnix" : selectedChannel.name)}</h4>
           <span class="badge ${badgeClass(selectedChannel.enabled ? "ok" : "neutral")}">${selectedChannel.enabled ? "Enabled" : "Disabled"}</span>
         </div>
         <div class="field">
@@ -1735,22 +1738,63 @@ function renderSelectedInstanceChannels(instance) {
           </label>
         </div>
         ${telegramSettings}
+        ${selectedChannel.name === "softnix_app" ? (() => {
+          const devices = state.mobileDevicesByInstance[instance.id] || [];
+          const deviceCards = devices.length === 0
+            ? '<p class="meta" style="padding:8px 0">No devices registered yet.</p>'
+            : devices.map(d => `
+              <div class="mobile-device-card">
+                <div>
+                  <div class="table-primary">${escapeHtml(d.label || d.device_id)}</div>
+                  <div class="table-secondary">
+                    <span class="meta-label">ID:</span> ${escapeHtml(d.device_id)}
+                    &nbsp;·&nbsp; Last seen: ${escapeHtml(d.last_seen ? new Date(d.last_seen).toLocaleString() : "Never")}
+                  </div>
+                </div>
+                <button class="secondary-button is-small is-danger"
+                  data-mobile-delete="${escapeHtml(d.device_id)}"
+                  data-mobile-instance="${escapeHtml(instance.id)}">Delete</button>
+              </div>`).join("");
+          return `
+            <div class="field">
+              <div class="row-between" style="align-items:center; margin-bottom:8px">
+                <label>Registered Devices</label>
+                <button class="primary-button is-small" data-mobile-pair="${escapeHtml(instance.id)}">+ Pair Device</button>
+              </div>
+              <div class="stack">${deviceCards}</div>
+            </div>
+            <div class="field">
+              <label for="allow-${escapeHtml(key)}">Allowlist (advanced)</label>
+              <textarea id="allow-${escapeHtml(key)}" data-channel-allow="${escapeHtml(key)}" ${disabled} placeholder="One device ID per line">${escapeHtml(currentAllow)}</textarea>
+            </div>
+            <div class="inline-actions">
+              <button class="primary-button is-small" data-channel-save="${escapeHtml(key)}" ${disabled}>Save</button>
+            </div>`;
+        })() : `
         <div class="field">
           <label for="allow-${escapeHtml(key)}">Allowlist</label>
           <textarea id="allow-${escapeHtml(key)}" data-channel-allow="${escapeHtml(key)}" ${disabled} placeholder="One user identifier per line">${escapeHtml(currentAllow)}</textarea>
         </div>
         <div class="inline-actions">
           <button class="primary-button is-small" data-channel-save="${escapeHtml(key)}" ${disabled}>Save</button>
-        </div>
+        </div>`}
         ${pendingHtml}
       </div>
     </div>
   `;
+  // Load mobile devices if softnix_app is focused
+  if (selectedChannel.name === "softnix_app" && !state.mobileDevicesByInstance[instance.id]) {
+    void loadMobileDevices(instance.id).then(() => renderSelectedInstanceChannels(instance));
+  }
   target.querySelectorAll("[data-channel-focus]").forEach((button) => {
     button.addEventListener("click", () => {
       const [instanceId, channelName] = button.dataset.channelFocus.split(":");
       state.channelFocusByInstance[instanceId] = channelName;
-      renderSelectedInstanceChannels(instance);
+      if (channelName === "softnix_app") {
+        void loadMobileDevices(instanceId).then(() => renderSelectedInstanceChannels(instance));
+      } else {
+        renderSelectedInstanceChannels(instance);
+      }
     });
   });
   target.querySelectorAll("[data-channel-save]").forEach((button) => {
@@ -3935,7 +3979,11 @@ function renderLiveActivity() {
     return;
   }
 
-  target.innerHTML = events
+  const visibleCount = Math.max(20, Number(state.liveActivityVisibleCount || 20));
+  const visibleEvents = events.slice(0, visibleCount);
+  const hasMore = visibleEvents.length < events.length;
+
+  target.innerHTML = `${visibleEvents
     .map(
       (event, index) => {
         const key = liveEventKey(event, index);
@@ -3962,7 +4010,13 @@ function renderLiveActivity() {
       `;
       },
     )
-    .join("");
+    .join("")}
+    ${hasMore ? `
+      <div class="item-card" style="text-align:center">
+        <p class="meta" style="margin-bottom:12px">Showing ${visibleEvents.length} of ${events.length} live activity events</p>
+        <button id="live-activity-load-more" class="secondary-button">Load more</button>
+      </div>
+    ` : ""}`;
 
   target.querySelectorAll("[data-live-event-key]").forEach((card) => {
     card.addEventListener("click", () => {
@@ -3971,6 +4025,10 @@ function renderLiveActivity() {
       state.liveExpandedEvents[key] = !state.liveExpandedEvents[key];
       renderLiveActivity();
     });
+  });
+  document.getElementById("live-activity-load-more")?.addEventListener("click", () => {
+    state.liveActivityVisibleCount += 20;
+    renderLiveActivity();
   });
 }
 
@@ -4708,6 +4766,7 @@ async function loadDashboard() {
     state.channels = channels.channels;
     state.security = security;
     state.activity = activity;
+    state.liveActivityVisibleCount = 20;
     state.accessRequests = accessRequests;
     state.overviewRuntimeAuditByInstance = Object.fromEntries(runtimeAuditEntries);
     if (state.liveInstanceFilter !== "all" && !state.overview.instances.some((instance) => instance.id === state.liveInstanceFilter)) {
@@ -4774,6 +4833,7 @@ async function loadDashboard() {
 async function refreshActivityOnly() {
   try {
     state.activity = await fetchJson("/admin/activity");
+    state.liveActivityVisibleCount = 20;
     renderLiveFilterOptions();
     renderLiveActivity();
     renderLiveSummary();
@@ -5444,10 +5504,261 @@ document.getElementById("refresh-button").addEventListener("click", () => {
 });
 document.getElementById("live-instance-filter")?.addEventListener("change", (event) => {
   state.liveInstanceFilter = event.target.value || "all";
+  state.liveActivityVisibleCount = 20;
   renderLiveActivity();
   renderLiveSummary();
   syncLocationState();
 });
+
+// ── Mobile Device Management (QR Pairing) ──────────────────
+
+async function loadMobileDevices(instanceId) {
+  try {
+    const data = await fetchJson(`/admin/mobile/devices?instance_id=${encodeURIComponent(instanceId)}`);
+    state.mobileDevicesByInstance[instanceId] = data?.devices || [];
+  } catch (_) {
+    state.mobileDevicesByInstance[instanceId] = [];
+  }
+}
+
+function loadQRCodeLibrary() {
+  return new Promise((resolve) => {
+    // qrcodejs — synchronous DOM-based API, works reliably in browsers
+    if (window.QRCode && window.QRCode.CorrectLevel) return resolve();
+    const s = document.createElement("script");
+    s.src = "https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js";
+    s.onload = resolve;
+    s.onerror = () => {
+      // Fallback: google charts QR image (no JS required)
+      window._qrFallback = true;
+      resolve();
+    };
+    document.head.appendChild(s);
+  });
+}
+
+async function openQRModal(instanceId) {
+  await loadQRCodeLibrary();
+  let data, netInfo;
+  try {
+    [data, netInfo] = await Promise.all([
+      postJson("/admin/mobile/pair", { instance_id: instanceId }),
+      fetchJson("/admin/mobile/network-info").catch(() => ({ addresses: [] })),
+    ]);
+  } catch (err) {
+    setBanner("Failed to generate QR code: " + err.message, "error");
+    return;
+  }
+  if (!data?.pairing_token) {
+    setBanner("Failed to generate QR code", "error");
+    return;
+  }
+  state.qrModal = { open: true, instanceId, data, netInfo: netInfo || { addresses: [] }, countdownTimer: null };
+  const modal = document.getElementById("qr-modal");
+  if (modal) modal.classList.remove("is-hidden");
+  renderQRModalBody(instanceId, data);
+}
+
+function buildMobileUrl(instanceId, token, host) {
+  const origin = host || window.location.origin;
+  return `${origin}/mobile?instance_id=${encodeURIComponent(instanceId)}&token=${encodeURIComponent(token)}`;
+}
+
+function renderQRCode(container, url) {
+  if (window.QRCode && window.QRCode.CorrectLevel) {
+    container.innerHTML = "";
+    new window.QRCode(container, {
+      text: url,
+      width: 240,
+      height: 240,
+      colorDark: "#000000",
+      colorLight: "#ffffff",
+      correctLevel: window.QRCode.CorrectLevel.M,
+    });
+  } else if (window._qrFallback) {
+    const img = document.createElement("img");
+    img.src = `https://api.qrserver.com/v1/create-qr-code/?size=240x240&data=${encodeURIComponent(url)}`;
+    img.width = 240;
+    img.height = 240;
+    img.style.borderRadius = "12px";
+    container.innerHTML = "";
+    container.appendChild(img);
+  } else {
+    container.innerHTML = `<p class="meta" style="padding:20px 0">QR library failed to load.<br>Use Copy Link instead.</p>`;
+  }
+}
+
+function renderQRModalBody(instanceId, data) {
+  const body = document.getElementById("qr-modal-body");
+  if (!body) return;
+
+  // Detect localhost — phone cannot reach 127.0.0.1
+  const hostname = window.location.hostname;
+  const isLocalhost = hostname === "127.0.0.1" || hostname === "localhost" || hostname === "::1";
+  const defaultHost = isLocalhost ? "" : window.location.origin;
+
+  const netAddresses = (state.qrModal.netInfo?.addresses || []);
+  const ngrokStatus = state.qrModal.netInfo?.ngrok || { active: false, url: null };
+
+  // Build LAN IP buttons
+  const ipButtonsHtml = netAddresses.length > 0
+    ? netAddresses.map(a => `
+        <button class="qr-ip-btn secondary-button is-small" data-qr-ip="${escapeHtml(a.url)}">
+          <span class="qr-ip-iface">${escapeHtml(a.iface)}</span>
+          <span class="qr-ip-addr">${escapeHtml(a.ip)}</span>
+        </button>`).join("")
+    : "";
+
+  // ngrok button (pre-fill if already active)
+  const ngrokBtnHtml = ngrokStatus.active && ngrokStatus.url
+    ? `<button class="qr-ip-btn secondary-button is-small qr-ip-ngrok" data-qr-ip="${escapeHtml(ngrokStatus.url)}" title="${escapeHtml(ngrokStatus.url)}">
+         <span class="qr-ip-iface">🌐 ngrok</span>
+         <span class="qr-ip-addr">${escapeHtml(ngrokStatus.url.replace(/^https?:\/\//, ""))}</span>
+       </button>`
+    : "";
+
+  body.innerHTML = `
+    ${isLocalhost ? `
+    <div class="qr-host-warn">
+      <p class="meta" style="margin-bottom:6px">⚠️ Admin is on <strong>127.0.0.1</strong> — phone cannot reach this address.</p>
+      ${(ipButtonsHtml || ngrokBtnHtml) ? `
+      <p class="meta" style="margin-bottom:6px;font-size:12px">เลือก IP หรือ ngrok URL ที่ Phone ใช้ได้:</p>
+      <div class="qr-ip-list">${ipButtonsHtml}${ngrokBtnHtml}</div>` : ""}
+      <div style="display:flex;gap:6px;align-items:center;margin-top:8px">
+        <input id="qr-host-input" type="text" placeholder="http://192.168.x.x:18880"
+          style="flex:1;font-size:13px" value="${escapeHtml(state.qrModal.lastHost || "")}">
+        <button class="primary-button is-small" id="qr-host-apply">Apply</button>
+      </div>
+      <p class="meta" style="margin-top:4px;font-size:11px">หรือกรอก IP เอง (System Settings → Wi-Fi → IP Address)</p>
+    </div>` : ngrokBtnHtml ? `
+    <div class="qr-ngrok-active">
+      <p class="meta" style="margin-bottom:6px;font-size:12px">🌐 ngrok active — use for external access:</p>
+      <div class="qr-ip-list">${ngrokBtnHtml}</div>
+    </div>` : ""}
+    <div class="qr-canvas-wrap"><div id="qr-container" style="display:inline-block"></div></div>
+    <p class="qr-instructions">Scan with your phone camera to open Softnix Agent</p>
+    <p class="qr-expiry" id="qr-countdown"></p>
+    <div style="display:flex;gap:6px;justify-content:center;margin-top:2px">
+      <button class="secondary-button is-small" id="qr-copy-btn">Copy Link</button>
+      <button class="secondary-button is-small" id="qr-ngrok-start-btn"
+        title="${ngrokStatus.active ? "Restart ngrok tunnel" : "Start ngrok tunnel for external access"}">
+        ${ngrokStatus.active ? "🔄 Restart ngrok" : "🌐 Start ngrok"}
+      </button>
+    </div>`;
+
+  const container = document.getElementById("qr-container");
+
+  const getUrl = () => {
+    if (isLocalhost) {
+      const host = (document.getElementById("qr-host-input")?.value || "").trim();
+      if (!host) return null;
+      return buildMobileUrl(instanceId, data.pairing_token, host);
+    }
+    return buildMobileUrl(instanceId, data.pairing_token, window.location.origin);
+  };
+
+  const refreshQR = () => {
+    const url = getUrl();
+    if (!url) { container.innerHTML = `<p class="meta" style="padding:20px 0;color:#888">Enter LAN IP above to generate QR</p>`; return; }
+    state.qrModal.lastHost = (document.getElementById("qr-host-input")?.value || "").trim();
+    renderQRCode(container, url);
+    const copyBtn = document.getElementById("qr-copy-btn");
+    if (copyBtn) copyBtn.onclick = () => navigator.clipboard.writeText(url).then(() => setBanner("Link copied!", "warning"));
+  };
+
+  // Wire up IP picker buttons — click fills input + triggers refreshQR
+  body.querySelectorAll("[data-qr-ip]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const input = document.getElementById("qr-host-input");
+      if (input) {
+        input.value = btn.dataset.qrIp;
+        // highlight selected
+        body.querySelectorAll("[data-qr-ip]").forEach((b) => b.classList.remove("is-active"));
+        btn.classList.add("is-active");
+      }
+      refreshQR();
+    });
+  });
+
+  refreshQR();
+
+  document.getElementById("qr-host-apply")?.addEventListener("click", refreshQR);
+  document.getElementById("qr-host-input")?.addEventListener("keydown", (e) => { if (e.key === "Enter") refreshQR(); });
+
+  if (!isLocalhost) {
+    const url = getUrl();
+    document.getElementById("qr-copy-btn").onclick = () => navigator.clipboard.writeText(url).then(() => setBanner("Link copied!", "warning"));
+  }
+
+  const expiresAt = new Date(data.expires_at);
+  const tick = () => {
+    const el = document.getElementById("qr-countdown");
+    if (!el) return;
+    const secs = Math.max(0, Math.round((expiresAt - Date.now()) / 1000));
+    const m = Math.floor(secs / 60), s = secs % 60;
+    el.textContent = secs > 0 ? `Expires in ${m}:${String(s).padStart(2, "0")}` : "Expired — generate a new QR";
+    if (secs === 0) clearInterval(state.qrModal.countdownTimer);
+  };
+  tick();
+  state.qrModal.countdownTimer = setInterval(tick, 1000);
+
+  // Start ngrok button
+  document.getElementById("qr-ngrok-start-btn")?.addEventListener("click", async (e) => {
+    const btn = e.currentTarget;
+    const origText = btn.textContent.trim();
+    btn.disabled = true;
+    btn.textContent = "⏳ Starting…";
+    try {
+      const adminPort = parseInt(window.location.port || "18880", 10);
+      const result = await postJson("/admin/mobile/ngrok/start", { port: adminPort });
+      if (result.url) {
+        // Update netInfo in state so re-render shows the new ngrok button
+        if (!state.qrModal.netInfo) state.qrModal.netInfo = { addresses: [] };
+        state.qrModal.netInfo.ngrok = { active: true, url: result.url };
+        // Auto-fill host input with ngrok URL and refresh QR
+        const hostInput = document.getElementById("qr-host-input");
+        if (hostInput) hostInput.value = result.url;
+        setBanner(`ngrok tunnel started: ${result.url}`, "warning");
+        renderQRModalBody(instanceId, data);
+      }
+    } catch (err) {
+      setBanner("Failed to start ngrok: " + err.message, "error");
+      btn.disabled = false;
+      btn.textContent = origText;
+    }
+  });
+}
+
+function closeQRModal() {
+  clearInterval(state.qrModal?.countdownTimer);
+  state.qrModal = { open: false, instanceId: null, countdownTimer: null };
+  const modal = document.getElementById("qr-modal");
+  if (modal) modal.classList.add("is-hidden");
+  if (state.auth.authenticated) {
+    void loadDashboard();
+  }
+}
+
+async function handleMobileDeviceDelete(deviceId, instanceId) {
+  if (!confirm(`Delete device "${deviceId}"?`)) return;
+  try {
+    const result = await deleteJson(`/admin/mobile/devices/${encodeURIComponent(deviceId)}`, { instance_id: instanceId });
+    await loadMobileDevices(instanceId);
+    const restart = result?.instance_restart;
+    if (restart?.attempted) {
+      if (restart.ok) {
+        setBanner(`Device deleted and instance '${instanceId}' restarted successfully.`, "warning");
+      } else {
+        setBanner(`Device deleted, but instance '${instanceId}' restart failed: ${restart.stderr || restart.stdout || "Unknown error"}`, "warning");
+      }
+    }
+    const inst = selectedInstance();
+    if (inst) renderSelectedInstanceChannels(inst);
+    await loadDashboard();
+  } catch (err) {
+    setBanner("Failed to delete device: " + err.message, "error");
+  }
+}
 
 async function initializeApp() {
   restoreLocationState();
@@ -5456,6 +5767,18 @@ async function initializeApp() {
   if (state.auth.authenticated) {
     await loadDashboard();
   }
+  // QR modal close
+  document.getElementById("qr-modal-close")?.addEventListener("click", closeQRModal);
+  document.getElementById("qr-modal")?.addEventListener("click", (e) => {
+    if (e.target.id === "qr-modal") closeQRModal();
+  });
+  // Delegated mobile device events
+  document.addEventListener("click", (e) => {
+    const pairBtn = e.target.closest("[data-mobile-pair]");
+    if (pairBtn) { void openQRModal(pairBtn.dataset.mobilePair); return; }
+    const delBtn = e.target.closest("[data-mobile-delete]");
+    if (delBtn) { void handleMobileDeviceDelete(delBtn.dataset.mobileDelete, delBtn.dataset.mobileInstance); return; }
+  });
 }
 
 void initializeApp();

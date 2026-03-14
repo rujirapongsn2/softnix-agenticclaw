@@ -225,6 +225,12 @@ def test_admin_service_manages_registry_instances(tmp_path) -> None:
 
     deleted = service.delete_instance(instance_id="acme-prod", purge_files=False)
     assert deleted["instance_id"] == "acme-prod"
+    audit_log = service.get_auth_audit_log(limit=20)
+    assert any(
+        event.get("event_type") == "instance.deleted"
+        and (event.get("resource") or {}).get("id") == "acme-prod"
+        for event in audit_log["events"]
+    )
 
 
 def test_admin_service_create_instance_applies_fast_profile(tmp_path) -> None:

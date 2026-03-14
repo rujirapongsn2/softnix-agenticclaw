@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
 import json
+import hmac
+import mimetypes
 import shutil
 import stat
 import subprocess
@@ -10,11 +14,17 @@ import asyncio
 import socket
 import os
 import signal
+import secrets
+import threading
+import time
+import urllib.request
 from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
+
+from loguru import logger
 
 from nanobot import __version__
 from nanobot.admin.auth import (
@@ -91,6 +101,10 @@ def _normalize_optional_int(value: Any, *, field_name: str) -> int | None:
 def _truncate_text(value: Any, limit: int = 500) -> str:
     text = str(value or "").strip()
     return text[:limit]
+
+
+def _default_mobile_push_subject() -> str:
+    return "mailto:admin@example.com"
 
 
 def _ts_sort_key(value: Any) -> tuple[float, str]:
@@ -203,7 +217,11 @@ class AdminService:
         self.workspace_override = _expand_path(workspace)
         self.registry_path = registry_path
         self.auth_store = self._create_auth_store()
+        self._mobile_push_offsets: dict[str, int] = {}
+        self._mobile_push_stop = threading.Event()
+        self._mobile_push_worker: threading.Thread | None = None
         self._sync_workspace_identities()
+        self._start_mobile_push_worker()
 
     def _create_auth_store(self) -> AdminAuthStore:
         if self.registry_path is not None:
@@ -231,37 +249,379 @@ class AdminService:
 
     def get_mobile_pairing_data(self, instance_id: str) -> dict[str, Any]:
         """Generate temporary pairing data for mobile app QR scan."""
-        # Find instance config to get public URL hint if available
-        config_payload = self.get_instance_config(instance_id=instance_id)
-        
-        # In a real setup, this would include a short-lived token
-        # For now, we provide the essentials for pairing
+        _ = self._get_target(instance_id)  # raises ValueError if not found
+
+        pairing_token = f"pair-{new_csrf_token()[:12]}"
+        expires_at = (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat()
+
+        self.auth_store.create_pairing_token(
+            instance_id=instance_id,
+            token=pairing_token,
+            expires_at=expires_at,
+        )
+        self.auth_store.append_audit(
+            event_type="channel.mobile_pairing_created",
+            category="configuration",
+            outcome="success",
+            resource={"type": "instance", "id": instance_id},
+            payload={"expires_at": expires_at},
+        )
         return {
             "instance_id": instance_id,
-            "pairing_token": f"pair-{new_csrf_token()[:12]}",
-            "expires_at": (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat(),
+            "pairing_token": pairing_token,
+            "expires_at": expires_at,
         }
 
-    def relay_mobile_message(self, instance_id: str, sender_id: str, text: str) -> dict[str, Any]:
+    def _mobile_relay_dir(self, target: InstanceTarget) -> Path:
+        relay_dir = target.workspace_path / "mobile_relay"
+        relay_dir.mkdir(parents=True, exist_ok=True)
+        return relay_dir
+
+    def _mobile_upload_dir(self, target: InstanceTarget, sender_id: str) -> Path:
+        upload_dir = self._mobile_relay_dir(target) / "uploads" / self._safe_filename(sender_id)
+        upload_dir.mkdir(parents=True, exist_ok=True)
+        return upload_dir
+
+    def _mobile_outbound_media_dir(self, target: InstanceTarget, sender_id: str) -> Path:
+        media_dir = self._mobile_relay_dir(target) / "outbound_media" / self._safe_filename(sender_id)
+        media_dir.mkdir(parents=True, exist_ok=True)
+        return media_dir
+
+    def _mobile_push_supported(self) -> bool:
+        try:
+            import pywebpush  # noqa: F401
+            from cryptography.hazmat.primitives import serialization  # noqa: F401
+            from cryptography.hazmat.primitives.asymmetric import ec  # noqa: F401
+        except Exception:
+            return False
+        return True
+
+    def _ensure_mobile_push_keys(self) -> dict[str, Any] | None:
+        existing = self.auth_store.get_mobile_push_keys()
+        if existing:
+            subject = str(existing.get("subject") or "").strip()
+            if not subject or "localhost" in subject:
+                private_key_path = Path(str(existing["private_key_path"]))
+                private_pem = private_key_path.read_text(encoding="utf-8")
+                return self.auth_store.save_mobile_push_keys(
+                    public_key=str(existing["public_key"]),
+                    private_key_pem=private_pem,
+                    subject=_default_mobile_push_subject(),
+                )
+            return existing
+        try:
+            from cryptography.hazmat.primitives import serialization
+            from cryptography.hazmat.primitives.asymmetric import ec
+        except Exception:
+            return None
+
+        private_key = ec.generate_private_key(ec.SECP256R1())
+        private_pem = private_key.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.PKCS8,
+            encryption_algorithm=serialization.NoEncryption(),
+        ).decode("utf-8")
+        numbers = private_key.public_key().public_numbers()
+        public_bytes = b"\x04" + numbers.x.to_bytes(32, "big") + numbers.y.to_bytes(32, "big")
+        public_key = base64.urlsafe_b64encode(public_bytes).rstrip(b"=").decode("ascii")
+        return self.auth_store.save_mobile_push_keys(
+            public_key=public_key,
+            private_key_pem=private_pem,
+            subject=_default_mobile_push_subject(),
+        )
+
+    def get_mobile_push_config(self) -> dict[str, Any]:
+        keys = self._ensure_mobile_push_keys() if self._mobile_push_supported() else None
+        return {
+            "supported": keys is not None,
+            "public_key": keys.get("public_key") if keys else None,
+            "requires_standalone": True,
+        }
+
+    def create_mobile_session_transfer(
+        self,
+        *,
+        device: dict[str, Any],
+        active_session_id: str | None,
+        conversations: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        instance_id = str(device.get("instance_id") or "").strip()
+        device_id = str(device.get("device_id") or "").strip()
+        if not instance_id or not device_id:
+            raise ValueError("device.instance_id and device.device_id are required")
+        expires_at = (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat()
+        token = f"xfer-{secrets.token_hex(6)}"
+        payload = {
+            "device": device,
+            "activeSessionId": str(active_session_id or device.get("current_session_id") or f"mobile-{device_id}"),
+            "conversations": conversations if isinstance(conversations, dict) else {},
+        }
+        self.auth_store.create_mobile_transfer_token(token=token, payload=payload, expires_at=expires_at)
+        self.auth_store.append_audit(
+            event_type="channel.mobile_session_transfer_created",
+            category="configuration",
+            outcome="success",
+            resource={"type": "instance", "id": instance_id},
+            payload={"device_id": device_id, "expires_at": expires_at},
+        )
+        return {"transfer_token": token, "expires_at": expires_at}
+
+    def consume_mobile_session_transfer(self, *, transfer_token: str) -> dict[str, Any]:
+        payload = self.auth_store.consume_mobile_transfer_token(transfer_token)
+        if payload is None:
+            raise ValueError("Invalid or expired transfer token")
+        device = payload.get("device")
+        if not isinstance(device, dict):
+            raise ValueError("Transfer payload is invalid")
+        instance_id = str(device.get("instance_id") or "").strip()
+        device_id = str(device.get("device_id") or "").strip()
+        if instance_id and device_id:
+            self.auth_store.update_device_last_seen(instance_id, device_id)
+            self.auth_store.append_audit(
+                event_type="channel.mobile_session_transfer_consumed",
+                category="configuration",
+                outcome="success",
+                resource={"type": "instance", "id": instance_id},
+                payload={"device_id": device_id},
+            )
+        return payload
+
+    def subscribe_mobile_push(
+        self,
+        *,
+        instance_id: str,
+        device_id: str,
+        subscription: dict[str, Any],
+        user_agent: str | None = None,
+    ) -> dict[str, Any]:
+        if not self._mobile_push_supported():
+            raise ValueError("Web push is not available on this server")
+        devices = self.auth_store.list_mobile_devices(instance_id)
+        if not any(item.get("device_id") == device_id for item in devices):
+            raise ValueError("Mobile device not found")
+        endpoint = str(subscription.get("endpoint") or "").strip()
+        keys = subscription.get("keys") if isinstance(subscription, dict) else None
+        if not endpoint or not isinstance(keys, dict) or not str(keys.get("p256dh") or "").strip() or not str(keys.get("auth") or "").strip():
+            raise ValueError("Invalid push subscription payload")
+        self.auth_store.upsert_mobile_push_subscription(
+            instance_id=instance_id,
+            device_id=device_id,
+            subscription=subscription,
+            endpoint=endpoint,
+            user_agent=user_agent,
+        )
+        self.auth_store.append_audit(
+            event_type="channel.mobile_push_subscribed",
+            category="configuration",
+            outcome="success",
+            resource={"type": "instance", "id": instance_id},
+            payload={"device_id": device_id},
+        )
+        return {"status": "subscribed", "device_id": device_id}
+
+    def unsubscribe_mobile_push(self, *, instance_id: str, device_id: str) -> dict[str, Any]:
+        removed = self.auth_store.delete_mobile_push_subscription(instance_id=instance_id, device_id=device_id)
+        if removed:
+            self.auth_store.append_audit(
+                event_type="channel.mobile_push_unsubscribed",
+                category="configuration",
+                outcome="success",
+                resource={"type": "instance", "id": instance_id},
+                payload={"device_id": device_id},
+            )
+        return {"status": "unsubscribed", "device_id": device_id}
+
+    def _start_mobile_push_worker(self) -> None:
+        if self._mobile_push_worker is not None:
+            return
+        self._mobile_push_worker = threading.Thread(
+            target=self._mobile_push_loop,
+            name="softnix-mobile-push",
+            daemon=True,
+        )
+        self._mobile_push_worker.start()
+
+    def _mobile_push_loop(self) -> None:
+        while not self._mobile_push_stop.wait(2.0):
+            try:
+                self._scan_mobile_push_events()
+            except Exception as exc:
+                logger.debug(f"Mobile push scan failed: {exc}")
+
+    def _scan_mobile_push_events(self) -> None:
+        if not self._mobile_push_supported():
+            return
+        for target in self._load_targets():
+            outbound_file = self._mobile_relay_dir(target) / "outbound.jsonl"
+            offset_key = str(outbound_file.resolve())
+            if not outbound_file.exists():
+                self._mobile_push_offsets[offset_key] = 0
+                continue
+            size = outbound_file.stat().st_size
+            offset = self._mobile_push_offsets.get(offset_key, 0)
+            if size < offset:
+                offset = 0
+            if size == offset:
+                continue
+            with outbound_file.open("r", encoding="utf-8") as handle:
+                handle.seek(offset)
+                lines = handle.readlines()
+                self._mobile_push_offsets[offset_key] = handle.tell()
+            for line in lines:
+                if not line.strip():
+                    continue
+                try:
+                    payload = json.loads(line)
+                except Exception:
+                    continue
+                self._dispatch_mobile_push(target.id, payload)
+
+    def _dispatch_mobile_push(self, instance_id: str, payload: dict[str, Any]) -> None:
+        sender_id = str(payload.get("sender_id") or "").strip()
+        if not sender_id or str(payload.get("type") or "answer") != "answer":
+            return
+        subscriptions = self.auth_store.list_mobile_push_subscriptions(instance_id, sender_id)
+        if not subscriptions:
+            return
+        title = "Softnix Agent"
+        body = _truncate_text(payload.get("text") or "You have a new reply", limit=180)
+        data = {
+            "title": title,
+            "body": body,
+            "icon": "/static/Logo_Softnix.png",
+            "url": f"/mobile?session_id={payload.get('session_id') or ''}",
+            "session_id": payload.get("session_id"),
+            "message_id": payload.get("message_id"),
+            "instance_id": instance_id,
+        }
+        for item in subscriptions:
+            self._send_web_push_notification(instance_id=instance_id, device_id=sender_id, subscription=item, payload=data)
+
+    def _send_web_push_notification(
+        self,
+        *,
+        instance_id: str,
+        device_id: str,
+        subscription: dict[str, Any],
+        payload: dict[str, Any],
+    ) -> None:
+        keys = self._ensure_mobile_push_keys()
+        if keys is None:
+            return
+        subscription_info = subscription.get("subscription")
+        if not isinstance(subscription_info, dict):
+            return
+        try:
+            from pywebpush import WebPushException, webpush
+
+            webpush(
+                subscription_info=subscription_info,
+                data=json.dumps(payload, ensure_ascii=False),
+                vapid_private_key=keys["private_key_path"],
+                vapid_claims={"sub": keys["subject"]},
+                ttl=300,
+            )
+        except Exception as exc:
+            status_code = getattr(getattr(exc, "response", None), "status_code", None)
+            if isinstance(exc, WebPushException) and status_code in {404, 410}:
+                self.auth_store.delete_mobile_push_subscription(instance_id=instance_id, device_id=device_id)
+            logger.debug(f"Mobile push delivery failed for {instance_id}/{device_id}: {exc}")
+
+    @staticmethod
+    def _safe_filename(value: str) -> str:
+        raw = os.path.basename(str(value or "").strip()) or "file"
+        sanitized = "".join(ch if ch.isalnum() or ch in {"-", "_", "."} else "_" for ch in raw)
+        return sanitized[:120] or "file"
+
+    def _save_mobile_attachments(
+        self,
+        *,
+        target: InstanceTarget,
+        sender_id: str,
+        attachments: list[dict[str, Any]] | None,
+    ) -> tuple[list[str], list[dict[str, Any]]]:
+        if not attachments:
+            return [], []
+        saved_paths: list[str] = []
+        saved_meta: list[dict[str, Any]] = []
+        upload_dir = self._mobile_upload_dir(target, sender_id)
+
+        for index, item in enumerate(attachments):
+            if not isinstance(item, dict):
+                continue
+            encoded = str(item.get("data_base64") or "").strip()
+            if not encoded:
+                continue
+            try:
+                payload = base64.b64decode(encoded, validate=True)
+            except (ValueError, binascii.Error) as exc:
+                raise ValueError(f"Attachment #{index + 1} is not valid base64") from exc
+            name = self._safe_filename(str(item.get("name") or f"attachment-{index + 1}"))
+            stem = Path(name).stem or f"attachment-{index + 1}"
+            suffix = Path(name).suffix
+            stored_name = f"{int(time.time() * 1000)}-{secrets.token_hex(4)}-{self._safe_filename(stem)}{suffix}"
+            dest = upload_dir / stored_name
+            dest.write_bytes(payload)
+            mime = str(item.get("type") or mimetypes.guess_type(name)[0] or "application/octet-stream")
+            saved_paths.append(str(dest))
+            saved_meta.append(
+                {
+                    "name": name,
+                    "stored_name": stored_name,
+                    "mime_type": mime,
+                    "size": len(payload),
+                }
+            )
+        return saved_paths, saved_meta
+
+    def relay_mobile_message(
+        self,
+        instance_id: str,
+        sender_id: str,
+        text: str,
+        *,
+        session_id: str | None = None,
+        message_id: str | None = None,
+        reply_to: str | None = None,
+        thread_root_id: str | None = None,
+        attachments: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
         """Relay a message from a mobile app to a specific instance via file-based queue."""
         target = next((t for t in self._load_targets() if t.id == instance_id), None)
         if not target:
             raise ValueError(f"Instance '{instance_id}' not found")
-            
-        relay_dir = target.workspace_path / "mobile_relay"
-        relay_dir.mkdir(parents=True, exist_ok=True)
+
+        relay_dir = self._mobile_relay_dir(target)
         inbound_file = relay_dir / "inbound.jsonl"
-        
+        media_paths, attachment_meta = self._save_mobile_attachments(
+            target=target,
+            sender_id=sender_id,
+            attachments=attachments,
+        )
+        resolved_session_id = (session_id or "").strip() or f"mobile-{sender_id}"
+        resolved_message_id = (message_id or "").strip() or f"mobile-{secrets.token_hex(8)}"
         data = {
             "text": text,
             "sender_id": sender_id,
+            "session_id": resolved_session_id,
+            "message_id": resolved_message_id,
+            "reply_to": (reply_to or "").strip() or None,
+            "thread_root_id": (thread_root_id or "").strip() or None,
+            "media": media_paths,
+            "attachments": attachment_meta,
             "timestamp": iso_now(),
         }
-        
+
         with inbound_file.open("a", encoding="utf-8") as f:
             f.write(json.dumps(data) + "\n")
-            
-        return {"status": "relayed", "instance_id": instance_id}
+
+        return {
+            "status": "relayed",
+            "instance_id": instance_id,
+            "message_id": resolved_message_id,
+            "session_id": resolved_session_id,
+            "attachment_count": len(attachment_meta),
+        }
 
     def get_mobile_replies(self, instance_id: str, sender_id: str) -> list[dict[str, Any]]:
         """Fetch agent replies for a mobile user from the outbound queue."""
@@ -296,25 +656,209 @@ class AdminService:
             
         return all_replies
 
-    def register_mobile_client(self, instance_id: str, device_id: str) -> dict[str, Any]:
-        """Add a mobile device ID to the instance's allow_from list."""
-        # We need the actual config object to manipulate it easily
+    def get_mobile_media_file(self, instance_id: str, sender_id: str, file_name: str) -> tuple[Path, str]:
+        """Resolve one mobile relay media file for safe download."""
+        target = next(
+            (
+                item
+                for item in self._load_targets()
+                if item.id == instance_id or item.workspace_path.name == instance_id
+            ),
+            None,
+        )
+        if target is None:
+            raise ValueError("Instance not found")
+        safe_sender = self._safe_filename(sender_id)
+        safe_name = self._safe_filename(file_name)
+        roots = [
+            self._mobile_outbound_media_dir(target, safe_sender),
+            self._mobile_upload_dir(target, safe_sender),
+        ]
+        for root in roots:
+            candidate = (root / safe_name).resolve()
+            try:
+                candidate.relative_to(root.resolve())
+            except ValueError:
+                continue
+            if candidate.exists() and candidate.is_file():
+                return candidate, mimetypes.guess_type(candidate.name)[0] or "application/octet-stream"
+        raise ValueError("Media file not found")
+
+    def register_mobile_client(self, instance_id: str, device_id: str, pairing_token: str | None = None, label: str = "") -> dict[str, Any]:
+        """Register a scanned mobile device as a pending access request."""
+        if pairing_token:
+            if not self.auth_store.validate_and_consume_pairing_token(instance_id, pairing_token):
+                raise PermissionError("Invalid or expired pairing token")
+
         target = next((t for t in self._load_targets() if t.id == instance_id), None)
         if not target:
             raise ValueError(f"Instance '{instance_id}' not found")
         config = self._load_target_config(target)
-        
-        # Ensure softnix_app channel is enabled
+
         if not config.channels.softnix_app.enabled:
             config.channels.softnix_app.enabled = True
-            
-        # Add to allow_from if not already there
-        if device_id not in config.channels.softnix_app.allow_from:
-            config.channels.softnix_app.allow_from.append(device_id)
-            self.update_instance_config(instance_id=instance_id, config_data=config.model_dump(by_alias=True))
-            return {"status": "registered", "new": True}
-            
-        return {"status": "registered", "new": False}
+
+        self.auth_store.upsert_mobile_device(instance_id, device_id, label or device_id)
+        store = AccessRequestStore(target.workspace_path)
+        pending = store.record(
+            channel="softnix_app",
+            sender_id=device_id,
+            chat_id=f"mobile-{device_id}",
+            content=f"Pair request from {label or device_id}",
+            metadata={"username": label or device_id},
+        )
+        already_allowed = device_id in config.channels.softnix_app.allow_from
+        self.auth_store.append_audit(
+            event_type="channel.mobile_device_registered",
+            category="configuration",
+            outcome="success",
+            resource={"type": "instance", "id": instance_id},
+            payload={
+                "device_id": device_id,
+                "label": label,
+                "pending_request": True,
+                "already_allowed": already_allowed,
+            },
+        )
+        return {
+            "status": "pending_approval",
+            "new": not already_allowed,
+            "pending_request": pending,
+            "already_allowed": already_allowed,
+        }
+
+    # ── ngrok tunnel management ──────────────────────────────────────────
+
+    _ngrok_process: subprocess.Popen | None = None  # class-level singleton
+
+    @staticmethod
+    def _query_ngrok_api() -> str | None:
+        """Query ngrok local API and return the first HTTPS public URL, or None."""
+        try:
+            with urllib.request.urlopen("http://localhost:4040/api/tunnels", timeout=2) as resp:
+                data = json.loads(resp.read())
+            tunnels = data.get("tunnels") or []
+            for t in tunnels:
+                if t.get("proto") == "https":
+                    return str(t["public_url"])
+            if tunnels:
+                return str(tunnels[0].get("public_url") or "")
+        except Exception:
+            pass
+        return None
+
+    def start_ngrok(self, port: int) -> dict[str, Any]:
+        """Start ngrok http tunnel for *port* and return the public URL.
+
+        Kills any existing ngrok process first, then polls the ngrok local API
+        for up to 10 seconds waiting for the tunnel to come up.
+        """
+        # Kill existing tracked process
+        if AdminService._ngrok_process is not None:
+            try:
+                AdminService._ngrok_process.terminate()
+            except Exception:
+                pass
+            AdminService._ngrok_process = None
+
+        # Kill any stale ngrok processes on the machine (best-effort)
+        try:
+            subprocess.run(["pkill", "-f", "ngrok http"], capture_output=True, timeout=5, check=False)
+        except Exception:
+            pass
+        time.sleep(0.3)
+
+        # Launch ngrok
+        try:
+            AdminService._ngrok_process = subprocess.Popen(
+                ["ngrok", "http", str(port)],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except FileNotFoundError as exc:
+            raise ValueError(
+                "ngrok is not installed or not in PATH. "
+                "Install it from https://ngrok.com/download and run 'ngrok config add-authtoken <token>'."
+            ) from exc
+
+        # Poll up to 10 seconds for the tunnel URL
+        url: str | None = None
+        for _ in range(20):
+            time.sleep(0.5)
+            url = self._query_ngrok_api()
+            if url:
+                break
+
+        if not url:
+            raise ValueError(
+                "ngrok process started but did not expose a tunnel within 10 seconds. "
+                "Check that you have authenticated ngrok (ngrok config add-authtoken <token>)."
+            )
+        logger.info(f"ngrok tunnel started: {url} → localhost:{port}")
+        return {"active": True, "url": url, "port": port}
+
+    def get_ngrok_status(self) -> dict[str, Any]:
+        """Return current ngrok tunnel status without starting anything."""
+        url = self._query_ngrok_api()
+        if url:
+            return {"active": True, "url": url}
+        return {"active": False, "url": None}
+
+    # ── end ngrok ────────────────────────────────────────────────────────
+
+    def list_mobile_devices(self, instance_id: str) -> list[dict[str, Any]]:
+        """List registered mobile devices for an instance."""
+        return self.auth_store.list_mobile_devices(instance_id)
+
+    def _sync_relay_allow_from(self, target: InstanceTarget, config: Config) -> None:
+        """Write softnix_app allow_from to relay/allow_from.json for zero-restart channel reload.
+
+        The running SoftnixAppChannel re-reads this file on every poll cycle so newly
+        registered or deleted devices take effect immediately without an agent restart.
+        """
+        try:
+            relay_dir = target.workspace_path / "mobile_relay"
+            relay_dir.mkdir(parents=True, exist_ok=True)
+            allow_from = list(config.channels.softnix_app.allow_from or [])
+            (relay_dir / "allow_from.json").write_text(
+                json.dumps({"allow_from": allow_from}, ensure_ascii=False),
+                encoding="utf-8",
+            )
+        except Exception as exc:
+            logger.warning(f"Failed to sync relay allow_from for instance '{target.id}': {exc}")
+
+    def delete_mobile_device(self, instance_id: str, device_id: str) -> dict[str, Any]:
+        """Remove a mobile device from auth store and config allow_from."""
+        self.auth_store.delete_mobile_device(instance_id, device_id)
+        restart_result: dict[str, Any] | None = None
+        target = next((t for t in self._load_targets() if t.id == instance_id), None)
+        if target:
+            config = self._load_target_config(target)
+            if device_id in config.channels.softnix_app.allow_from:
+                config.channels.softnix_app.allow_from.remove(device_id)
+                save_config(config, target.config_path)
+            # Sync relay allow_from file so the running channel stops accepting deleted device
+            self._sync_relay_allow_from(target, config)
+            if target.source == "registry" and target.lifecycle and self._lifecycle_command(target, "restart"):
+                restart_result = self.execute_instance_action(instance_id=instance_id, action="restart")
+        self.auth_store.append_audit(
+            event_type="channel.mobile_device_deleted",
+            category="configuration",
+            outcome="success",
+            resource={"type": "instance", "id": instance_id},
+            payload={
+                "device_id": device_id,
+                "instance_restarted": bool(restart_result and restart_result.get("ok")),
+                "restart_returncode": restart_result.get("returncode") if restart_result else None,
+            },
+        )
+        return {
+            "status": "deleted",
+            "instance_restart": {
+                "attempted": restart_result is not None,
+                **(restart_result or {}),
+            },
+        }
 
     def _sync_workspace_identities(self) -> None:
         """Best-effort sync of per-instance agent identity into workspace prompt files."""
@@ -1459,6 +2003,16 @@ class AdminService:
                 "config_path": str(target.config_path),
             },
         )
+        self.auth_store.append_audit(
+            event_type="instance.deleted",
+            category="configuration",
+            outcome="success",
+            resource={"type": "instance", "id": target.id, "name": getattr(target, "name", target.id)},
+            payload={
+                "purge_files": bool(purge_files),
+                "config_path": str(target.config_path),
+            },
+        )
         return result
 
     def update_channel(
@@ -1557,7 +2111,21 @@ class AdminService:
 
         store = AccessRequestStore(target.workspace_path)
         removed = store.remove(channel=channel_name, sender_id=sender)
-        runtime = self._apply_runtime_channel_reload(target)
+        if channel_name == "softnix_app":
+            self._sync_relay_allow_from(target, config)
+            restart_result = None
+            if target.source == "registry" and target.lifecycle and self._lifecycle_command(target, "restart"):
+                restart_result = self.execute_instance_action(instance_id=target.id, action="restart")
+                runtime = {
+                    "applied": bool(restart_result.get("ok")),
+                    "method": "instance-restart",
+                    "detail": (restart_result.get("stderr") or restart_result.get("stdout") or "").strip()[:500],
+                    **restart_result,
+                }
+            else:
+                runtime = self._apply_runtime_channel_reload(target)
+        else:
+            runtime = self._apply_runtime_channel_reload(target)
         self._append_audit_event(
             instance_id=target.id,
             event_type="access_request.approved",
@@ -2849,8 +3417,9 @@ class AdminService:
     def _collect_channels(self, config: Config) -> list[dict[str, Any]]:
         rows = []
         for name in (
-            "whatsapp",
+            "softnix_app",
             "telegram",
+            "whatsapp",
             "discord",
             "feishu",
             "mochat",
@@ -2859,7 +3428,6 @@ class AdminService:
             "slack",
             "qq",
             "matrix",
-            "softnix_app",
         ):
             channel_cfg = getattr(config.channels, name)
             allow_list = getattr(channel_cfg, "allow_from", None)
