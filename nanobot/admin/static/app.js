@@ -1259,30 +1259,6 @@ function renderOverviewDashboard() {
           `).join("") || `<p class="meta">No runtime events yet</p>`}
         </div>
       </div>
-      <div class="table-wrap">
-        <table class="instances-table">
-          <thead>
-            <tr>
-              <th>Instance</th>
-              <th>Sessions</th>
-              <th>OK</th>
-              <th>Error</th>
-              <th>Success Rate</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${instanceHealthRows.map((row) => `
-              <tr>
-                <td><div class="table-primary">${escapeHtml(row.instance.name)}</div><div class="table-secondary">${escapeHtml(row.instance.id)}</div></td>
-                <td>${escapeHtml(String(row.instance.sessions?.count || 0))}</td>
-                <td>${escapeHtml(String(row.ok))}</td>
-                <td>${escapeHtml(String(row.error))}</td>
-                <td>${escapeHtml(row.rate)}</td>
-              </tr>
-            `).join("") || `<tr><td colspan="5" class="table-empty">No instances</td></tr>`}
-          </tbody>
-        </table>
-      </div>
     </div>
   `;
 
