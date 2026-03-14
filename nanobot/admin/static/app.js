@@ -35,6 +35,7 @@ const state = {
   currentView: "overview",
   busyKey: "",
   liveInstanceFilter: "all",
+  overviewOpsInstanceId: "all",
   liveExpandedEvents: {},
   instanceCreateOpen: false,
   runtimeAudit: {
@@ -1144,13 +1145,33 @@ function renderOverviewDashboard() {
   const instanceTarget = document.getElementById("overview-instance-metrics");
   const topUsageTarget = document.getElementById("overview-top-usage");
   const opsTarget = document.getElementById("overview-ops-table");
+  const opsFilterEl = document.getElementById("overview-ops-instance-filter");
   if (!instanceTarget || !topUsageTarget || !opsTarget) {
     return;
   }
 
   const runtimeByInstance = state.overviewRuntimeAuditByInstance || {};
   const instances = state.overview.instances || [];
+
+  if (opsFilterEl) {
+    const currentValue = state.overviewOpsInstanceId;
+    opsFilterEl.innerHTML = `
+      <option value="all" ${currentValue === "all" ? "selected" : ""}>All Instances</option>
+      ${instances.map(inst => `<option value="${escapeHtml(inst.id)}" ${currentValue === inst.id ? "selected" : ""}>${escapeHtml(inst.name)}</option>`).join("")}
+    `;
+    if (!opsFilterEl.onchange) {
+      opsFilterEl.onchange = (e) => {
+        state.overviewOpsInstanceId = e.target.value;
+        renderOverviewDashboard();
+      };
+    }
+  }
+
   const allEvents = Object.values(runtimeByInstance).flatMap((entry) => entry?.events || []);
+  const filteredEvents = state.overviewOpsInstanceId === "all" 
+    ? allEvents 
+    : (runtimeByInstance[state.overviewOpsInstanceId]?.events || []);
+
   const topModels = new Map();
   const topChannels = new Map();
   instances.forEach((instance) => {
@@ -1279,7 +1300,7 @@ function renderOverviewDashboard() {
   `;
 
   const operationBuckets = new Map();
-  allEvents.forEach((event) => {
+  filteredEvents.forEach((event) => {
     const instanceId = String(event.instance_id || "unknown");
     const operation = String(event.operation || "unknown");
     const key = `${instanceId}::${operation}`;
@@ -1312,7 +1333,6 @@ function renderOverviewDashboard() {
       </table>
     </div>
   `;
-
 }
 
 async function renderActivityHeatmap() {
