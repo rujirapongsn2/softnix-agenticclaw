@@ -1424,7 +1424,6 @@ function renderInstances() {
             <div class="table-secondary">${escapeHtml(instance.id)}</div>
           </td>
           <td><span class="badge ${badgeClass(runtimeSeverity)}">${escapeHtml(runtimeLabel)}</span></td>
-          <td>${escapeHtml(instance.security.finding_count)}</td>
           <td>${escapeHtml(providerLabel)}</td>
           <td>${escapeHtml(instance.sessions.count)}</td>
           <td>${escapeHtml(instance.cron.jobs)}</td>
@@ -1468,7 +1467,6 @@ function renderInstances() {
           <tr>
             <th>Instance</th>
             <th>Status</th>
-            <th>Warnings</th>
             <th>Provider</th>
             <th>Sessions</th>
             <th>Cron</th>
@@ -1476,7 +1474,7 @@ function renderInstances() {
             <th>Actions</th>
           </tr>
         </thead>
-        <tbody>${rows || `<tr><td colspan="8" class="table-empty">No instances registered yet.</td></tr>`}</tbody>
+        <tbody>${rows || `<tr><td colspan="7" class="table-empty">No instances registered yet.</td></tr>`}</tbody>
       </table>
     </div>
   `;
@@ -4659,9 +4657,8 @@ function auditLogPrev() {
 
 function setHealth() {
   const healthPill = document.getElementById("health-pill");
-  const warningCount = state.overview.summary.warning_count;
-  healthPill.textContent = warningCount > 0 ? `${warningCount} warnings` : "Operational";
-  healthPill.className = `health-pill ${warningCount > 0 ? "is-orange" : ""}`;
+  healthPill.textContent = "Operational";
+  healthPill.className = "health-pill";
 }
 
 function switchView(nextView) {
