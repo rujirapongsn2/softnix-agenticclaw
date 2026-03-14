@@ -161,6 +161,20 @@ class ChannelManager:
             except ImportError as e:
                 logger.warning("Matrix channel not available: {}", e)
 
+        # Softnix Mobile App channel
+        if self.config.channels.softnix_app.enabled:
+            try:
+                from nanobot.channels.softnix_app import SoftnixAppChannel
+
+                self.channels["softnix_app"] = SoftnixAppChannel(
+                    self.config.channels.softnix_app, 
+                    self.bus,
+                    workspace_path=self.config.workspace_path
+                )
+                logger.info("Softnix Mobile App channel enabled")
+            except ImportError as e:
+                logger.warning("Softnix Mobile App channel not available: {}", e)
+
         self._validate_allow_from()
 
     def _validate_allow_from(self) -> None:

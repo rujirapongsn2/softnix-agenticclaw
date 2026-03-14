@@ -201,6 +201,15 @@ class QQConfig(Base):
 
 
 
+class SoftnixAppConfig(Base):
+    """Native Softnix Mobile App channel configuration."""
+
+    enabled: bool = False
+    allow_from: list[str] = Field(
+        default_factory=list
+    )  # List of registered Device IDs (auto-populated via QR)
+
+
 class ChannelsConfig(Base):
     """Configuration for chat channels."""
 
@@ -216,6 +225,7 @@ class ChannelsConfig(Base):
     slack: SlackConfig = Field(default_factory=SlackConfig)
     qq: QQConfig = Field(default_factory=QQConfig)
     matrix: MatrixConfig = Field(default_factory=MatrixConfig)
+    softnix_app: SoftnixAppConfig = Field(default_factory=SoftnixAppConfig)
 
 
 class AgentDefaults(Base):

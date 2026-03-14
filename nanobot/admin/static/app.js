@@ -1417,7 +1417,7 @@ function renderInstances() {
         <tr class="instance-row${selectedClass}">
           <td>
             <div class="table-primary">${escapeHtml(instance.name)}</div>
-            <div class="table-secondary">${escapeHtml(instance.id)}</div>
+            <div class="table-secondary"><span class="meta-label">ID:</span> ${escapeHtml(instance.id)}</div>
           </td>
           <td><span class="badge ${badgeClass(runtimeSeverity)}">${escapeHtml(runtimeLabel)}</span></td>
           <td>${escapeHtml(providerLabel)}</td>
@@ -1501,7 +1501,7 @@ function renderInstanceWorkspace() {
   }
   if (title) {
     title.textContent = selected
-      ? `${selected.name} (${selected.id})`
+      ? `${selected.name} (instance_id: ${selected.id})`
       : editor.mode === "create" && state.instanceCreateOpen
         ? "Create New Instance"
         : "No instance selected";

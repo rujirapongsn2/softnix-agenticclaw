@@ -232,7 +232,7 @@ class AdminService:
     def get_mobile_pairing_data(self, instance_id: str) -> dict[str, Any]:
         """Generate temporary pairing data for mobile app QR scan."""
         # Find instance config to get public URL hint if available
-        config = self.get_instance_config(instance_id)
+        config_payload = self.get_instance_config(instance_id=instance_id)
         
         # In a real setup, this would include a short-lived token
         # For now, we provide the essentials for pairing
@@ -298,7 +298,11 @@ class AdminService:
 
     def register_mobile_client(self, instance_id: str, device_id: str) -> dict[str, Any]:
         """Add a mobile device ID to the instance's allow_from list."""
-        config = self.get_instance_config(instance_id)
+        # We need the actual config object to manipulate it easily
+        target = next((t for t in self._load_targets() if t.id == instance_id), None)
+        if not target:
+            raise ValueError(f"Instance '{instance_id}' not found")
+        config = self._load_target_config(target)
         
         # Ensure softnix_app channel is enabled
         if not config.channels.softnix_app.enabled:
@@ -307,7 +311,7 @@ class AdminService:
         # Add to allow_from if not already there
         if device_id not in config.channels.softnix_app.allow_from:
             config.channels.softnix_app.allow_from.append(device_id)
-            self.update_instance_config(instance_id, config)
+            self.update_instance_config(instance_id=instance_id, config_data=config.model_dump(by_alias=True))
             return {"status": "registered", "new": True}
             
         return {"status": "registered", "new": False}

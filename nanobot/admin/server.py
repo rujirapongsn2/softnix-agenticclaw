@@ -156,6 +156,15 @@ def resolve_admin_get(service: AdminService, raw_path: str) -> tuple[HTTPStatus,
             return HTTPStatus.BAD_REQUEST, {"error": str(exc)}
         return HTTPStatus.OK, payload
 
+    # Mobile API (Polling agent replies)
+    if path == "/admin/mobile/poll":
+        query = parse_qs(parsed.query)
+        instance_id = (query.get("instance_id") or [None])[0]
+        sender_id = (query.get("sender_id") or [None])[0]
+        if not instance_id or not sender_id:
+            return HTTPStatus.BAD_REQUEST, {"error": "Missing instance_id or sender_id"}
+        return HTTPStatus.OK, {"replies": service.get_mobile_replies(instance_id, sender_id)}
+
     return HTTPStatus.NOT_FOUND, {"error": "Not found"}
 
 
@@ -370,6 +379,28 @@ def resolve_admin_post(
     parsed = urlparse(raw_path)
     path = parsed.path.rstrip("/") or "/"
     try:
+        # Mobile API (No heavy auth check here for initial pairing/registration)
+        if path == "/admin/mobile/pair":
+            instance_id = payload.get("instance_id")
+            if not instance_id:
+                return HTTPStatus.BAD_REQUEST, {"error": "instance_id is required"}
+            return HTTPStatus.OK, service.get_mobile_pairing_data(instance_id)
+            
+        if path == "/admin/mobile/register":
+            instance_id = payload.get("instance_id")
+            device_id = payload.get("device_id")
+            if not instance_id or not device_id:
+                return HTTPStatus.BAD_REQUEST, {"error": "instance_id and device_id are required"}
+            return HTTPStatus.OK, service.register_mobile_client(instance_id, device_id)
+            
+        if path == "/admin/mobile/message":
+            instance_id = payload.get("instance_id")
+            sender_id = payload.get("sender_id")
+            text = payload.get("text")
+            if not all([instance_id, sender_id, text]):
+                return HTTPStatus.BAD_REQUEST, {"error": "instance_id, sender_id, and text are required"}
+            return HTTPStatus.OK, service.relay_mobile_message(instance_id, sender_id, text)
+
         if path == "/admin/auth/bootstrap":
             user = service.bootstrap_admin_user(
                 username=str(payload.get("username") or ""),
@@ -662,7 +693,7 @@ def create_admin_server(host: str, port: int, service: AdminService) -> Threadin
                 if context is None:
                     return
                 self._set_audit_context(context)
-                if not self._authorize_user_mutation(method="POST", path=self.path, payload=payload, context=context):
+                if not self.path.startswith("/admin/mobile/") and not self._authorize_user_mutation(method="POST", path=self.path, payload=payload, context=context):
                     return
                 status, response = resolve_admin_post(service, self.path, payload)
                 self._send_json(response, status=status)
