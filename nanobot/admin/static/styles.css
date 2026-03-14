@@ -262,12 +262,18 @@ button {
 }
 
 .security-layout {
-  grid-template-columns: 350px minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr) minmax(0, 2.5fr);
   align-items: start;
 }
 
+.security-layout .audit-log-panel {
+  margin-top: 0;
+}
+
 .audit-log-table-container {
-  max-height: 600px;
+  height: calc(100vh - 320px);
+  min-height: 500px;
+  max-height: 800px;
   overflow-y: auto;
   border: 1px solid var(--border-default);
   border-radius: var(--radius-control);
