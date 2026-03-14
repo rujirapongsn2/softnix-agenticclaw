@@ -1,0 +1,243 @@
+#!/bin/bash
+
+# Softnix AgenticClaw Unified Management CLI
+# Usage: ./softnixclaw {admin|update|install} [subcommand]
+
+set -e
+
+# --- Configuration ---
+ADMIN_HOME="$HOME/.softnix/admin"
+LOG_DIR="$ADMIN_HOME/logs"
+RUN_DIR="$ADMIN_HOME/run"
+LOG_FILE="$LOG_DIR/admin.log"
+PID_FILE="$RUN_DIR/admin.pid"
+SERVICE_NAME="softnix-admin"
+SYSTEMD_USER_DIR="$HOME/.config/systemd/user"
+
+# Ensure directories exist
+mkdir -p "$LOG_DIR" "$RUN_DIR"
+
+# Detect nanobot command
+if command -v nanobot &> /dev/null; then
+    PYTHON_CMD="nanobot"
+else
+    echo "Error: 'nanobot' command not found. Please install the package first."
+    exit 1
+fi
+
+# --- Helper Functions ---
+
+is_systemd_active() {
+    if command -v systemctl &> /dev/null; then
+        if systemctl --user list-unit-files | grep -q "$SERVICE_NAME.service"; then
+            return 0
+        fi
+    fi
+    return 1
+}
+
+get_pid() {
+    if [ -f "$PID_FILE" ]; then
+        cat "$PID_FILE"
+    else
+        echo ""
+    fi
+}
+
+start_admin() {
+    echo "Starting Softnix Admin..."
+    
+    if is_systemd_active; then
+        echo "Using Systemd service..."
+        systemctl --user start "$SERVICE_NAME"
+        echo "Service started. Check status with: systemctl --user status $SERVICE_NAME"
+    else
+        PID=$(get_pid)
+        if [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null; then
+            echo "Softnix Admin is already running (PID: $PID)"
+        else
+            nohup "$PYTHON_CMD" softnix-admin > "$LOG_FILE" 2>&1 &
+            NEW_PID=$!
+            echo "$NEW_PID" > "$PID_FILE"
+            echo "Softnix Admin started in background (PID: $NEW_PID)"
+            echo "Logs: $LOG_FILE"
+        fi
+    fi
+    echo "Dashboard URL: http://127.0.0.1:18880"
+}
+
+stop_admin() {
+    echo "Stopping Softnix Admin..."
+    
+    if is_systemd_active; then
+        echo "Using Systemd service..."
+        systemctl --user stop "$SERVICE_NAME"
+    else
+        PID=$(get_pid)
+        if [ -n "$PID" ]; then
+            if kill -0 "$PID" 2>/dev/null; then
+                kill "$PID"
+                # Wait for process to exit
+                TIMEOUT=10
+                while kill -0 "$PID" 2>/dev/null && [ $TIMEOUT -gt 0 ]; do
+                    sleep 1
+                    ((TIMEOUT--))
+                done
+                if kill -0 "$PID" 2>/dev/null; then
+                    echo "Force killing..."
+                    kill -9 "$PID"
+                fi
+                echo "Stopped."
+            else
+                echo "Process not running but PID file exists. Cleaning up."
+            fi
+            rm -f "$PID_FILE"
+        else
+            echo "Softnix Admin is not running (no PID file)."
+        fi
+    fi
+}
+
+restart_admin() {
+    echo "Restarting Softnix Admin..."
+    stop_admin
+    sleep 2
+    start_admin
+}
+
+status_admin() {
+    echo "--- Softnix Admin Status ---"
+    
+    if is_systemd_active; then
+        systemctl --user status "$SERVICE_NAME" --no-pager
+    else
+        PID=$(get_pid)
+        if [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null; then
+            echo "Status: RUNNING"
+            echo "PID: $PID"
+            echo "Uptime: $(ps -p "$PID" -o etime=)"
+        else
+            echo "Status: STOPPED"
+        fi
+    fi
+    
+    echo ""
+    echo "--- Recent Logs ---"
+    if [ -f "$LOG_FILE" ]; then
+        tail -n 10 "$LOG_FILE"
+    else
+        echo "No log file found at $LOG_FILE"
+    fi
+}
+
+install_service() {
+    echo "Installing Systemd Service for Softnix Admin..."
+    
+    if ! command -v systemctl &> /dev/null; then
+        echo "Error: 'systemctl' not found. This command is only for Linux systems with Systemd."
+        exit 1
+    fi
+    
+    # Create user systemd directory
+    mkdir -p "$SYSTEMD_USER_DIR"
+    
+    SERVICE_FILE="$SYSTEMD_USER_DIR/$SERVICE_NAME.service"
+    PROJECT_ROOT=$(pwd)
+    NANOBOT_PATH=$(which nanobot)
+
+    echo "Creating service file at: $SERVICE_FILE"
+    
+    cat > "$SERVICE_FILE" <<EOF
+[Unit]
+Description=Softnix AgenticClaw Admin Service
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=$PROJECT_ROOT
+ExecStart=$NANOBOT_PATH softnix-admin
+Restart=always
+RestartSec=10
+StandardOutput=append:$LOG_FILE
+StandardError=append:$LOG_FILE
+
+[Install]
+WantedBy=default.target
+EOF
+
+    echo "Reloading systemd daemon..."
+    systemctl --user daemon-reload
+    
+    echo "Enabling service to start on boot..."
+    systemctl --user enable "$SERVICE_NAME"
+    
+    echo "Enabling user lingering (to keep service running after logout)..."
+    if command -v loginctl &> /dev/null; then
+        loginctl enable-linger "$USER" || echo "Warning: Could not enable lingering. Service might stop when you logout."
+    else
+        echo "Warning: 'loginctl' not found. Service might stop when you logout."
+    fi
+    
+    echo "Starting service now..."
+    systemctl --user start "$SERVICE_NAME"
+    
+    echo "✅ Installation Complete! Softnix Admin is now running as a service."
+    echo "Manage it with: ./softnixclaw admin {start|stop|restart|status}"
+}
+
+update_project() {
+    echo "Updating Softnix AgenticClaw..."
+    
+    echo "1. Pulling latest changes from git..."
+    git pull
+    
+    echo "2. Updating dependencies..."
+    pip install -e .
+    
+    echo "3. Restarting service..."
+    restart_admin
+    
+    echo "✅ Update Complete!"
+}
+
+# --- Main Command Handler ---
+
+COMMAND=$1
+SUBCOMMAND=$2
+
+case "$COMMAND" in
+    admin)
+        case "$SUBCOMMAND" in
+            start)
+                start_admin
+                ;;
+            stop)
+                stop_admin
+                ;;
+            restart)
+                restart_admin
+                ;;
+            status)
+                status_admin
+                ;;
+            *)
+                echo "Usage: $0 admin {start|stop|restart|status}"
+                exit 1
+                ;;
+        esac
+        ;;
+    install)
+        install_service
+        ;;
+    update)
+        update_project
+        ;;
+    *)
+        echo "Softnix AgenticClaw Management Tool"
+        echo "Usage:"
+        echo "  $0 admin {start|stop|restart|status}  - Manage the Admin Service"
+        echo "  $0 install                            - Install as Systemd Service (Linux Auto-Start)"
+        echo "  $0 update                             - Update code and restart"
+        exit 1
+        ;;
+esac
