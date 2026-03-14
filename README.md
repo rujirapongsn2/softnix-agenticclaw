@@ -62,13 +62,34 @@ nanobot softnix-init \
   --repo-root $(pwd)
 ```
 
-### 3. Launch the Admin UI
-Start the management server (default port: `18880`):
+### 3. Service Management CLI (`softnixclaw`)
 
+For production and ease of use, we provide a unified management script named `softnixclaw` at the project root.
+
+#### **A. Installation (Linux Auto-Start)**
+If you are on Linux, you can install AgenticClaw as a **Systemd User Service** so it starts automatically on boot and persists after logout:
 ```bash
-nanobot softnix-admin
+chmod +x softnixclaw
+./softnixclaw install
+```
+*This command enables auto-start and lingering for the current user.*
+
+#### **B. Admin Service Control**
+Manage the Admin UI service (whether running via Systemd or background process):
+```bash
+./softnixclaw admin start    # Start the admin server
+./softnixclaw admin stop     # Stop the admin server
+./softnixclaw admin restart  # Restart the admin server
+./softnixclaw admin status   # Check status and recent logs
 ```
 Access the dashboard at [http://127.0.0.1:18880](http://127.0.0.1:18880)
+
+#### **C. Project Update**
+Keep your installation up-to-date with a single command:
+```bash
+./softnixclaw update
+```
+*This performs a `git pull`, updates dependencies, and restarts the services.*
 
 ---
 
