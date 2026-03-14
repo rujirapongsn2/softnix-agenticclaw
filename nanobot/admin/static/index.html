@@ -216,46 +216,50 @@
       </section>
 
       <section id="security-view" class="view">
-        <div class="content-grid">
-          <section class="panel">
-            <div class="panel-header">
-              <div>
-                <p class="eyebrow">Controls</p>
-                <h3>Workspace Restriction</h3>
+        <div class="content-grid security-layout">
+          <aside class="stack">
+            <section class="panel">
+              <div class="panel-header">
+                <div>
+                  <p class="eyebrow">Controls</p>
+                  <h3>Workspace Restriction</h3>
+                </div>
               </div>
-            </div>
-            <div id="security-controls" class="stack"></div>
-          </section>
-        </div>
+              <div id="security-controls" class="stack"></div>
+            </section>
+          </aside>
 
-        <section class="panel audit-log-panel">
-          <div class="panel-header">
-            <div>
-              <p class="eyebrow">ISO 27001 A.8.15</p>
-              <h3>Security Audit Log</h3>
-            </div>
-            <button class="btn" id="audit-log-refresh-btn" onclick="refreshAuditLog()">Refresh</button>
-          </div>
-          <div class="audit-log-toolbar">
-            <select id="audit-log-category" onchange="onAuditLogFilterChange()">
-              <option value="all">All Categories</option>
-              <option value="authentication">Authentication</option>
-              <option value="authorization">Authorization</option>
-              <option value="user_management">User Management</option>
-              <option value="configuration">Configuration</option>
-              <option value="instance_management">Instance Management</option>
-            </select>
-            <select id="audit-log-outcome" onchange="onAuditLogFilterChange()">
-              <option value="all">All Outcomes</option>
-              <option value="success">Success</option>
-              <option value="failure">Failure</option>
-              <option value="denied">Denied</option>
-            </select>
-            <input type="search" id="audit-log-search" placeholder="Search event, actor, resource…" oninput="onAuditLogSearchInput()" />
-          </div>
-          <div id="audit-log-table"></div>
-          <div id="audit-log-footer"></div>
-        </section>
+          <main class="stack">
+            <section class="panel audit-log-panel">
+              <div class="panel-header">
+                <div>
+                  <p class="eyebrow">ISO 27001 A.8.15</p>
+                  <h3>Security Audit Log</h3>
+                </div>
+                <button class="btn" id="audit-log-refresh-btn" onclick="refreshAuditLog()">Refresh</button>
+              </div>
+              <div class="audit-log-toolbar">
+                <select id="audit-log-category" onchange="onAuditLogFilterChange()">
+                  <option value="all">All Categories</option>
+                  <option value="authentication">Authentication</option>
+                  <option value="authorization">Authorization</option>
+                  <option value="user_management">User Management</option>
+                  <option value="configuration">Configuration</option>
+                  <option value="instance_management">Instance Management</option>
+                </select>
+                <select id="audit-log-outcome" onchange="onAuditLogFilterChange()">
+                  <option value="all">All Outcomes</option>
+                  <option value="success">Success</option>
+                  <option value="failure">Failure</option>
+                  <option value="denied">Denied</option>
+                </select>
+                <input type="search" id="audit-log-search" placeholder="Search event, actor, resource…" oninput="onAuditLogSearchInput()" />
+              </div>
+              <div id="audit-log-table" class="audit-log-table-container"></div>
+              <div id="audit-log-footer"></div>
+            </section>
+          </main>
+        </div>
       </section>
 
       <section id="users-view" class="view">

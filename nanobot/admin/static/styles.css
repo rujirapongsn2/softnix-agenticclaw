@@ -261,6 +261,25 @@ button {
   display: none !important;
 }
 
+.security-layout {
+  grid-template-columns: 350px minmax(0, 1fr);
+  align-items: start;
+}
+
+.audit-log-table-container {
+  max-height: 600px;
+  overflow-y: auto;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-control);
+  background: white;
+}
+
+@media (max-width: 1180px) {
+  .security-layout {
+    grid-template-columns: 1fr;
+  }
+}
+
 .summary-grid,
 .instances-grid,
 .content-grid {
