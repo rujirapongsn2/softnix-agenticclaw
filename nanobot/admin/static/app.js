@@ -4433,6 +4433,7 @@ function renderChannels() {
 
 function renderSecurityTable() {
   const target = document.getElementById("security-table");
+  if (!target) return;
   target.innerHTML = state.security.findings
     .map(
       (finding) => `
