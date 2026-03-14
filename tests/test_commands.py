@@ -128,3 +128,17 @@ def test_litellm_provider_canonicalizes_github_copilot_hyphen_prefix():
 def test_openai_codex_strip_prefix_supports_hyphen_and_underscore():
     assert _strip_model_prefix("openai-codex/gpt-5.1-codex") == "gpt-5.1-codex"
     assert _strip_model_prefix("openai_codex/gpt-5.1-codex") == "gpt-5.1-codex"
+
+
+def test_softnix_admin_command_is_registered():
+    result = runner.invoke(app, ["softnix-admin", "--help"])
+
+    assert result.exit_code == 0
+    assert "Start the Softnix admin API." in result.stdout
+
+
+def test_softnix_init_command_is_registered():
+    result = runner.invoke(app, ["softnix-init", "--help"])
+
+    assert result.exit_code == 0
+    assert "Bootstrap the Softnix multi-instance filesystem layout." in result.stdout

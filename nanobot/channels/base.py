@@ -71,6 +71,28 @@ class BaseChannel(ABC):
             p in allow_list for p in sender_str.split("|") if p
         )
 
+    def _record_access_request(
+        self,
+        *,
+        sender_id: str,
+        chat_id: str,
+        content: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        store = getattr(self, "_access_request_store", None)
+        if store is None:
+            return
+        try:
+            store.record(
+                channel=self.name,
+                sender_id=sender_id,
+                chat_id=chat_id,
+                content=content,
+                metadata=metadata,
+            )
+        except Exception:
+            logger.exception("Failed to persist access request for channel {}", self.name)
+
     async def _handle_message(
         self,
         sender_id: str,
@@ -94,6 +116,12 @@ class BaseChannel(ABC):
             session_key: Optional session key override (e.g. thread-scoped sessions).
         """
         if not self.is_allowed(sender_id):
+            self._record_access_request(
+                sender_id=str(sender_id),
+                chat_id=str(chat_id),
+                content=content,
+                metadata=metadata,
+            )
             logger.warning(
                 "Access denied for sender {} on channel {}. "
                 "Add them to allowFrom list in config to grant access.",

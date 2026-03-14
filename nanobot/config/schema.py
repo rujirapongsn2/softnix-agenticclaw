@@ -251,6 +251,9 @@ class ProvidersConfig(Base):
     """Configuration for LLM providers."""
 
     custom: ProviderConfig = Field(default_factory=ProviderConfig)  # Any OpenAI-compatible endpoint
+    softnix_gen_ai: ProviderConfig = Field(  # Softnix Gen AI (OpenAI-compatible)
+        default_factory=lambda: ProviderConfig(api_base="https://genai.softnix.ai/external/openai")
+    )
     anthropic: ProviderConfig = Field(default_factory=ProviderConfig)
     openai: ProviderConfig = Field(default_factory=ProviderConfig)
     openrouter: ProviderConfig = Field(default_factory=ProviderConfig)
@@ -319,12 +322,33 @@ class MCPServerConfig(Base):
     tool_timeout: int = 30  # seconds before a tool call is cancelled
 
 
+class SandboxRuntimeConfig(Base):
+    """Docker sandbox execution settings."""
+
+    profile: Literal["strict", "balanced", "fast"] = "balanced"
+    image: str = "softnixclaw:latest"
+    execution_strategy: Literal["persistent", "tool_ephemeral"] = "persistent"
+    cpu_limit: str = ""
+    memory_limit: str = ""
+    pids_limit: int = 256
+    tmpfs_size_mb: int = 128
+    network_policy: Literal["default", "none"] = "default"
+    timeout_seconds: int = 30
+
+
+class RuntimeConfig(Base):
+    """Runtime selection for one instance."""
+
+    mode: Literal["host", "sandbox"] = "host"
+    sandbox: SandboxRuntimeConfig = Field(default_factory=SandboxRuntimeConfig)
+
+
 class ToolsConfig(Base):
     """Tools configuration."""
 
     web: WebToolsConfig = Field(default_factory=WebToolsConfig)
     exec: ExecToolConfig = Field(default_factory=ExecToolConfig)
-    restrict_to_workspace: bool = False  # If true, restrict all tool access to workspace directory
+    restrict_to_workspace: bool = True  # If true, restrict all tool access to workspace directory
     mcp_servers: dict[str, MCPServerConfig] = Field(default_factory=dict)
 
 
@@ -336,6 +360,7 @@ class Config(BaseSettings):
     providers: ProvidersConfig = Field(default_factory=ProvidersConfig)
     gateway: GatewayConfig = Field(default_factory=GatewayConfig)
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
+    runtime: RuntimeConfig = Field(default_factory=RuntimeConfig)
 
     @property
     def workspace_path(self) -> Path:

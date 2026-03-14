@@ -1,5 +1,6 @@
 """Tool registry for dynamic tool management."""
 
+from collections.abc import Callable
 from typing import Any
 
 from nanobot.agent.tools.base import Tool
@@ -12,8 +13,14 @@ class ToolRegistry:
     Allows dynamic registration and execution of tools.
     """
 
-    def __init__(self):
+    def __init__(
+        self,
+        on_execute: Callable[[str, dict[str, Any], str], None] | None = None,
+        on_start: Callable[[str, dict[str, Any]], None] | None = None,
+    ):
         self._tools: dict[str, Tool] = {}
+        self._on_execute = on_execute
+        self._on_start = on_start
 
     def register(self, tool: Tool) -> None:
         """Register a tool."""
@@ -46,13 +53,35 @@ class ToolRegistry:
         try:
             errors = tool.validate_params(params)
             if errors:
-                return f"Error: Invalid parameters for tool '{name}': " + "; ".join(errors) + _HINT
+                result = f"Error: Invalid parameters for tool '{name}': " + "; ".join(errors) + _HINT
+                self._emit(name, params, result)
+                return result
+            self._emit_start(name, params)
             result = await tool.execute(**params)
+            self._emit(name, params, result)
             if isinstance(result, str) and result.startswith("Error"):
                 return result + _HINT
             return result
         except Exception as e:
-            return f"Error executing {name}: {str(e)}" + _HINT
+            result = f"Error executing {name}: {str(e)}" + _HINT
+            self._emit(name, params, result)
+            return result
+
+    def _emit(self, name: str, params: dict[str, Any], result: str) -> None:
+        if not self._on_execute:
+            return
+        try:
+            self._on_execute(name, params, result)
+        except Exception:
+            return
+
+    def _emit_start(self, name: str, params: dict[str, Any]) -> None:
+        if not self._on_start:
+            return
+        try:
+            self._on_start(name, params)
+        except Exception:
+            return
 
     @property
     def tool_names(self) -> list[str]:

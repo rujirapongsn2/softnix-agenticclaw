@@ -36,7 +36,7 @@ class Session:
         msg = {
             "role": role,
             "content": content,
-            "timestamp": datetime.now().isoformat(),
+            "timestamp": datetime.now().astimezone().isoformat(),
             **kwargs
         }
         self.messages.append(msg)

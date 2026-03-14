@@ -25,6 +25,8 @@ from nanobot.agent.tools.web import WebFetchTool, WebSearchTool
 from nanobot.bus.events import InboundMessage, OutboundMessage
 from nanobot.bus.queue import MessageBus
 from nanobot.providers.base import LLMProvider
+from nanobot.runtime.audit import RuntimeAuditLogger
+from nanobot.runtime.ephemeral_runner import DockerEphemeralTaskRunner
 from nanobot.session.manager import Session, SessionManager
 
 if TYPE_CHECKING:
@@ -45,6 +47,13 @@ class AgentLoop:
     """
 
     _TOOL_RESULT_MAX_CHARS = 500
+    _GENERIC_ERROR_PATTERNS = (
+        "sorry, i encountered an error",
+        "error calling the ai model",
+        "something went wrong",
+        "internal server error",
+        "request failed",
+    )
 
     def __init__(
         self,
@@ -65,6 +74,9 @@ class AgentLoop:
         session_manager: SessionManager | None = None,
         mcp_servers: dict | None = None,
         channels_config: ChannelsConfig | None = None,
+        tool_task_runner: DockerEphemeralTaskRunner | None = None,
+        tool_execution_strategy: str = "persistent",
+        enable_interactive_tools: bool = True,
     ):
         from nanobot.config.schema import ExecToolConfig
         self.bus = bus
@@ -82,10 +94,17 @@ class AgentLoop:
         self.exec_config = exec_config or ExecToolConfig()
         self.cron_service = cron_service
         self.restrict_to_workspace = restrict_to_workspace
+        self.tool_task_runner = tool_task_runner
+        self.tool_execution_strategy = tool_execution_strategy
+        self.enable_interactive_tools = enable_interactive_tools
 
         self.context = ContextBuilder(workspace)
         self.sessions = session_manager or SessionManager(workspace)
-        self.tools = ToolRegistry()
+        self._runtime_audit = RuntimeAuditLogger(workspace)
+        self.tools = ToolRegistry(
+            on_execute=self._audit_tool_execution,
+            on_start=self._audit_tool_start,
+        )
         self.subagents = SubagentManager(
             provider=provider,
             workspace=workspace,
@@ -98,6 +117,7 @@ class AgentLoop:
             web_proxy=web_proxy,
             exec_config=self.exec_config,
             restrict_to_workspace=restrict_to_workspace,
+            audit_logger=self._runtime_audit,
         )
 
         self._running = False
@@ -112,6 +132,12 @@ class AgentLoop:
         self._processing_lock = asyncio.Lock()
         self._register_default_tools()
 
+    def _audit_tool_execution(self, tool_name: str, params: dict[str, Any], result: str) -> None:
+        self._runtime_audit.log_tool_call(tool_name, params, result)
+
+    def _audit_tool_start(self, tool_name: str, params: dict[str, Any]) -> None:
+        self._runtime_audit.log_tool_start(tool_name, params)
+
     def _register_default_tools(self) -> None:
         """Register the default set of tools."""
         allowed_dir = self.workspace if self.restrict_to_workspace else None
@@ -125,9 +151,10 @@ class AgentLoop:
         ))
         self.tools.register(WebSearchTool(api_key=self.brave_api_key, proxy=self.web_proxy))
         self.tools.register(WebFetchTool(proxy=self.web_proxy))
-        self.tools.register(MessageTool(send_callback=self.bus.publish_outbound))
-        self.tools.register(SpawnTool(manager=self.subagents))
-        if self.cron_service:
+        if self.enable_interactive_tools:
+            self.tools.register(MessageTool(send_callback=self.bus.publish_outbound))
+            self.tools.register(SpawnTool(manager=self.subagents))
+        if self.cron_service and self.enable_interactive_tools:
             self.tools.register(CronTool(self.cron_service))
 
     async def _connect_mcp(self) -> None:
@@ -176,6 +203,53 @@ class AgentLoop:
                 return tc.name
             return f'{tc.name}("{val[:40]}…")' if len(val) > 40 else f'{tc.name}("{val}")'
         return ", ".join(_fmt(tc) for tc in tool_calls)
+
+    @classmethod
+    def _is_generic_error_text(cls, text: str | None) -> bool:
+        if not text:
+            return True
+        lowered = text.strip().lower()
+        return any(pattern in lowered for pattern in cls._GENERIC_ERROR_PATTERNS)
+
+    @classmethod
+    def _extract_error_reason(cls, raw_error: str | None = None, exc: Exception | None = None) -> str:
+        details = " ".join(
+            part for part in (
+                (raw_error or "").strip(),
+                str(exc).strip() if exc else "",
+                exc.__class__.__name__ if exc else "",
+            ) if part
+        ).lower()
+
+        if any(token in details for token in ("timeout", "timed out", "deadline", "read timeout")):
+            return "การเชื่อมต่อหมดเวลา (timeout)"
+        if any(token in details for token in ("401", "403", "unauthorized", "forbidden", "invalid api key", "authentication", "auth")):
+            return "การยืนยันตัวตนกับผู้ให้บริการไม่สำเร็จ (API key/สิทธิ์ไม่ถูกต้อง)"
+        if any(token in details for token in ("429", "rate limit", "too many requests", "quota")):
+            return "เกินขีดจำกัดการเรียกใช้งาน (rate limit)"
+        if any(token in details for token in ("404", "not found", "no results", "no data")):
+            return "ไม่พบข้อมูลที่ตรงกับคำขอ"
+        if any(token in details for token in ("connection", "network", "dns", "temporar", "unreachable", "ssl")):
+            return "ไม่สามารถเชื่อมต่อเครือข่ายหรือบริการปลายทางได้"
+        if any(token in details for token in ("tool", "mcp", "subprocess", "command", "exit code", "traceback")):
+            return "เครื่องมือที่ถูกเรียกใช้งานทำงานไม่สำเร็จ"
+        if raw_error:
+            return "ระบบภายนอกส่งข้อผิดพลาดกลับมา"
+        return "เกิดข้อผิดพลาดภายในระบบ"
+
+    @classmethod
+    def _format_user_error_message(
+        cls,
+        *,
+        action: str,
+        raw_error: str | None = None,
+        exc: Exception | None = None,
+    ) -> str:
+        reason = cls._extract_error_reason(raw_error=raw_error, exc=exc)
+        return (
+            f"ไม่สามารถ{action}ได้ เนื่องจาก{reason} "
+            "กรุณาลองใหม่อีกครั้ง หรือตรวจสอบการตั้งค่าที่เกี่ยวข้อง"
+        )
 
     async def _run_agent_loop(
         self,
@@ -247,7 +321,10 @@ class AgentLoop:
                 # poison the context and cause permanent 400 loops (#1303).
                 if response.finish_reason == "error":
                     logger.error("LLM returned error: {}", (clean or "")[:200])
-                    final_content = clean or "Sorry, I encountered an error calling the AI model."
+                    final_content = self._format_user_error_message(
+                        action="ติดต่อโมเดล AI",
+                        raw_error=clean,
+                    )
                     break
                 messages = self.context.add_assistant_message(
                     messages, clean, reasoning_content=response.reasoning_content,
@@ -315,11 +392,22 @@ class AgentLoop:
             except asyncio.CancelledError:
                 logger.info("Task cancelled for session {}", msg.session_key)
                 raise
-            except Exception:
+            except Exception as exc:
                 logger.exception("Error processing message for session {}", msg.session_key)
+                error_content = self._format_user_error_message(
+                    action="ประมวลผลคำขอ",
+                    exc=exc,
+                )
+                self._runtime_audit.log_message_event(
+                    "completed",
+                    channel=msg.channel,
+                    session_key=msg.session_key,
+                    content=error_content,
+                    status="error",
+                )
                 await self.bus.publish_outbound(OutboundMessage(
                     channel=msg.channel, chat_id=msg.chat_id,
-                    content="Sorry, I encountered an error.",
+                    content=error_content,
                 ))
 
     async def close_mcp(self) -> None:
@@ -349,6 +437,12 @@ class AgentLoop:
                                 else ("cli", msg.chat_id))
             logger.info("Processing system message from {}", msg.sender_id)
             key = f"{channel}:{chat_id}"
+            self._runtime_audit.log_message_event(
+                "received",
+                channel=channel,
+                session_key=key,
+                content=msg.content,
+            )
             session = self.sessions.get_or_create(key)
             self._set_tool_context(channel, chat_id, msg.metadata.get("message_id"))
             history = session.get_history(max_messages=self.memory_window)
@@ -359,6 +453,12 @@ class AgentLoop:
             final_content, _, all_msgs = await self._run_agent_loop(messages)
             self._save_turn(session, all_msgs, 1 + len(history))
             self.sessions.save(session)
+            self._runtime_audit.log_message_event(
+                "completed",
+                channel=channel,
+                session_key=key,
+                content=final_content or "Background task completed.",
+            )
             return OutboundMessage(channel=channel, chat_id=chat_id,
                                   content=final_content or "Background task completed.")
 
@@ -366,6 +466,12 @@ class AgentLoop:
         logger.info("Processing message from {}:{}: {}", msg.channel, msg.sender_id, preview)
 
         key = session_key or msg.session_key
+        self._runtime_audit.log_message_event(
+            "received",
+            channel=msg.channel,
+            session_key=key,
+            content=msg.content,
+        )
         session = self.sessions.get_or_create(key)
 
         # Slash commands
@@ -441,9 +547,18 @@ class AgentLoop:
                 channel=msg.channel, chat_id=msg.chat_id, content=content, metadata=meta,
             ))
 
-        final_content, _, all_msgs = await self._run_agent_loop(
-            initial_messages, on_progress=on_progress or _bus_progress,
-        )
+        if self._should_delegate_tool_tasks():
+            final_content, all_msgs = await self._process_with_tool_strategy(
+                initial_messages=initial_messages,
+                session_key=key,
+                channel=msg.channel,
+                chat_id=msg.chat_id,
+                on_progress=on_progress or _bus_progress,
+            )
+        else:
+            final_content, _, all_msgs = await self._run_agent_loop(
+                initial_messages, on_progress=on_progress or _bus_progress,
+            )
 
         if final_content is None:
             final_content = "I've completed processing but have no response to give."
@@ -452,14 +567,84 @@ class AgentLoop:
         self.sessions.save(session)
 
         if (mt := self.tools.get("message")) and isinstance(mt, MessageTool) and mt._sent_in_turn:
+            self._runtime_audit.log_message_event(
+                "completed",
+                channel=msg.channel,
+                session_key=key,
+                content="Response sent via message tool.",
+            )
             return None
 
         preview = final_content[:120] + "..." if len(final_content) > 120 else final_content
         logger.info("Response to {}:{}: {}", msg.channel, msg.sender_id, preview)
+        self._runtime_audit.log_message_event(
+            "completed",
+            channel=msg.channel,
+            session_key=key,
+            content=final_content,
+        )
         return OutboundMessage(
             channel=msg.channel, chat_id=msg.chat_id, content=final_content,
             metadata=msg.metadata or {},
         )
+
+    def _should_delegate_tool_tasks(self) -> bool:
+        return self.tool_execution_strategy == "tool_ephemeral" and self.tool_task_runner is not None
+
+    async def _process_with_tool_strategy(
+        self,
+        *,
+        initial_messages: list[dict[str, Any]],
+        session_key: str,
+        channel: str,
+        chat_id: str,
+        on_progress: Callable[[str], Awaitable[None]] | None = None,
+    ) -> tuple[str | None, list[dict]]:
+        response = await self.provider.chat(
+            messages=initial_messages,
+            tools=self.tools.get_definitions(),
+            model=self.model,
+            temperature=self.temperature,
+            max_tokens=self.max_tokens,
+            reasoning_effort=self.reasoning_effort,
+        )
+
+        if response.has_tool_calls:
+            if on_progress:
+                await on_progress(self._tool_hint(response.tool_calls), tool_hint=True)
+                await on_progress("Launching ephemeral sandbox for tool-using task...")
+            final_content = await self.tool_task_runner.run_messages(
+                initial_messages,
+                session_key=session_key,
+                channel=channel,
+                chat_id=chat_id,
+            )
+            messages = self.context.add_assistant_message(initial_messages, final_content)
+            return final_content, messages
+
+        clean = self._strip_think(response.content)
+        if response.finish_reason == "error":
+            logger.error("LLM returned error: {}", (clean or "")[:200])
+            final_content = self._format_user_error_message(
+                action="ติดต่อโมเดล AI",
+                raw_error=clean,
+            )
+            messages = self.context.add_assistant_message(initial_messages, final_content)
+            return final_content, messages
+
+        messages = self.context.add_assistant_message(
+            initial_messages,
+            clean,
+            reasoning_content=response.reasoning_content,
+            thinking_blocks=response.thinking_blocks,
+        )
+        return clean, messages
+
+    async def run_messages(self, initial_messages: list[dict[str, Any]]) -> str:
+        """Run a prepared message list directly and return final content."""
+        await self._connect_mcp()
+        final_content, _, _ = await self._run_agent_loop(initial_messages)
+        return final_content or ""
 
     def _save_turn(self, session: Session, messages: list[dict], skip: int) -> None:
         """Save new-turn messages into session, truncating large tool results."""

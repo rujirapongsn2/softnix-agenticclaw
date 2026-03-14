@@ -1,5 +1,7 @@
 FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim
 
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+
 # Install Node.js 20 for the WhatsApp bridge
 RUN apt-get update && \
     apt-get install -y --no-install-recommends curl ca-certificates gnupg git && \
@@ -23,7 +25,10 @@ RUN mkdir -p nanobot bridge && touch nanobot/__init__.py && \
 # Copy the full source and install
 COPY nanobot/ nanobot/
 COPY bridge/ bridge/
-RUN uv pip install --system --no-cache .
+RUN uv pip install --system --no-cache . && \
+    uv pip install --system --no-cache playwright && \
+    python -m playwright install --with-deps chromium && \
+    chmod -R 755 /ms-playwright
 
 # Build the WhatsApp bridge
 WORKDIR /app/bridge

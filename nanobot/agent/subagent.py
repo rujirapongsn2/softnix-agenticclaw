@@ -16,6 +16,7 @@ from nanobot.bus.events import InboundMessage
 from nanobot.bus.queue import MessageBus
 from nanobot.config.schema import ExecToolConfig
 from nanobot.providers.base import LLMProvider
+from nanobot.runtime.audit import RuntimeAuditLogger
 
 
 class SubagentManager:
@@ -34,6 +35,7 @@ class SubagentManager:
         web_proxy: str | None = None,
         exec_config: "ExecToolConfig | None" = None,
         restrict_to_workspace: bool = False,
+        audit_logger: RuntimeAuditLogger | None = None,
     ):
         from nanobot.config.schema import ExecToolConfig
         self.provider = provider
@@ -47,6 +49,7 @@ class SubagentManager:
         self.web_proxy = web_proxy
         self.exec_config = exec_config or ExecToolConfig()
         self.restrict_to_workspace = restrict_to_workspace
+        self.audit_logger = audit_logger or RuntimeAuditLogger(workspace)
         self._running_tasks: dict[str, asyncio.Task[None]] = {}
         self._session_tasks: dict[str, set[str]] = {}  # session_key -> {task_id, ...}
 
@@ -94,7 +97,7 @@ class SubagentManager:
 
         try:
             # Build subagent tools (no message tool, no spawn tool)
-            tools = ToolRegistry()
+            tools = ToolRegistry(on_execute=self.audit_logger.log_tool_call)
             allowed_dir = self.workspace if self.restrict_to_workspace else None
             tools.register(ReadFileTool(workspace=self.workspace, allowed_dir=allowed_dir))
             tools.register(WriteFileTool(workspace=self.workspace, allowed_dir=allowed_dir))
@@ -163,6 +166,8 @@ class SubagentManager:
                             "content": result,
                         })
                 else:
+                    if response.finish_reason == "error":
+                        raise RuntimeError(response.content or "Provider returned an error response")
                     final_result = response.content
                     break
 

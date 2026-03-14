@@ -79,6 +79,17 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
         litellm_prefix="",
         is_direct=True,
     ),
+    # === Softnix Gen AI (direct OpenAI-compatible endpoint) ================
+    ProviderSpec(
+        name="softnix_gen_ai",
+        keywords=("softnix", "softnix_gen_ai"),
+        env_key="",
+        display_name="Softnix Gen AI",
+        litellm_prefix="",
+        is_direct=True,
+        detect_by_base_keyword="genai.softnix.ai",
+        default_api_base="https://genai.softnix.ai/external/openai",
+    ),
     # === Gateways (detected by api_key / api_base, not model name) =========
     # Gateways can route any model, so they win in fallback.
     # OpenRouter: global gateway, keys start with "sk-or-"

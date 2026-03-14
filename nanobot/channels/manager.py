@@ -9,6 +9,7 @@ from loguru import logger
 
 from nanobot.bus.events import OutboundMessage
 from nanobot.bus.queue import MessageBus
+from nanobot.channels.access_requests import AccessRequestStore
 from nanobot.channels.base import BaseChannel
 from nanobot.config.schema import Config
 
@@ -27,6 +28,7 @@ class ChannelManager:
         self.config = config
         self.bus = bus
         self.channels: dict[str, BaseChannel] = {}
+        self._access_request_store = AccessRequestStore(self.config.workspace_path)
         self._dispatch_task: asyncio.Task | None = None
 
         self._init_channels()
@@ -43,6 +45,7 @@ class ChannelManager:
                     self.bus,
                     groq_api_key=self.config.providers.groq.api_key,
                 )
+                self.channels["telegram"]._access_request_store = self._access_request_store
                 logger.info("Telegram channel enabled")
             except ImportError as e:
                 logger.warning("Telegram channel not available: {}", e)
@@ -54,6 +57,7 @@ class ChannelManager:
                 self.channels["whatsapp"] = WhatsAppChannel(
                     self.config.channels.whatsapp, self.bus
                 )
+                self.channels["whatsapp"]._access_request_store = self._access_request_store
                 logger.info("WhatsApp channel enabled")
             except ImportError as e:
                 logger.warning("WhatsApp channel not available: {}", e)
@@ -65,6 +69,7 @@ class ChannelManager:
                 self.channels["discord"] = DiscordChannel(
                     self.config.channels.discord, self.bus
                 )
+                self.channels["discord"]._access_request_store = self._access_request_store
                 logger.info("Discord channel enabled")
             except ImportError as e:
                 logger.warning("Discord channel not available: {}", e)
@@ -76,6 +81,7 @@ class ChannelManager:
                 self.channels["feishu"] = FeishuChannel(
                     self.config.channels.feishu, self.bus
                 )
+                self.channels["feishu"]._access_request_store = self._access_request_store
                 logger.info("Feishu channel enabled")
             except ImportError as e:
                 logger.warning("Feishu channel not available: {}", e)
@@ -88,6 +94,7 @@ class ChannelManager:
                 self.channels["mochat"] = MochatChannel(
                     self.config.channels.mochat, self.bus
                 )
+                self.channels["mochat"]._access_request_store = self._access_request_store
                 logger.info("Mochat channel enabled")
             except ImportError as e:
                 logger.warning("Mochat channel not available: {}", e)
@@ -99,6 +106,7 @@ class ChannelManager:
                 self.channels["dingtalk"] = DingTalkChannel(
                     self.config.channels.dingtalk, self.bus
                 )
+                self.channels["dingtalk"]._access_request_store = self._access_request_store
                 logger.info("DingTalk channel enabled")
             except ImportError as e:
                 logger.warning("DingTalk channel not available: {}", e)
@@ -110,6 +118,7 @@ class ChannelManager:
                 self.channels["email"] = EmailChannel(
                     self.config.channels.email, self.bus
                 )
+                self.channels["email"]._access_request_store = self._access_request_store
                 logger.info("Email channel enabled")
             except ImportError as e:
                 logger.warning("Email channel not available: {}", e)
@@ -121,6 +130,7 @@ class ChannelManager:
                 self.channels["slack"] = SlackChannel(
                     self.config.channels.slack, self.bus
                 )
+                self.channels["slack"]._access_request_store = self._access_request_store
                 logger.info("Slack channel enabled")
             except ImportError as e:
                 logger.warning("Slack channel not available: {}", e)
@@ -133,6 +143,7 @@ class ChannelManager:
                     self.config.channels.qq,
                     self.bus,
                 )
+                self.channels["qq"]._access_request_store = self._access_request_store
                 logger.info("QQ channel enabled")
             except ImportError as e:
                 logger.warning("QQ channel not available: {}", e)
@@ -145,6 +156,7 @@ class ChannelManager:
                     self.config.channels.matrix,
                     self.bus,
                 )
+                self.channels["matrix"]._access_request_store = self._access_request_store
                 logger.info("Matrix channel enabled")
             except ImportError as e:
                 logger.warning("Matrix channel not available: {}", e)
@@ -154,9 +166,9 @@ class ChannelManager:
     def _validate_allow_from(self) -> None:
         for name, ch in self.channels.items():
             if getattr(ch.config, "allow_from", None) == []:
-                raise SystemExit(
-                    f'Error: "{name}" has empty allowFrom (denies all). '
-                    f'Set ["*"] to allow everyone, or add specific user IDs.'
+                logger.warning(
+                    '"{}" has empty allowFrom. Channel will stay online, deny all senders, and record pending access requests until someone is approved.',
+                    name,
                 )
 
     async def _start_channel(self, name: str, channel: BaseChannel) -> None:
@@ -247,6 +259,33 @@ class ChannelManager:
                 "running": channel.is_running
             }
             for name, channel in self.channels.items()
+        }
+
+    def apply_runtime_channel_allowlists(self, config: Config) -> dict[str, Any]:
+        """Apply updated allow_from lists to running channel objects."""
+        updates: list[dict[str, Any]] = []
+        for name, channel in self.channels.items():
+            latest_channel_cfg = getattr(config.channels, name, None)
+            if latest_channel_cfg is None:
+                continue
+            if not hasattr(channel.config, "allow_from"):
+                continue
+            current_allow = list(getattr(channel.config, "allow_from", []) or [])
+            latest_allow = list(getattr(latest_channel_cfg, "allow_from", []) or [])
+            if current_allow == latest_allow:
+                continue
+            channel.config.allow_from = latest_allow
+            updates.append(
+                {
+                    "channel": name,
+                    "before_count": len(current_allow),
+                    "after_count": len(latest_allow),
+                }
+            )
+        self.config.channels = config.channels
+        return {
+            "updated": updates,
+            "count": len(updates),
         }
 
     @property

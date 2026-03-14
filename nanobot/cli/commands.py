@@ -1,6 +1,7 @@
 """CLI commands for nanobot."""
 
 import asyncio
+import json
 import os
 import select
 import signal
@@ -222,12 +223,17 @@ def _make_provider(config: Config):
     if provider_name == "openai_codex" or model.startswith("openai-codex/"):
         return OpenAICodexProvider(default_model=model)
 
-    # Custom: direct OpenAI-compatible endpoint, bypasses LiteLLM
+    # Custom/Softnix Gen AI: direct OpenAI-compatible endpoint, bypasses LiteLLM
     from nanobot.providers.custom_provider import CustomProvider
-    if provider_name == "custom":
+    if provider_name in {"custom", "softnix_gen_ai"}:
+        default_api_base = (
+            "https://genai.softnix.ai/external/openai"
+            if provider_name == "softnix_gen_ai"
+            else "http://localhost:8000/v1"
+        )
         return CustomProvider(
             api_key=p.api_key if p else "no-key",
-            api_base=config.get_api_base(model) or "http://localhost:8000/v1",
+            api_base=config.get_api_base(model) or default_api_base,
             default_model=model,
         )
 
@@ -268,6 +274,7 @@ def gateway(
     from nanobot.cron.service import CronService
     from nanobot.cron.types import CronJob
     from nanobot.heartbeat.service import HeartbeatService
+    from nanobot.runtime.ephemeral_runner import DockerEphemeralTaskRunner
     from nanobot.session.manager import SessionManager
 
     if verbose:
@@ -289,6 +296,14 @@ def gateway(
     # Use workspace path for per-instance cron store
     cron_store_path = config.workspace_path / "cron" / "jobs.json"
     cron = CronService(cron_store_path)
+    tool_execution_strategy = config.runtime.sandbox.execution_strategy
+    tool_task_runner = None
+    if config.runtime.mode == "host" and tool_execution_strategy == "tool_ephemeral":
+        tool_task_runner = DockerEphemeralTaskRunner(
+            config_path=config_path or (Path.home() / ".nanobot" / "config.json"),
+            workspace=config.workspace_path,
+            runtime=config.runtime,
+        )
 
     # Create agent with cron service
     agent = AgentLoop(
@@ -309,6 +324,8 @@ def gateway(
         session_manager=session_manager,
         mcp_servers=config.tools.mcp_servers,
         channels_config=config.channels,
+        tool_task_runner=tool_task_runner,
+        tool_execution_strategy=tool_execution_strategy,
     )
 
     # Set cron callback (needs agent)
@@ -418,7 +435,36 @@ def gateway(
     console.print(f"[green]✓[/green] Heartbeat: every {hb_cfg.interval_s}s")
 
     async def run():
+        reload_task: asyncio.Task | None = None
+        old_sighup_handler = None
+        reload_event = asyncio.Event()
+
+        async def watch_runtime_reload() -> None:
+            while True:
+                await reload_event.wait()
+                reload_event.clear()
+                try:
+                    refreshed = load_config(config_path)
+                    if workspace:
+                        refreshed.agents.defaults.workspace = workspace
+                    summary = channels.apply_runtime_channel_allowlists(refreshed)
+                    if summary["count"] > 0:
+                        logger.info("Applied runtime allowlist updates: {}", summary["updated"])
+                    else:
+                        logger.info("SIGHUP received: no allowlist changes detected")
+                except Exception:
+                    logger.exception("Failed to apply runtime allowlist update from config reload")
+
         try:
+            if hasattr(signal, "SIGHUP"):
+                loop = asyncio.get_running_loop()
+                old_sighup_handler = signal.getsignal(signal.SIGHUP)
+
+                def _request_reload(signum, frame):
+                    loop.call_soon_threadsafe(reload_event.set)
+
+                signal.signal(signal.SIGHUP, _request_reload)
+                reload_task = asyncio.create_task(watch_runtime_reload())
             await cron.start()
             await heartbeat.start()
             await asyncio.gather(
@@ -428,6 +474,11 @@ def gateway(
         except KeyboardInterrupt:
             console.print("\nShutting down...")
         finally:
+            if reload_task:
+                reload_task.cancel()
+                await asyncio.gather(reload_task, return_exceptions=True)
+            if old_sighup_handler is not None and hasattr(signal, "SIGHUP"):
+                signal.signal(signal.SIGHUP, old_sighup_handler)
             await agent.close_mcp()
             heartbeat.stop()
             cron.stop()
@@ -435,6 +486,72 @@ def gateway(
             await channels.stop_all()
 
     asyncio.run(run())
+
+
+@app.command("task-run", hidden=True)
+def task_run(
+    messages_file: str = typer.Option(..., "--messages-file", help="JSON file containing prepared message list"),
+    output_file: str = typer.Option(..., "--output-file", help="JSON output file for the final response"),
+    session_key: str = typer.Option("cli:ephemeral", "--session-key"),
+    channel: str = typer.Option("cli", "--channel"),
+    chat_id: str = typer.Option("direct", "--chat-id"),
+    workspace: str | None = typer.Option(None, "--workspace", "-w", help="Workspace directory"),
+    config: str | None = typer.Option(None, "--config", "-c", help="Config file path"),
+):
+    """Run one prepared task inside an ephemeral sandbox."""
+    from nanobot.agent.loop import AgentLoop
+    from nanobot.bus.queue import MessageBus
+    from nanobot.config.loader import load_config
+
+    config_path = Path(config) if config else None
+    loaded = load_config(config_path)
+    if workspace:
+        loaded.agents.defaults.workspace = workspace
+
+    initial_messages = json.loads(Path(messages_file).read_text(encoding="utf-8"))
+    if not isinstance(initial_messages, list):
+        raise typer.BadParameter("messages-file must contain a JSON array")
+
+    bus = MessageBus()
+    provider = _make_provider(loaded)
+    agent = AgentLoop(
+        bus=bus,
+        provider=provider,
+        workspace=loaded.workspace_path,
+        model=loaded.agents.defaults.model,
+        temperature=loaded.agents.defaults.temperature,
+        max_tokens=loaded.agents.defaults.max_tokens,
+        max_iterations=loaded.agents.defaults.max_tool_iterations,
+        memory_window=loaded.agents.defaults.memory_window,
+        reasoning_effort=loaded.agents.defaults.reasoning_effort,
+        brave_api_key=loaded.tools.web.search.api_key or None,
+        web_proxy=loaded.tools.web.proxy or None,
+        exec_config=loaded.tools.exec,
+        cron_service=None,
+        restrict_to_workspace=loaded.tools.restrict_to_workspace,
+        session_manager=None,
+        mcp_servers=loaded.tools.mcp_servers,
+        channels_config=loaded.channels,
+        tool_execution_strategy="persistent",
+        enable_interactive_tools=False,
+    )
+
+    async def _run() -> str:
+        return await agent.run_messages(initial_messages)
+
+    content = asyncio.run(_run())
+    Path(output_file).write_text(
+        json.dumps(
+            {
+                "session_key": session_key,
+                "channel": channel,
+                "chat_id": chat_id,
+                "content": content,
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
 
 
 
@@ -849,6 +966,110 @@ def status():
             else:
                 has_key = bool(p.api_key)
                 console.print(f"{spec.label}: {'[green]✓[/green]' if has_key else '[dim]not set[/dim]'}")
+
+
+@app.command("softnix-admin")
+def softnix_admin(
+    host: str = typer.Option("127.0.0.1", "--host", help="Admin API host"),
+    port: int = typer.Option(18880, "--port", help="Admin API port"),
+    workspace: str | None = typer.Option(None, "--workspace", "-w", help="Workspace directory"),
+    config: str | None = typer.Option(None, "--config", "-c", help="Config file path"),
+    registry: str | None = typer.Option(
+        None, "--registry", help="Optional JSON file listing multiple instances"
+    ),
+):
+    """Start the Softnix admin API."""
+    from nanobot.admin import AdminService, create_admin_server
+    from nanobot.admin.layout import get_softnix_registry_path
+
+    config_path = Path(config).expanduser() if config else None
+    registry_path = Path(registry).expanduser() if registry else None
+    if registry_path is None:
+        default_registry_path = get_softnix_registry_path()
+        if default_registry_path.exists():
+            registry_path = default_registry_path
+    elif not registry_path.exists():
+        console.print(
+            f"[yellow]Registry not found at {registry_path}; falling back to single-instance mode.[/yellow]"
+        )
+        registry_path = None
+
+    service = AdminService(
+        config_path=config_path,
+        workspace=workspace,
+        registry_path=registry_path,
+    )
+    server = create_admin_server(host, port, service)
+
+    console.print(f"{__logo__} Starting Softnix admin API on http://{host}:{port}")
+    console.print("Mode: safe-config")
+    console.print("Endpoints:")
+    console.print("  /admin/health")
+    console.print("  /admin/overview")
+    console.print("  /admin/instances")
+    console.print("  /admin/instances/:id/start")
+    console.print("  /admin/instances/:id/stop")
+    console.print("  /admin/instances/:id/restart")
+    console.print("  /admin/activity")
+    console.print("  /admin/activity/debug")
+    console.print("  /admin/access-requests")
+    console.print("  /admin/schedules")
+    console.print("  /admin/channels")
+    console.print("  /admin/providers")
+    console.print("  /admin/mcp/servers")
+    console.print("  /admin/security")
+
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        console.print("\nShutting down Softnix admin API...")
+    finally:
+        server.server_close()
+
+
+@app.command("softnix-init")
+def softnix_init(
+    instance_id: str = typer.Option(..., "--instance-id", help="Instance identifier, e.g. acme-prod"),
+    name: str = typer.Option(..., "--name", help="Display name for the instance"),
+    owner: str = typer.Option(..., "--owner", help="Owner or tenant identifier"),
+    env: str = typer.Option("prod", "--env", help="Environment label"),
+    home: str | None = typer.Option(None, "--home", help="Softnix base directory"),
+    nanobot_bin: str = typer.Option("/opt/anaconda3/bin/nanobot", "--nanobot-bin", help="nanobot CLI path"),
+    source_config: str | None = typer.Option(
+        None, "--source-config", help="Optional config file to copy as a template"
+    ),
+    repo_root: str = typer.Option(".", "--repo-root", help="Repository root used by lifecycle scripts"),
+    force: bool = typer.Option(False, "--force", help="Overwrite existing instance entry"),
+):
+    """Bootstrap the Softnix multi-instance filesystem layout."""
+    from nanobot.admin.layout import bootstrap_softnix_instance
+
+    try:
+        result = bootstrap_softnix_instance(
+            instance_id=instance_id,
+            name=name,
+            owner=owner,
+            env=env,
+            nanobot_bin=nanobot_bin,
+            repo_root=Path(repo_root).expanduser().resolve(),
+            base_dir=Path(home).expanduser() if home else None,
+            source_config=Path(source_config).expanduser() if source_config else None,
+            force=force,
+        )
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from exc
+
+    console.print(f"[green]✓[/green] Bootstrapped Softnix instance '{instance_id}'")
+    console.print(f"  Home: {result['instance_home']}")
+    console.print(f"  Config: {result['config_path']}")
+    console.print(f"  Workspace: {result['workspace_path']}")
+    console.print(f"  Registry: {result['registry_path']}")
+    console.print("")
+    console.print("Next steps:")
+    console.print(f"  1. Edit config: {result['config_path']}")
+    console.print(f"  2. Start admin: nanobot softnix-admin --registry {result['registry_path']}")
+    console.print(f"  3. Start gateway: {result['scripts']['start']}")
 
 
 # ============================================================================

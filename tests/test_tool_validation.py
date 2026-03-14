@@ -1,8 +1,11 @@
+import json
+from pathlib import Path
 from typing import Any
 
 from nanobot.agent.tools.base import Tool
 from nanobot.agent.tools.registry import ToolRegistry
 from nanobot.agent.tools.shell import ExecTool
+from nanobot.runtime.audit import RuntimeAuditLogger, runtime_audit_path
 
 
 class SampleTool(Tool):
@@ -89,6 +92,17 @@ async def test_registry_returns_validation_error() -> None:
     assert "Invalid parameters" in result
 
 
+async def test_registry_calls_execute_observer() -> None:
+    events: list[tuple[str, dict[str, Any], str]] = []
+    reg = ToolRegistry(on_execute=lambda name, params, result: events.append((name, params, result)))
+    reg.register(SampleTool())
+
+    result = await reg.execute("sample", {"query": "hello", "count": 2})
+
+    assert result == "ok"
+    assert events == [("sample", {"query": "hello", "count": 2}, "ok")]
+
+
 def test_exec_extract_absolute_paths_keeps_full_windows_path() -> None:
     cmd = r"type C:\user\workspace\txt"
     paths = ExecTool._extract_absolute_paths(cmd)
@@ -106,3 +120,26 @@ def test_exec_extract_absolute_paths_captures_posix_absolute_paths() -> None:
     paths = ExecTool._extract_absolute_paths(cmd)
     assert "/tmp/data.txt" in paths
     assert "/tmp/out.txt" in paths
+
+
+def test_runtime_audit_logger_writes_exec_and_file_metadata(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    logger = RuntimeAuditLogger(workspace)
+
+    logger.log_tool_call("exec", {"command": "python -m pip install rich", "working_dir": "."}, "installed")
+    logger.log_tool_call("write_file", {"path": "src/app.py", "content": "print('hi')"}, "Successfully wrote")
+
+    lines = [
+        json.loads(line)
+        for line in runtime_audit_path(workspace).read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert len(lines) == 2
+    assert lines[0]["event_type"] == "tool.execute"
+    assert lines[0]["payload"]["tool_name"] == "exec"
+    assert lines[0]["payload"]["operation"] == "package_install"
+    assert lines[0]["payload"]["package_manager"] == "pip"
+    assert lines[1]["payload"]["tool_name"] == "write_file"
+    assert lines[1]["payload"]["operation"] == "file_write"
+    assert lines[1]["payload"]["path"] == "src/app.py"
