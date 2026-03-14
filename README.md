@@ -137,7 +137,10 @@ AgenticClaw implements a strict permission matrix:
 
 Softnix AgenticClaw is an extended version of the original [nanobot](https://github.com/HKUDS/nanobot) project. 
 
-For licensing details and enterprise support, please contact **Softnix**.
+- **nanobot:** Licensed under its original [MIT License](https://github.com/HKUDS/nanobot/blob/main/LICENSE).
+- **Softnix AgenticClaw:** All enhancements, the control plane, and administrative tools are also licensed under the **MIT License**.
+
+For enterprise support and inquiries, please contact **Softnix**.
 
 ---
 **Maintained by [Softnix](https://www.softnix.co.th)**
