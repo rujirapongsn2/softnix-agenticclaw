@@ -51,7 +51,6 @@ function init() {
 
   $("btn-retry").addEventListener("click", handleRetryAction);
   $("btn-send").addEventListener("click", () => void handleSend());
-  $("btn-voice")?.addEventListener("click", handleVoicePlaceholder);
   $("btn-attach")?.addEventListener("click", handleAttachClick);
   $("attachment-input")?.addEventListener("change", (event) => void handleAttachmentInput(event));
   $("compose-input").addEventListener("input", handleComposeInput);
@@ -615,25 +614,15 @@ function applyQuickPrompt(prompt) {
   if (!input) return;
   const templates = {
     "Ask Anything": "Help me with ",
-    "Create Image": "Create an image concept for ",
-    "Code": "Write code for ",
-    "Analyze": "Analyze this and summarize key insights: ",
-    "Brainstorm": "Brainstorm ideas for ",
+    "Summarize": "Summarize this clearly and briefly: ",
+    "Schedule Task": "Help me schedule this task with timeline, priority, and next steps: ",
+    "Meeting Notes": "Turn this into clear meeting notes with decisions and next steps: ",
+    "Prioritize": "Help me prioritize these tasks by urgency and impact: ",
   };
   input.value = templates[prompt] || prompt;
   autoResizeInput(input);
   updateSendButton();
   input.focus();
-}
-
-function handleVoicePlaceholder() {
-  appendMessage({
-    role: "agent",
-    text: "Voice input is not available yet on this mobile web version.",
-    msgType: "answer",
-    messageId: "mobvoice-" + crypto.randomUUID(),
-    sessionId: `mobile-${device?.device_id || "unknown"}`,
-  });
 }
 
 function handleAttachClick() {

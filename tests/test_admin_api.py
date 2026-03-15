@@ -701,12 +701,14 @@ def test_admin_service_updates_provider_defaults_and_config(tmp_path) -> None:
     save_config(config, config_path)
 
     service = AdminService(config_path=config_path)
-    instance = service.update_provider_defaults(
+    defaults_result = service.update_provider_defaults(
         instance_id="default",
         model="openai/gpt-4.1-mini",
         provider="openai",
     )
+    instance = defaults_result["instance"]
     assert instance["model"] == "openai/gpt-4.1-mini"
+    assert defaults_result["instance_restart"]["attempted"] is False
 
     instance = service.update_provider_config(
         instance_id="default",
@@ -770,6 +772,7 @@ def test_admin_service_validates_provider_and_mcp(tmp_path) -> None:
     mcp_result = service.validate_mcp_server(instance_id="default", server_name="docs")
 
     assert provider_result["status"] == "ok"
+    assert provider_result["instance_restart"]["attempted"] is False
     assert mcp_result["status"] == "ok"
 
 

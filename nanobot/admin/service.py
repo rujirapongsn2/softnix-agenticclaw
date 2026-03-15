@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+import httpx
 from loguru import logger
 
 from nanobot import __version__
@@ -2223,7 +2224,11 @@ class AdminService:
             resource={"type": "instance", "id": target.id, "name": getattr(target, 'name', target.id)},
             payload={k: v for k, v in {"model": model, "provider": provider}.items() if v is not None},
         )
-        return self._collect_instance(target)
+        restart_result = self._restart_instance_if_supported(target)
+        return {
+            "instance": self._collect_instance(target),
+            "instance_restart": restart_result,
+        }
 
     def update_provider_config(
         self,
@@ -2306,8 +2311,9 @@ class AdminService:
         return self._collect_instance(target)
 
     def validate_provider(self, *, instance_id: str, provider_name: str) -> dict[str, Any]:
-        """Validate provider configuration without making external network calls."""
+        """Validate provider configuration and, when possible, verify the upstream endpoint live."""
         target = self._get_target(instance_id)
+        restart_result = self._restart_instance_if_supported(target)
         config = self._load_target_config(target)
         provider_name = provider_name.replace("-", "_")
         if not hasattr(config.providers, provider_name):
@@ -2375,6 +2381,17 @@ class AdminService:
                 }
             )
 
+        if not any(item["severity"] == "error" for item in findings):
+            live_finding = self._validate_provider_live(
+                provider_name=provider_name,
+                provider_cfg=provider_cfg,
+                model=model,
+                selected_provider=selected_provider,
+                spec=spec,
+            )
+            if live_finding is not None:
+                findings.append(live_finding)
+
         status = "ok" if not any(item["severity"] == "error" for item in findings) else "error"
         if status == "ok" and any(item["severity"] == "warning" for item in findings):
             status = "warning"
@@ -2383,6 +2400,119 @@ class AdminService:
             "provider_name": provider_name,
             "status": status,
             "findings": findings,
+            "instance_restart": restart_result,
+        }
+
+    def _validate_provider_live(
+        self,
+        *,
+        provider_name: str,
+        provider_cfg: Any,
+        model: str,
+        selected_provider: str,
+        spec: Any,
+    ) -> dict[str, Any] | None:
+        api_base = str(provider_cfg.api_base or spec.default_api_base or "").strip()
+        api_key = str(provider_cfg.api_key or "").strip()
+        extra_headers = dict(provider_cfg.extra_headers or {})
+        if not api_base:
+            return None
+        if not spec.is_direct and provider_name not in {"softnix_gen_ai", "custom"}:
+            return None
+
+        headers = {"Content-Type": "application/json", **extra_headers}
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+
+        if selected_provider in {"auto", provider_name} and model:
+            return self._validate_provider_live_chat(
+                api_base=api_base,
+                headers=headers,
+                model=model,
+            )
+        return self._validate_provider_live_models(api_base=api_base, headers=headers, model=model)
+
+    def _validate_provider_live_models(
+        self,
+        *,
+        api_base: str,
+        headers: dict[str, str],
+        model: str,
+    ) -> dict[str, Any]:
+        url = f"{api_base.rstrip('/')}/models"
+        try:
+            response = httpx.get(url, headers=headers, timeout=10.0)
+            response.raise_for_status()
+            payload = response.json() if response.content else {}
+            models = payload.get("data") if isinstance(payload, dict) else None
+            if isinstance(models, list) and model and not any(str(item.get("id") or "") == model for item in models if isinstance(item, dict)):
+                return {
+                    "severity": "warning",
+                    "code": "live_model_not_listed",
+                    "detail": f"Endpoint responded, but model '{model}' was not listed in /models.",
+                }
+            return {
+                "severity": "info",
+                "code": "live_models_ok",
+                "detail": "Endpoint responded successfully to /models.",
+            }
+        except Exception as exc:
+            return {
+                "severity": "error",
+                "code": "live_models_failed",
+                "detail": f"Live endpoint check failed: {self._provider_live_error(exc)}",
+            }
+
+    def _validate_provider_live_chat(
+        self,
+        *,
+        api_base: str,
+        headers: dict[str, str],
+        model: str,
+    ) -> dict[str, Any]:
+        url = f"{api_base.rstrip('/')}/chat/completions"
+        payload = {
+            "model": model,
+            "messages": [{"role": "user", "content": "ping"}],
+            "max_tokens": 1,
+        }
+        try:
+            response = httpx.post(url, headers=headers, json=payload, timeout=15.0)
+            response.raise_for_status()
+            data = response.json() if response.content else {}
+            choices = data.get("choices") if isinstance(data, dict) else None
+            if not isinstance(choices, list) or not choices:
+                return {
+                    "severity": "warning",
+                    "code": "live_chat_empty",
+                    "detail": "Chat completion endpoint responded but returned no choices.",
+                }
+            return {
+                "severity": "info",
+                "code": "live_chat_ok",
+                "detail": f"Endpoint accepted a lightweight chat completion for model '{model}'.",
+            }
+        except Exception as exc:
+            return {
+                "severity": "error",
+                "code": "live_chat_failed",
+                "detail": f"Live chat completion check failed for model '{model}': {self._provider_live_error(exc)}",
+            }
+
+    @staticmethod
+    def _provider_live_error(exc: Exception) -> str:
+        if isinstance(exc, httpx.HTTPStatusError):
+            detail = exc.response.text.strip()
+            return f"HTTP {exc.response.status_code}{f' - {detail[:200]}' if detail else ''}"
+        return str(exc)
+
+    def _restart_instance_if_supported(self, target: InstanceTarget) -> dict[str, Any]:
+        restart_result: dict[str, Any] | None = None
+        if target.source == "registry" and target.lifecycle and self._lifecycle_command(target, "restart"):
+            restart_result = self.execute_instance_action(instance_id=target.id, action="restart")
+        return {
+            "attempted": restart_result is not None,
+            **(restart_result or {}),
         }
 
     def validate_mcp_server(self, *, instance_id: str, server_name: str) -> dict[str, Any]:

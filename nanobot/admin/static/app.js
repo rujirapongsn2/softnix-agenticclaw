@@ -5337,8 +5337,7 @@ async function handleProviderDefaultsSave(instanceId) {
       model,
       provider,
     });
-    await runAutoLifecycleAfterSave(result.instance || null);
-    clearBanner();
+    handleProviderRestartBanner(instanceId, result.instance_restart, "Default routing saved.");
     await loadDashboard();
   } catch (error) {
     setBanner(`Unable to update provider defaults: ${error.message}`, "error");
@@ -5360,7 +5359,6 @@ async function handleProviderSave(key) {
       api_base: document.querySelector(`[data-provider-base="${CSS.escape(key)}"]`)?.value ?? "",
       extra_headers,
     });
-    await runAutoLifecycleAfterSave(result.instance || null);
     clearBanner();
     await loadDashboard();
   } catch (error) {
@@ -5387,13 +5385,41 @@ async function handleProviderValidate(key) {
     const result = await postJson(`/admin/providers/${providerName}/validate`, {
       instance_id: instanceId,
     });
-    setBanner(formatValidationMessage(`Provider '${providerName}'`, result), result.status === "error" ? "error" : "warning");
+    const validationMessage = formatValidationMessage(`Provider '${providerName}'`, result);
+    const restartMessage = buildProviderRestartMessage(instanceId, result.instance_restart, "validated");
+    setBanner(
+      restartMessage ? `${restartMessage} ${validationMessage}` : validationMessage,
+      result.status === "error" ? "error" : "warning",
+    );
   } catch (error) {
     setBanner(`Unable to validate provider '${providerName}': ${error.message}`, "error");
   } finally {
     state.busyKey = "";
     renderProviders();
   }
+}
+
+function buildProviderRestartMessage(instanceId, restart, actionLabel) {
+  if (!restart?.attempted) {
+    return "";
+  }
+  if (restart.ok) {
+    return `Instance '${instanceId}' restarted before provider was ${actionLabel}.`;
+  }
+  return `Provider ${actionLabel}, but instance '${instanceId}' restart failed: ${restart.stderr || restart.stdout || "Unknown error"}.`;
+}
+
+function handleProviderRestartBanner(instanceId, restart, successMessage) {
+  const restartMessage = buildProviderRestartMessage(instanceId, restart, "applied");
+  if (restartMessage && !restart.ok) {
+    setBanner(`${successMessage} ${restartMessage}`, "warning");
+    return;
+  }
+  if (restartMessage) {
+    setBanner(`${successMessage} ${restartMessage}`, "warning");
+    return;
+  }
+  clearBanner();
 }
 
 function buildMcpPayload(baseKey, instanceId, serverName) {
