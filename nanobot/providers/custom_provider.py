@@ -5,10 +5,13 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
+import httpx
 import json_repair
 from openai import AsyncOpenAI
 
 from nanobot.providers.base import LLMProvider, LLMResponse, ToolCallRequest
+
+SOFTNIX_GENAI_USER_AGENT = "python-requests/2.31.0"
 
 
 class CustomProvider(LLMProvider):
@@ -20,7 +23,13 @@ class CustomProvider(LLMProvider):
         self._client = AsyncOpenAI(
             api_key=api_key,
             base_url=api_base,
-            default_headers={"x-session-affinity": uuid.uuid4().hex},
+            http_client=httpx.AsyncClient(
+                headers={"User-Agent": SOFTNIX_GENAI_USER_AGENT},
+            ),
+            default_headers={
+                "x-session-affinity": uuid.uuid4().hex,
+                "User-Agent": SOFTNIX_GENAI_USER_AGENT,
+            },
         )
 
     async def chat(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None,
@@ -58,4 +67,3 @@ class CustomProvider(LLMProvider):
 
     def get_default_model(self) -> str:
         return self.default_model
-

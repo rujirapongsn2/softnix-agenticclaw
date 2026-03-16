@@ -18,6 +18,7 @@ import secrets
 import threading
 import time
 import urllib.request
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
@@ -26,6 +27,7 @@ from urllib.parse import urlparse
 
 import httpx
 from loguru import logger
+from openai import AsyncOpenAI
 
 from nanobot import __version__
 from nanobot.admin.auth import (
@@ -55,6 +57,7 @@ from nanobot.config.schema import Config, MCPServerConfig
 from nanobot.cron.service import CronService
 from nanobot.cron.types import CronSchedule
 from nanobot.channels.access_requests import AccessRequestStore
+from nanobot.providers.custom_provider import SOFTNIX_GENAI_USER_AGENT
 from nanobot.providers.registry import PROVIDERS
 from nanobot.runtime.audit import runtime_audit_path
 from nanobot.session.manager import SessionManager
@@ -2425,12 +2428,93 @@ class AdminService:
             headers["Authorization"] = f"Bearer {api_key}"
 
         if selected_provider in {"auto", provider_name} and model:
+            if spec.is_direct or provider_name in {"softnix_gen_ai", "custom"}:
+                return self._validate_provider_live_sdk_chat(
+                    api_base=api_base,
+                    api_key=api_key,
+                    extra_headers=extra_headers,
+                    model=model,
+                )
             return self._validate_provider_live_chat(
                 api_base=api_base,
                 headers=headers,
                 model=model,
             )
         return self._validate_provider_live_models(api_base=api_base, headers=headers, model=model)
+
+    def _validate_provider_live_sdk_chat(
+        self,
+        *,
+        api_base: str,
+        api_key: str,
+        extra_headers: dict[str, str],
+        model: str,
+    ) -> dict[str, Any]:
+        async def _probe() -> dict[str, Any]:
+            client = AsyncOpenAI(
+                api_key=api_key or "no-key",
+                base_url=api_base,
+                http_client=httpx.AsyncClient(
+                    headers={"User-Agent": SOFTNIX_GENAI_USER_AGENT},
+                ),
+                default_headers={
+                    **extra_headers,
+                    "x-session-affinity": uuid.uuid4().hex,
+                    "User-Agent": SOFTNIX_GENAI_USER_AGENT,
+                },
+            )
+            try:
+                response = await client.chat.completions.create(
+                    model=model,
+                    messages=[{"role": "user", "content": "ping"}],
+                    max_tokens=1,
+                    temperature=0.1,
+                )
+                choices = getattr(response, "choices", None) or []
+                if not choices:
+                    return {
+                        "severity": "warning",
+                        "code": "live_chat_empty",
+                        "detail": "Chat completion endpoint responded but returned no choices.",
+                    }
+
+                tool_response = await client.chat.completions.create(
+                    model=model,
+                    messages=[{"role": "user", "content": "ping"}],
+                    max_tokens=1,
+                    temperature=0.1,
+                    tools=self._provider_validation_tool_schemas(),
+                    tool_choice="auto",
+                )
+                tool_choices = getattr(tool_response, "choices", None) or []
+                if not tool_choices:
+                    return {
+                        "severity": "warning",
+                        "code": "live_tools_empty",
+                        "detail": f"Endpoint accepted agent tool definitions for model '{model}' but returned no choices.",
+                    }
+                return {
+                    "severity": "info",
+                    "code": "live_tools_ok",
+                    "detail": f"Endpoint accepted representative agent tool definitions for model '{model}'.",
+                }
+            except Exception as exc:
+                tool_names = ", ".join(
+                    tool.get("function", {}).get("name", "unknown")
+                    for tool in self._provider_validation_tool_schemas()
+                )
+                return {
+                    "severity": "error",
+                    "code": "live_tools_failed",
+                    "detail": (
+                        f"Endpoint rejected representative agent tool requests for model '{model}' "
+                        f"({tool_names}): {self._provider_live_error(exc)}"
+                    ),
+                }
+            finally:
+                await client.close()
+
+        return asyncio.run(_probe())
 
     def _validate_provider_live_models(
         self,
@@ -2487,6 +2571,13 @@ class AdminService:
                     "code": "live_chat_empty",
                     "detail": "Chat completion endpoint responded but returned no choices.",
                 }
+            tool_check = self._validate_provider_live_tools(
+                api_base=api_base,
+                headers=headers,
+                model=model,
+            )
+            if tool_check is not None:
+                return tool_check
             return {
                 "severity": "info",
                 "code": "live_chat_ok",
@@ -2498,6 +2589,90 @@ class AdminService:
                 "code": "live_chat_failed",
                 "detail": f"Live chat completion check failed for model '{model}': {self._provider_live_error(exc)}",
             }
+
+    def _validate_provider_live_tools(
+        self,
+        *,
+        api_base: str,
+        headers: dict[str, str],
+        model: str,
+    ) -> dict[str, Any] | None:
+        url = f"{api_base.rstrip('/')}/chat/completions"
+        tool_schemas = self._provider_validation_tool_schemas()
+        payload = {
+            "model": model,
+            "messages": [{"role": "user", "content": "ping"}],
+            "max_tokens": 1,
+            "tools": tool_schemas,
+            "tool_choice": "auto",
+        }
+        try:
+            response = httpx.post(url, headers=headers, json=payload, timeout=15.0)
+            response.raise_for_status()
+            return {
+                "severity": "info",
+                "code": "live_tools_ok",
+                "detail": f"Endpoint accepted representative agent tool definitions for model '{model}'.",
+            }
+        except Exception as exc:
+            tool_names = ", ".join(
+                tool.get("function", {}).get("name", "unknown")
+                for tool in tool_schemas
+            )
+            return {
+                "severity": "error",
+                "code": "live_tools_failed",
+                "detail": (
+                    f"Endpoint rejected representative agent tool requests for model '{model}' "
+                    f"({tool_names}): {self._provider_live_error(exc)}"
+                ),
+            }
+
+    @staticmethod
+    def _provider_validation_tool_schemas() -> list[dict[str, Any]]:
+        try:
+            from nanobot.agent.loop import AgentLoop
+            from nanobot.bus.queue import MessageBus
+
+            class _ProbeProvider:
+                def get_default_model(self) -> str:
+                    return "probe"
+
+            probe = AgentLoop(
+                bus=MessageBus(),
+                provider=_ProbeProvider(),
+                workspace=Path("/tmp"),
+                model="probe",
+            )
+            definitions = probe.tools.get_definitions()
+            preferred = {"read_file", "exec", "message"}
+            selected = [
+                tool for tool in definitions
+                if tool.get("function", {}).get("name") in preferred
+            ]
+            if selected:
+                return selected
+        except Exception:
+            pass
+        return [
+            {
+                "type": "function",
+                "function": {
+                    "name": "read_file",
+                    "description": "Read the contents of a file at the given path.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "path": {
+                                "type": "string",
+                                "description": "The file path to read",
+                            }
+                        },
+                        "required": ["path"],
+                    },
+                },
+            }
+        ]
 
     @staticmethod
     def _provider_live_error(exc: Exception) -> str:

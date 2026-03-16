@@ -2146,18 +2146,15 @@ function renderSelectedInstanceSchedules(instance) {
           </div>
           <p class="meta">${escapeHtml(scheduleLabel)}</p>
           <div class="inline-actions">
-            <button class="secondary-button is-small" data-schedule-toggle="${escapeHtml(toggleKey)}">${job.enabled ? "Disable" : "Enable"}</button>
-            <button class="primary-button is-small" data-schedule-run="${escapeHtml(runKey)}">Run Now</button>
-            <button class="secondary-button is-small" data-schedule-delete="${escapeHtml(deleteKey)}">Delete</button>
+            <button type="button" class="secondary-button is-small" data-schedule-toggle="${escapeHtml(toggleKey)}">${job.enabled ? "Disable" : "Enable"}</button>
+            <button type="button" class="primary-button is-small" data-schedule-run="${escapeHtml(runKey)}">Run Now</button>
+            <button type="button" class="secondary-button is-small" data-schedule-delete="${escapeHtml(deleteKey)}">Delete</button>
           </div>
         </div>
       `;
     })
     .join("");
   target.innerHTML = `<div class="stack">${jobs || `<div class="item-card"><p class="meta">No schedules for this instance.</p></div>`}</div>`;
-  target.querySelectorAll("[data-schedule-toggle]").forEach((button) => button.addEventListener("click", () => handleScheduleToggle(button.dataset.scheduleToggle)));
-  target.querySelectorAll("[data-schedule-run]").forEach((button) => button.addEventListener("click", () => handleScheduleRun(button.dataset.scheduleRun)));
-  target.querySelectorAll("[data-schedule-delete]").forEach((button) => button.addEventListener("click", () => handleScheduleDelete(button.dataset.scheduleDelete)));
 }
 
 function ensureRuntimeAuditState(instanceId) {
@@ -4189,9 +4186,9 @@ function renderSchedules() {
               <p class="meta">Last status: ${escapeHtml(job.state.last_status || "never")} · Next: ${escapeHtml(job.state.next_run_at_ms || "n/a")}</p>
               <p class="event-summary">${escapeHtml(job.payload.message || "")}</p>
               <div class="inline-actions">
-                <button class="secondary-button" data-schedule-toggle="${escapeHtml(toggleKey)}" ${disabledToggle}>${job.enabled ? "Disable" : "Enable"}</button>
-                <button class="primary-button" data-schedule-run="${escapeHtml(runKey)}" ${disabledRun}>Run Now</button>
-                <button class="secondary-button" data-schedule-delete="${escapeHtml(deleteKey)}" ${disabledDelete}>Delete</button>
+                <button type="button" class="secondary-button" data-schedule-toggle="${escapeHtml(toggleKey)}" ${disabledToggle}>${job.enabled ? "Disable" : "Enable"}</button>
+                <button type="button" class="primary-button" data-schedule-run="${escapeHtml(runKey)}" ${disabledRun}>Run Now</button>
+                <button type="button" class="secondary-button" data-schedule-delete="${escapeHtml(deleteKey)}" ${disabledDelete}>Delete</button>
               </div>
             </div>
           `;
@@ -4210,15 +4207,42 @@ function renderSchedules() {
       `;
     })
     .join("");
+}
 
-  target.querySelectorAll("[data-schedule-toggle]").forEach((button) => {
-    button.addEventListener("click", () => handleScheduleToggle(button.dataset.scheduleToggle));
-  });
-  target.querySelectorAll("[data-schedule-run]").forEach((button) => {
-    button.addEventListener("click", () => handleScheduleRun(button.dataset.scheduleRun));
-  });
-  target.querySelectorAll("[data-schedule-delete]").forEach((button) => {
-    button.addEventListener("click", () => handleScheduleDelete(button.dataset.scheduleDelete));
+let scheduleActionsBound = false;
+
+function bindScheduleActionHandlers() {
+  if (scheduleActionsBound) return;
+  scheduleActionsBound = true;
+  document.addEventListener("click", (event) => {
+    const target = event.target;
+    if (!(target instanceof Element)) return;
+
+    const toggleButton = target.closest("[data-schedule-toggle]");
+    if (toggleButton instanceof HTMLButtonElement) {
+      event.preventDefault();
+      if (!toggleButton.disabled && toggleButton.dataset.scheduleToggle) {
+        void handleScheduleToggle(toggleButton.dataset.scheduleToggle);
+      }
+      return;
+    }
+
+    const runButton = target.closest("[data-schedule-run]");
+    if (runButton instanceof HTMLButtonElement) {
+      event.preventDefault();
+      if (!runButton.disabled && runButton.dataset.scheduleRun) {
+        void handleScheduleRun(runButton.dataset.scheduleRun);
+      }
+      return;
+    }
+
+    const deleteButton = target.closest("[data-schedule-delete]");
+    if (deleteButton instanceof HTMLButtonElement) {
+      event.preventDefault();
+      if (!deleteButton.disabled && deleteButton.dataset.scheduleDelete) {
+        void handleScheduleDelete(deleteButton.dataset.scheduleDelete);
+      }
+    }
   });
 }
 
@@ -5788,6 +5812,7 @@ async function handleMobileDeviceDelete(deviceId, instanceId) {
 
 async function initializeApp() {
   restoreLocationState();
+  bindScheduleActionHandlers();
   await loadAuthState();
   switchView(state.auth.authenticated ? state.currentView : "overview");
   if (state.auth.authenticated) {
