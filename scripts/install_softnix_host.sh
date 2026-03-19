@@ -123,6 +123,52 @@ command_exists() {
   command -v "$1" >/dev/null 2>&1
 }
 
+disable_cdrom_sources() {
+  local apt_dir="/etc/apt"
+  local touched=0
+
+  while IFS= read -r file; do
+    [[ -n "$file" ]] || continue
+    if sudo grep -qE '^[[:space:]]*deb[[:space:]]+cdrom:' "$file" 2>/dev/null || \
+       sudo grep -q 'cdrom:' "$file" 2>/dev/null; then
+      touched=1
+      sudo sed -i.bak -E \
+        's|^[[:space:]]*deb[[:space:]]+cdrom:|# disabled by install_softnix_host.sh: deb cdrom:|I' \
+        "$file"
+      sudo sed -i.bak -E \
+        's|^[[:space:]]*#?[[:space:]]*deb[[:space:]]+cdrom:|# disabled by install_softnix_host.sh: deb cdrom:|I' \
+        "$file"
+    fi
+  done < <(find "$apt_dir" -maxdepth 2 -type f \( -name 'sources.list' -o -name '*.list' \) 2>/dev/null || true)
+
+  if [[ $touched -eq 1 ]]; then
+    warn "Disabled cdrom-based APT source entries under /etc/apt"
+  fi
+}
+
+apt_update_safe() {
+  local log_file
+  log_file="$(mktemp /tmp/install_softnix_apt_update.XXXXXX.log)"
+  if run_sudo apt-get update >"$log_file" 2>&1; then
+    rm -f "$log_file"
+    return 0
+  fi
+
+  if grep -qiE 'cdrom|file:/cdrom|no longer has a Release file' "$log_file"; then
+    warn "APT update failed because of a stale cdrom source."
+    cat "$log_file" >&2
+    rm -f "$log_file"
+    confirm "Disable cdrom APT sources and retry apt-get update?" || fail "APT update must succeed before installation can continue"
+    disable_cdrom_sources
+    run_sudo apt-get update
+    return 0
+  fi
+
+  cat "$log_file" >&2
+  rm -f "$log_file"
+  fail "apt-get update failed"
+}
+
 version_ge() {
   local current="$1"
   local minimum="$2"
@@ -192,7 +238,7 @@ install_base_packages() {
     return 0
   fi
   confirm "Install missing base packages: ${missing[*]} ?" || fail "Base packages are required"
-  run_sudo apt-get update
+  apt_update_safe
   run_sudo apt-get install -y "${missing[@]}"
 }
 
@@ -210,10 +256,10 @@ install_python_if_needed() {
 
   local version_id=""
   version_id="$(. /etc/os-release && printf '%s' "${VERSION_ID:-}")"
-  run_sudo apt-get update
+  apt_update_safe
   if [[ "$version_id" == "22.04" ]]; then
     run_sudo add-apt-repository -y ppa:deadsnakes/ppa
-    run_sudo apt-get update
+    apt_update_safe
   fi
   run_sudo apt-get install -y python3.12 python3.12-venv python3.12-dev
   PYTHON_BIN="python3.12"
@@ -275,7 +321,7 @@ install_docker() {
     codename="$(. /etc/os-release && echo "$VERSION_CODENAME")"
     printf 'deb [arch=%s signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu %s stable\n' \
       "$(dpkg --print-architecture)" "$codename" | run_sudo tee /etc/apt/sources.list.d/docker.list >/dev/null
-    run_sudo apt-get update
+    apt_update_safe
     run_sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
   fi
 
@@ -319,7 +365,7 @@ install_node_if_needed() {
   curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | run_sudo gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg
   printf 'deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_20.x nodistro main\n' \
     | run_sudo tee /etc/apt/sources.list.d/nodesource.list >/dev/null
-  run_sudo apt-get update
+  apt_update_safe
   run_sudo apt-get install -y nodejs
   ok "Installed Node.js: $(node --version), npm $(npm --version)"
 }
