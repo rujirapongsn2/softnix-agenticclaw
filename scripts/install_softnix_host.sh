@@ -125,23 +125,56 @@ command_exists() {
 
 disable_cdrom_sources() {
   local apt_dir="/etc/apt"
-  local touched=0
+  local files=()
 
   while IFS= read -r file; do
     [[ -n "$file" ]] || continue
-    if sudo grep -qE '^[[:space:]]*deb[[:space:]]+cdrom:' "$file" 2>/dev/null || \
-       sudo grep -q 'cdrom:' "$file" 2>/dev/null; then
-      touched=1
-      sudo sed -i.bak -E \
-        's|^[[:space:]]*deb[[:space:]]+cdrom:|# disabled by install_softnix_host.sh: deb cdrom:|I' \
-        "$file"
-      sudo sed -i.bak -E \
-        's|^[[:space:]]*#?[[:space:]]*deb[[:space:]]+cdrom:|# disabled by install_softnix_host.sh: deb cdrom:|I' \
-        "$file"
-    fi
+    files+=("$file")
   done < <(find "$apt_dir" -maxdepth 2 -type f \( -name 'sources.list' -o -name '*.list' \) 2>/dev/null || true)
 
-  if [[ $touched -eq 1 ]]; then
+  if [[ ${#files[@]} -eq 0 ]]; then
+    return 0
+  fi
+
+  local changed_count
+  changed_count="$(sudo python3 - "${files[@]}" <<'PY'
+from pathlib import Path
+import sys
+
+changed = 0
+for raw_path in sys.argv[1:]:
+    path = Path(raw_path)
+    try:
+        text = path.read_text(encoding="utf-8")
+    except Exception:
+        continue
+
+    lines = text.splitlines()
+    new_lines = []
+    file_changed = False
+    for line in lines:
+        stripped = line.lstrip()
+        lower = stripped.lower()
+        if "cdrom:" in lower or "file:/cdrom" in lower:
+            if stripped.startswith("#"):
+                new_lines.append(line)
+                continue
+            new_lines.append("# disabled by install_softnix_host.sh: " + line)
+            file_changed = True
+            changed += 1
+        else:
+            new_lines.append(line)
+
+    if file_changed:
+        backup = path.with_suffix(path.suffix + ".bak")
+        backup.write_text(text, encoding="utf-8")
+        path.write_text("\n".join(new_lines) + ("\n" if text.endswith("\n") else ""), encoding="utf-8")
+
+print(changed)
+PY
+  )"
+
+  if [[ "${changed_count:-0}" != "0" ]]; then
     warn "Disabled cdrom-based APT source entries under /etc/apt"
   fi
 }
@@ -160,7 +193,13 @@ apt_update_safe() {
     rm -f "$log_file"
     confirm "Disable cdrom APT sources and retry apt-get update?" || fail "APT update must succeed before installation can continue"
     disable_cdrom_sources
-    run_sudo apt-get update
+    if grep -RInE 'cdrom:|file:/cdrom' /etc/apt/sources.list /etc/apt/sources.list.d 2>/dev/null; then
+      warn "Some cdrom source entries are still present after cleanup."
+    fi
+    if run_sudo apt-get update; then
+      return 0
+    fi
+    fail "apt-get update still fails after disabling cdrom sources"
     return 0
   fi
 
