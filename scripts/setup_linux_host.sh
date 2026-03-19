@@ -108,12 +108,12 @@ if [[ ! -d "$VENV_DIR" ]]; then
 fi
 
 UV_PYTHON="$VENV_DIR/bin/python"
-UV_PIP=(uv pip --python "$UV_PYTHON")
+UV_PIP=(uv pip install --python "$UV_PYTHON")
 
-"${UV_PIP[@]}" install -e .
+"${UV_PIP[@]}" -e .
 
 if [[ $WITH_PLAYWRIGHT -eq 1 ]]; then
-  "${UV_PIP[@]}" install playwright
+  "${UV_PIP[@]}" playwright
   if [[ $WITH_PLAYWRIGHT_DEPS -eq 1 ]]; then
     "$UV_PYTHON" -m playwright install --with-deps chromium
   else
