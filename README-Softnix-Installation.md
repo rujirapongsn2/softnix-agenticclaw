@@ -2,6 +2,54 @@
 
 คู่มือนี้อธิบายการติดตั้งโปรเจกต์นี้บน **Ubuntu** เพื่อใช้งาน **Softnix Admin + sandbox mode** โดยให้รัน `nanobot` จาก source บน host และใช้ **Docker Engine** เป็น sandbox runtime
 
+## ทางลัดแบบคำสั่งเดียว
+
+ถ้าต้องการ flow ติดตั้งแบบครบตั้งแต่ตรวจ host, ติดตั้ง dependency ที่ยังขาด, สร้าง `.venv`, build sandbox image, bootstrap instance, start Softnix Admin, verify แล้วเปิด browser ให้ใช้สคริปต์นี้แทนการไล่ทำทีละ step:
+
+```bash
+bash scripts/install_softnix_host.sh
+```
+
+สคริปต์จะทำงานแบบ interactive:
+
+- ตรวจว่า host เป็น Ubuntu และ dependency พร้อมหรือไม่
+- ถ้ายังขาด จะถามยืนยันก่อนติดตั้งแต่ละส่วน
+- ติดตั้ง `Python`, `uv`, `Docker Engine` และ optional dependency ตาม flag
+- ติดตั้งโปรเจกต์จาก source ด้วย `uv`
+- build image `softnixclaw:latest` ถ้ายังไม่มี
+- สร้าง Softnix instance แรกให้
+- start `Softnix Admin`
+- พยายาม start instance และตรวจจนกว่าระบบพร้อม
+- เปิด browser ไปที่หน้า `Softnix Admin`
+
+ตัวอย่างใช้งาน:
+
+```bash
+# ค่า default: instance = default-prod, profile = balanced
+bash scripts/install_softnix_host.sh
+
+# แบบไม่ถามยืนยันทีละขั้น
+bash scripts/install_softnix_host.sh --yes
+
+# ถ้าต้องใช้ WhatsApp bridge และ Playwright
+bash scripts/install_softnix_host.sh --with-whatsapp --with-playwright-deps
+
+# ถ้ามี config ต้นทางที่มี provider key อยู่แล้ว
+bash scripts/install_softnix_host.sh --source-config ~/.nanobot/config.json
+
+# ถ้าต้องการใส่ provider ลง instance config ระหว่างติดตั้ง
+bash scripts/install_softnix_host.sh \
+  --provider openrouter \
+  --model openai/gpt-5 \
+  --api-key '<your-api-key>'
+```
+
+หมายเหตุสำคัญ:
+
+- การ start `Softnix Admin` ทำได้แม้ยังไม่มี provider key
+- แต่การ start instance/gateway ต้องมี provider config ที่ใช้งานได้จริง ไม่เช่นนั้น installer จะเปิด Admin ให้ก่อนและแจ้งเหตุผลว่าทำไมยังไม่ start instance
+- ถ้าสคริปต์เพิ่งเพิ่ม user เข้า docker group ในรอบนี้ มันจะใช้ `sg docker` ต่อให้จนงานรอบนี้จบได้ แต่การใช้งาน shell ปกติหลังจากนั้นยังควร logout/login ใหม่ 1 ครั้ง
+
 ## แนวทางที่ใช้ในคู่มือนี้
 
 โหมดที่แนะนำสำหรับเครื่อง Ubuntu ของคุณคือ:
