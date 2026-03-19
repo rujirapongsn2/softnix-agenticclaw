@@ -6,6 +6,8 @@
 set -e
 
 # --- Configuration ---
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$SCRIPT_DIR"
 ADMIN_HOME="$HOME/.softnix/admin"
 LOG_DIR="$ADMIN_HOME/logs"
 RUN_DIR="$ADMIN_HOME/run"
@@ -13,13 +15,17 @@ LOG_FILE="$LOG_DIR/admin.log"
 PID_FILE="$RUN_DIR/admin.pid"
 SERVICE_NAME="softnix-admin"
 SYSTEMD_USER_DIR="$HOME/.config/systemd/user"
+ADMIN_HOST="${SOFTNIX_ADMIN_HOST:-0.0.0.0}"
+ADMIN_PORT="${SOFTNIX_ADMIN_PORT:-18880}"
 
 # Ensure directories exist
 mkdir -p "$LOG_DIR" "$RUN_DIR"
 
 # Detect nanobot command
-if command -v nanobot &> /dev/null; then
-    PYTHON_CMD="nanobot"
+if [ -x "$PROJECT_ROOT/.venv/bin/nanobot" ]; then
+    PYTHON_CMD="$PROJECT_ROOT/.venv/bin/nanobot"
+elif command -v nanobot &> /dev/null; then
+    PYTHON_CMD="$(command -v nanobot)"
 else
     echo "Error: 'nanobot' command not found. Please install the package first."
     exit 1
@@ -56,14 +62,14 @@ start_admin() {
         if [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null; then
             echo "Softnix Admin is already running (PID: $PID)"
         else
-            nohup "$PYTHON_CMD" softnix-admin > "$LOG_FILE" 2>&1 &
+            nohup "$PYTHON_CMD" softnix-admin --host "$ADMIN_HOST" --port "$ADMIN_PORT" > "$LOG_FILE" 2>&1 &
             NEW_PID=$!
             echo "$NEW_PID" > "$PID_FILE"
             echo "Softnix Admin started in background (PID: $NEW_PID)"
             echo "Logs: $LOG_FILE"
         fi
     fi
-    echo "Dashboard URL: http://127.0.0.1:18880"
+    echo "Dashboard URL: http://$ADMIN_HOST:$ADMIN_PORT"
 }
 
 stop_admin() {
@@ -142,9 +148,6 @@ install_service() {
     mkdir -p "$SYSTEMD_USER_DIR"
     
     SERVICE_FILE="$SYSTEMD_USER_DIR/$SERVICE_NAME.service"
-    PROJECT_ROOT=$(pwd)
-    NANOBOT_PATH=$(which nanobot)
-
     echo "Creating service file at: $SERVICE_FILE"
     
     cat > "$SERVICE_FILE" <<EOF
@@ -155,7 +158,7 @@ After=network.target
 [Service]
 Type=simple
 WorkingDirectory=$PROJECT_ROOT
-ExecStart=$NANOBOT_PATH softnix-admin
+ExecStart=$PYTHON_CMD softnix-admin --host $ADMIN_HOST --port $ADMIN_PORT
 Restart=always
 RestartSec=10
 StandardOutput=append:$LOG_FILE
