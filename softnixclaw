@@ -190,17 +190,54 @@ EOF
 
 update_project() {
     echo "Updating Softnix AgenticClaw..."
-    
-    echo "1. Pulling latest changes from git..."
-    git pull
-    
-    echo "2. Updating dependencies..."
-    pip install -e .
-    
-    echo "3. Restarting service..."
+
+    # 1. Backup critical data
+    echo "1. Backing up configuration..."
+    if [ -f "$ADMIN_HOME/instances.json" ]; then
+        BACKUP_FILE="$ADMIN_HOME/instances.json.bak.$(date +%Y%m%d%H%M)"
+        cp "$ADMIN_HOME/instances.json" "$BACKUP_FILE"
+        echo "   Backup saved to: $BACKUP_FILE"
+    fi
+
+    # 2. Pull latest changes
+    echo "2. Pulling latest changes from git..."
+    if [ -d ".git" ]; then
+        if ! git pull; then
+            echo "❌ Error: git pull failed"
+            exit 1
+        fi
+    else
+        echo "⚠️ Warning: Not a git repository. Skipping git pull."
+    fi
+
+    # 3. Update dependencies with uv (preferred) or pip
+    echo "3. Updating dependencies..."
+    if command -v uv &> /dev/null && [ -f "$PROJECT_ROOT/uv.lock" ]; then
+        echo "   Using uv (recommended)..."
+        if ! uv pip install -e .; then
+            echo "❌ Error: uv pip install failed"
+            exit 1
+        fi
+    else
+        echo "   Using pip (uv not found or no lock file)..."
+        if ! pip install -e .; then
+            echo "❌ Error: pip install failed"
+            exit 1
+        fi
+    fi
+
+    # 4. Restart service
+    echo "4. Restarting service..."
     restart_admin
-    
-    echo "✅ Update Complete!"
+
+    # 5. Verify service is running
+    echo "5. Verifying service health..."
+    sleep 3
+    if curl -s "http://$ADMIN_HOST:$ADMIN_PORT/admin/health" > /dev/null 2>&1; then
+        echo "✅ Update Complete! Service is healthy."
+    else
+        echo "⚠️ Update Complete but service health check failed. Check logs: $LOG_FILE"
+    fi
 }
 
 # --- Main Command Handler ---
