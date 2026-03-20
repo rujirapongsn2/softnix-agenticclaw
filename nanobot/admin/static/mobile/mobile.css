@@ -48,8 +48,8 @@
 html, body {
   height: 100%;
   font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-  font-size: 16px;
-  line-height: 1.5;
+  font-size: 17px;
+  line-height: 1.55;
   color: var(--fg);
   background: var(--bg);
   overscroll-behavior: none;
@@ -101,14 +101,14 @@ body {
 }
 
 .pairing-shell h1 {
-  font-size: 22px;
+  font-size: 24px;
   font-weight: 700;
   margin-bottom: 8px;
 }
 
 .pairing-status {
   color: var(--fg-secondary);
-  font-size: 15px;
+  font-size: 16px;
   margin-bottom: 24px;
 }
 
@@ -130,7 +130,7 @@ body {
 }
 
 .pairing-card-note {
-  font-size: 14px;
+  font-size: 15px;
   color: var(--fg-secondary);
 }
 
@@ -429,7 +429,7 @@ body {
 }
 
 .hero-copy h1 {
-  font-size: 28px;
+  font-size: 30px;
   font-weight: 700;
   line-height: 1.25;
   color: var(--fg);
@@ -502,7 +502,7 @@ body {
   background: var(--bg-card);
   border: 1px solid var(--border);
   border-radius: 20px;
-  font-size: 14px;
+  font-size: 15px;
   font-weight: 500;
   color: var(--fg);
   box-shadow: var(--shadow-sm);
@@ -599,7 +599,7 @@ body {
     var(--bg-card);
   border: 1px solid rgba(255,255,255,0.62);
   border-radius: 18px;
-  font-size: 14px;
+  font-size: 15px;
   font-weight: 600;
   color: var(--fg);
   cursor: pointer;
@@ -669,8 +669,8 @@ body {
   max-width: 88%;
   padding: 12px 16px;
   border-radius: 20px;
-  font-size: 15px;
-  line-height: 1.5;
+  font-size: 17px;
+  line-height: 1.62;
   word-break: break-word;
   animation: msgIn 0.25s ease-out;
 }
@@ -696,7 +696,7 @@ body {
 }
 
 .msg-time {
-  font-size: 11px;
+  font-size: 12px;
   opacity: 0.5;
 }
 
@@ -713,7 +713,7 @@ body {
   background: transparent;
   color: inherit;
   opacity: 0.65;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
   cursor: pointer;
 }
@@ -740,12 +740,12 @@ body {
 }
 
 .msg-reply-role {
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 700;
 }
 
 .msg-reply-text {
-  font-size: 12px;
+  font-size: 13px;
   opacity: 0.82;
   white-space: nowrap;
   overflow: hidden;
@@ -832,11 +832,11 @@ body {
 }
 
 .compose-reply-copy strong {
-  font-size: 12px;
+  font-size: 13px;
 }
 
 .compose-reply-copy span {
-  font-size: 12px;
+  font-size: 13px;
   color: var(--fg-secondary);
   white-space: nowrap;
   overflow: hidden;
@@ -847,7 +847,7 @@ body {
   border: none;
   background: transparent;
   color: var(--fg-secondary);
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 600;
   cursor: pointer;
 }
@@ -888,7 +888,7 @@ body {
   border-radius: 10px;
   background: var(--bg-card);
   border: 1px solid var(--border-light);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 700;
   text-transform: uppercase;
 }
@@ -907,11 +907,11 @@ body {
 }
 
 .compose-attachment-copy strong {
-  font-size: 12px;
+  font-size: 13px;
 }
 
 .compose-attachment-copy span {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--fg-secondary);
 }
 
@@ -919,7 +919,7 @@ body {
   border: none;
   background: transparent;
   color: var(--fg-secondary);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
   cursor: pointer;
 }
@@ -929,9 +929,9 @@ body {
   resize: none;
   border: none;
   padding: 8px 4px;
-  font-size: 15px;
+  font-size: 17px;
   font-family: inherit;
-  line-height: 1.4;
+  line-height: 1.45;
   color: var(--fg);
   background: transparent;
   outline: none;
@@ -1037,13 +1037,13 @@ body {
 }
 
 .disconnect-sheet h3 {
-  font-size: 17px;
+  font-size: 18px;
   font-weight: 700;
   margin-bottom: 4px;
 }
 
 .disconnect-sheet p {
-  font-size: 14px;
+  font-size: 15px;
   color: var(--fg-secondary);
   margin-bottom: 16px;
 }
@@ -1112,18 +1112,18 @@ body {
 }
 
 .chat-sheet-item-title {
-  font-size: 14px;
+  font-size: 15px;
   font-weight: 700;
 }
 
 .chat-sheet-item-time {
-  font-size: 12px;
+  font-size: 13px;
   color: var(--fg-secondary);
   white-space: nowrap;
 }
 
 .chat-sheet-item-preview {
-  font-size: 13px;
+  font-size: 14px;
   color: var(--fg-secondary);
   display: -webkit-box;
   -webkit-line-clamp: 2;
@@ -1140,7 +1140,7 @@ body {
 }
 
 .chat-sheet-item-badge {
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 700;
   color: var(--fg-secondary);
 }
@@ -1149,7 +1149,7 @@ body {
   border: none;
   background: transparent;
   color: var(--danger);
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 700;
   cursor: pointer;
 }
@@ -1206,7 +1206,7 @@ body {
   border: 1px solid var(--border-light);
   border-radius: 14px;
   cursor: pointer;
-  font-size: 13px;
+  font-size: 14px;
   font-family: inherit;
   color: var(--fg-secondary);
   transition: background 0.15s, border-radius 0.2s;
@@ -1265,8 +1265,8 @@ body {
 .tool-step {
   padding: 10px 14px;
   border-bottom: 1px solid var(--border-light);
-  font-size: 13px;
-  line-height: 1.4;
+  font-size: 14px;
+  line-height: 1.5;
   color: var(--fg-secondary);
 }
 
@@ -1280,14 +1280,14 @@ body {
 
 .tool-step-time {
   display: block;
-  font-size: 11px;
+  font-size: 12px;
   opacity: 0.5;
   margin-top: 2px;
 }
 
 /* ── Rich Message Content ───────────────────── */
 .msg-content {
-  line-height: 1.5;
+  line-height: 1.65;
 }
 
 .msg-content a {
@@ -1347,8 +1347,8 @@ body {
   background: #111827;
   color: #f9fafb;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 13px;
-  line-height: 1.5;
+  font-size: 14px;
+  line-height: 1.55;
 }
 
 .msg-code code {
@@ -1394,7 +1394,7 @@ body {
   height: 64px;
   border-radius: 12px;
   background: rgba(255,255,255,0.08);
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 700;
   text-transform: uppercase;
   flex-shrink: 0;
@@ -1418,11 +1418,11 @@ body {
 }
 
 .msg-attachment-meta strong {
-  font-size: 13px;
+  font-size: 14px;
 }
 
 .msg-attachment-meta span {
-  font-size: 11px;
+  font-size: 12px;
   opacity: 0.7;
 }
 
@@ -1438,7 +1438,7 @@ body {
 .msg-table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 13px;
+  font-size: 14px;
   line-height: 1.4;
 }
 
