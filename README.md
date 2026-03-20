@@ -41,16 +41,99 @@ AgenticClaw follows a clear separation of concerns between the **Control Plane**
 
 ## 🛠️ Getting Started
 
-### 1. Installation
+### 📋 Prerequisites
 
-**From Source (Recommended)**
+- **OS:** Ubuntu 20.04+ (recommended) or any Linux distribution
+- **Python:** 3.11 or higher
+- **Git:** For cloning the repository
+- **Docker:** Required for sandbox mode (Docker Engine 20.10+)
+- **uv:** Python package manager (will be installed automatically)
+
+---
+
+### 🚀 Quick Installation (Recommended)
+
+**One-Command Installer (v2)**
+
+The easiest way to install Softnix AgenticClaw with all dependencies:
+
 ```bash
+# Clone the repository
 git clone https://github.com/rujirapongsn2/softnix-agenticclaw.git
 cd softnix-agenticclaw
-pip install -e .
+
+# Run the interactive installer
+bash scripts/install_softnix_host_v2.sh
 ```
 
-### 2. Initialize Your First Instance
+**Installer Options:**
+
+```bash
+# Non-interactive mode (auto-yes to all prompts)
+bash scripts/install_softnix_host_v2.sh --yes
+
+# With WhatsApp Bridge and Playwright support
+bash scripts/install_softnix_host_v2.sh --with-whatsapp --with-playwright-deps
+
+# Specify instance configuration
+bash scripts/install_softnix_host_v2.sh \
+  --instance-id my-prod \
+  --instance-name "My Production Bot" \
+  --admin-port 18880
+
+# With provider API key (for immediate use)
+bash scripts/install_softnix_host_v2.sh \
+  --provider openrouter \
+  --model openai/gpt-4o \
+  --api-key "sk-or-your-api-key-here"
+```
+
+**What the installer does:**
+1. ✅ Checks system requirements (Ubuntu, Python, Docker)
+2. ✅ Installs missing dependencies (Python, uv, Docker Engine)
+3. ✅ Creates virtual environment (`.venv`) and installs `nanobot`
+4. ✅ Builds sandbox Docker image (`softnixclaw:latest`)
+5. ✅ Bootstraps your first instance
+6. ✅ Starts the Admin UI service
+7. ✅ Opens the dashboard in your browser
+
+---
+
+### 🔧 Manual Installation (Advanced)
+
+**Step 1: Clone and Setup Environment**
+
+```bash
+# Clone the repository
+git clone https://github.com/rujirapongsn2/softnix-agenticclaw.git
+cd softnix-agenticclaw
+
+# Install uv (if not already installed)
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Create virtual environment and install dependencies
+uv venv
+source .venv/activate
+uv pip install -e .
+```
+
+**Step 2: Install Docker (if not installed)**
+
+```bash
+# Ubuntu/Debian
+curl -fsSL https://get.docker.com | sh
+sudo usermod -aG docker $USER
+# Logout and login again for group changes to take effect
+```
+
+**Step 3: Build Sandbox Image**
+
+```bash
+docker build -t softnixclaw:latest .
+```
+
+**Step 4: Initialize Your First Instance**
+
 Use `softnix-init` to bootstrap a new managed environment:
 
 ```bash
@@ -62,7 +145,9 @@ nanobot softnix-init \
   --repo-root $(pwd)
 ```
 
-### 3. Service Management CLI (`softnixclaw`)
+---
+
+### 🎛️ Service Management CLI (`softnixclaw`)
 
 For production and ease of use, we provide a unified management script named `softnixclaw` at the project root.
 
@@ -82,7 +167,12 @@ Manage the Admin UI service (whether running via Systemd or background process):
 ./softnixclaw admin restart  # Restart the admin server
 ./softnixclaw admin status   # Check status and recent logs
 ```
-Access the dashboard at [http://127.0.0.1:18880](http://127.0.0.1:18880)
+
+**Access the dashboard:**
+- Local: [http://127.0.0.1:18881](http://127.0.0.1:18881)
+- Remote: `http://<your-server-ip>:18881`
+
+> **Note:** Default port is **18881** (18880 if already in use)
 
 #### **C. Project Update**
 Keep your installation up-to-date with a single command:
@@ -90,6 +180,43 @@ Keep your installation up-to-date with a single command:
 ./softnixclaw update
 ```
 *This performs a `git pull`, updates dependencies, and restarts the services.*
+
+---
+
+### ⚙️ Instance Management
+
+**Start an Instance:**
+```bash
+# Using the instance's start script
+~/.softnix/instances/<instance-id>/scripts/start.sh
+
+# Or via Admin UI
+# Navigate to Instances → Select instance → Click "Start"
+```
+
+**Stop an Instance:**
+```bash
+~/.softnix/instances/<instance-id>/scripts/stop.sh
+```
+
+**Check Instance Status:**
+```bash
+~/.softnix/instances/<instance-id>/scripts/status.sh
+```
+
+**Configure an Instance:**
+```bash
+# Edit config directly
+nano ~/.softnix/instances/<instance-id>/config.json
+
+# Or via Admin UI
+# Navigate to Instances → Select instance → Configuration tab
+```
+
+> **Important:** Before starting an instance, ensure you have configured:
+> - **Provider** (e.g., `openrouter`, `openai`, `anthropic`)
+> - **Model** (e.g., `openai/gpt-4o`, `anthropic/claude-sonnet-4-5`)
+> - **API Key** (required for LLM access)
 
 ---
 
