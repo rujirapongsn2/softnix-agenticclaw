@@ -17,6 +17,14 @@ SERVICE_NAME="softnix-admin"
 SYSTEMD_USER_DIR="$HOME/.config/systemd/user"
 ADMIN_HOST="${SOFTNIX_ADMIN_HOST:-0.0.0.0}"
 ADMIN_PORT="${SOFTNIX_ADMIN_PORT:-18880}"
+if [ -x "$PROJECT_ROOT/.venv/bin/python" ]; then
+    PYTHON_HELPER="$PROJECT_ROOT/.venv/bin/python"
+elif command -v python3 &> /dev/null; then
+    PYTHON_HELPER="$(command -v python3)"
+else
+    echo "Error: 'python3' command not found. Please install Python first."
+    exit 1
+fi
 
 # Ensure directories exist
 mkdir -p "$LOG_DIR" "$RUN_DIR"
@@ -48,6 +56,197 @@ get_pid() {
     else
         echo ""
     fi
+}
+
+collect_registry_images() {
+    local registry_path="$ADMIN_HOME/instances.json"
+    if [ ! -f "$registry_path" ]; then
+        echo "softnixclaw:latest"
+        return 0
+    fi
+
+    "$PYTHON_HELPER" - "$registry_path" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+from nanobot.config.loader import load_config
+
+registry_path = Path(sys.argv[1]).expanduser()
+images: set[str] = set()
+
+try:
+    data = json.loads(registry_path.read_text(encoding="utf-8"))
+except Exception:
+    data = {"instances": []}
+
+for item in data.get("instances", []):
+    image = ""
+    config_path = Path(str(item.get("config") or "")).expanduser()
+    if config_path.exists():
+        try:
+            config = load_config(config_path)
+            image = str(getattr(config.runtime.sandbox, "image", "") or "").strip()
+        except Exception:
+            image = ""
+    if not image:
+        runtime = item.get("runtime")
+        if isinstance(runtime, dict):
+            sandbox = runtime.get("sandbox")
+            if isinstance(sandbox, dict):
+                image = str(sandbox.get("image") or "").strip()
+    if image:
+        images.add(image)
+
+if not images:
+    images.add("softnixclaw:latest")
+
+for image in sorted(images):
+    print(image)
+PY
+}
+
+collect_running_instances() {
+    local registry_path="$ADMIN_HOME/instances.json"
+    if [ ! -f "$registry_path" ]; then
+        return 0
+    fi
+
+    "$PYTHON_HELPER" - "$registry_path" <<'PY'
+import json
+import subprocess
+from pathlib import Path
+import sys
+
+registry_path = Path(sys.argv[1]).expanduser()
+try:
+    data = json.loads(registry_path.read_text(encoding="utf-8"))
+except Exception:
+    sys.exit(0)
+
+for item in data.get("instances", []):
+    lifecycle = item.get("lifecycle")
+    if not isinstance(lifecycle, dict):
+        continue
+    status_command = lifecycle.get("status")
+    restart_command = lifecycle.get("restart")
+    if not isinstance(status_command, list) or not isinstance(restart_command, list):
+        continue
+
+    cwd = item.get("cwd")
+    cwd_path = str(Path(cwd).expanduser()) if cwd else None
+    try:
+        probe = subprocess.run(
+            status_command,
+            cwd=cwd_path,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except Exception:
+        continue
+
+    if probe.returncode == 0:
+        payload = {
+            "id": item.get("id"),
+            "name": item.get("name"),
+            "cwd": cwd_path,
+            "restart": restart_command,
+        }
+        print(json.dumps(payload, ensure_ascii=False))
+PY
+}
+
+restart_running_instances() {
+    local running_instances
+    running_instances="$(collect_running_instances)"
+    if [ -z "$running_instances" ]; then
+        echo "   No running instances found."
+        return 0
+    fi
+
+    RUNNING_INSTANCES_PAYLOAD="$running_instances" "$PYTHON_HELPER" - <<'PY'
+import json
+import subprocess
+import os
+import sys
+
+payloads = [line for line in os.environ.get("RUNNING_INSTANCES_PAYLOAD", "").splitlines() if line.strip()]
+if not payloads:
+    print("   No running instances found.")
+    raise SystemExit(0)
+
+failures = []
+restarted = 0
+for raw in payloads:
+    item = json.loads(raw)
+    instance_id = item.get("id") or "unknown"
+    instance_name = item.get("name") or instance_id
+    restart_command = item.get("restart")
+    cwd = item.get("cwd") or None
+    if not isinstance(restart_command, list) or not restart_command:
+        continue
+
+    print(f"   Restarting running instance: {instance_id} ({instance_name})")
+    try:
+        result = subprocess.run(
+            restart_command,
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            timeout=120,
+            check=False,
+        )
+    except Exception as exc:
+        failures.append(f"{instance_id}: {exc}")
+        continue
+
+    if result.returncode == 0:
+        restarted += 1
+        stdout = (result.stdout or "").strip()
+        if stdout:
+            print(f"      {stdout}")
+    else:
+        stderr = (result.stderr or result.stdout or "").strip()
+        failures.append(f"{instance_id}: exit {result.returncode} - {stderr[:300]}")
+
+print(f"   Restarted {restarted} running instance(s).")
+if failures:
+    print("   Some running instances failed to restart:")
+    for failure in failures:
+        print(f"      - {failure}")
+    raise SystemExit(1)
+PY
+}
+
+classify_update_scope() {
+    local changed_files="$1"
+    local rebuild_var="$2"
+    local restart_var="$3"
+    local rebuild_image=0
+    local restart_instances=0
+
+    while IFS= read -r file; do
+        [ -n "$file" ] || continue
+        case "$file" in
+            README*|*.md|docs/*|nanobot/admin/static/*|tests/*|.github/*)
+                ;;
+            nanobot/admin/*|softnixclaw|scripts/*)
+                ;;
+            Dockerfile|pyproject.toml|uv.lock|bridge/*|nanobot/*)
+                rebuild_image=1
+                restart_instances=1
+                ;;
+            *)
+                ;;
+        esac
+    done <<EOF
+$changed_files
+EOF
+
+    eval "$rebuild_var=$rebuild_image"
+    eval "$restart_var=$restart_instances"
 }
 
 start_admin() {
@@ -199,6 +398,16 @@ update_project() {
         echo "   Backup saved to: $BACKUP_FILE"
     fi
 
+    local before_head=""
+    local after_head=""
+    local changed_files=""
+    local rebuild_image=0
+    local restart_instances=0
+
+    if [ -d ".git" ]; then
+        before_head="$(git rev-parse HEAD)"
+    fi
+
     # 2. Pull latest changes
     echo "2. Pulling latest changes from git..."
     if [ -d ".git" ]; then
@@ -206,8 +415,20 @@ update_project() {
             echo "❌ Error: git pull failed"
             exit 1
         fi
+        after_head="$(git rev-parse HEAD)"
+        if [ -n "$before_head" ] && [ "$before_head" != "$after_head" ]; then
+            changed_files="$(git diff --name-only "$before_head" "$after_head")"
+            classify_update_scope "$changed_files" rebuild_image restart_instances
+        fi
     else
         echo "⚠️ Warning: Not a git repository. Skipping git pull."
+    fi
+
+    if [ "$rebuild_image" -eq 1 ]; then
+        echo "   Runtime-affecting changes detected; sandbox image rebuild is required."
+    fi
+    if [ "$restart_instances" -eq 1 ]; then
+        echo "   Running instances will be restarted after the update."
     fi
 
     # 3. Update dependencies with uv (preferred) or pip
@@ -226,12 +447,39 @@ update_project() {
         fi
     fi
 
-    # 4. Restart service
-    echo "4. Restarting service..."
+    # 4. Rebuild sandbox images if runtime code changed
+    if [ "$rebuild_image" -eq 1 ]; then
+        echo "4. Rebuilding sandbox image(s)..."
+        while IFS= read -r sandbox_image; do
+            [ -n "$sandbox_image" ] || continue
+            echo "   Building $sandbox_image"
+            if ! docker build -t "$sandbox_image" .; then
+                echo "❌ Error: docker build failed for $sandbox_image"
+                exit 1
+            fi
+        done <<EOF
+$(collect_registry_images)
+EOF
+    else
+        echo "4. Sandbox image rebuild not required."
+    fi
+
+    # 5. Restart service
+    echo "5. Restarting service..."
     restart_admin
 
-    # 5. Verify service is running
-    echo "5. Verifying service health..."
+    # 6. Restart running instances if needed
+    if [ "$restart_instances" -eq 1 ]; then
+        echo "6. Restarting running instances..."
+        if ! restart_running_instances; then
+            echo "⚠️ One or more instances failed to restart. Check logs above."
+        fi
+    else
+        echo "6. Instance restart not required."
+    fi
+
+    # 7. Verify service is running
+    echo "7. Verifying service health..."
     sleep 5
     if curl -s --max-time 10 "http://$ADMIN_HOST:$ADMIN_PORT/admin/health" > /dev/null 2>&1; then
         echo "✅ Update Complete! Service is healthy."

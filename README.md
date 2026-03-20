@@ -179,7 +179,7 @@ Keep your installation up-to-date with a single command:
 ```bash
 ./softnixclaw update
 ```
-*This performs a `git pull`, updates dependencies, and restarts the services.*
+*This performs a `git pull`, updates dependencies, restarts `Softnix Admin`, and automatically rebuilds sandbox images / restarts running instances when runtime code changes are detected.*
 
 ---
 
