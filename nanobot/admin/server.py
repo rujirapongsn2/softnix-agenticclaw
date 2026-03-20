@@ -286,31 +286,41 @@ def resolve_admin_patch(
             config_data = payload.get("config")
             if not isinstance(config_data, dict):
                 return HTTPStatus.BAD_REQUEST, {"error": "Missing config payload"}
-            result = service.update_instance_config(instance_id=instance_id, config_data=config_data)
-            return HTTPStatus.OK, result
+            try:
+                result = service.update_instance_config(instance_id=instance_id, config_data=config_data)
+                return HTTPStatus.OK, result
+            except ValueError as exc:
+                return HTTPStatus.BAD_REQUEST, {"error": str(exc)}
+            except Exception as exc:
+                return HTTPStatus.INTERNAL_SERVER_ERROR, {"error": f"Failed to update instance config: {str(exc)}"}
 
         if path.startswith("/admin/instances/"):
             instance_id = path.rsplit("/", 1)[-1]
-            result = service.update_instance(
-                instance_id=instance_id,
-                name=payload.get("name"),
-                owner=payload.get("owner"),
-                env=payload.get("env"),
-                repo_root=payload.get("repo_root"),
-                nanobot_bin=payload.get("nanobot_bin"),
-                gateway_port=payload.get("gateway_port"),
-                runtime_mode=payload.get("runtime_mode"),
-                sandbox_profile=payload.get("sandbox_profile"),
-                sandbox_image=payload.get("sandbox_image"),
-                sandbox_execution_strategy=payload.get("sandbox_execution_strategy"),
-                sandbox_cpu_limit=payload.get("sandbox_cpu_limit"),
-                sandbox_memory_limit=payload.get("sandbox_memory_limit"),
-                sandbox_pids_limit=payload.get("sandbox_pids_limit"),
-                sandbox_tmpfs_size_mb=payload.get("sandbox_tmpfs_size_mb"),
-                sandbox_network_policy=payload.get("sandbox_network_policy"),
-                sandbox_timeout_seconds=payload.get("sandbox_timeout_seconds"),
-            )
-            return HTTPStatus.OK, result
+            try:
+                result = service.update_instance(
+                    instance_id=instance_id,
+                    name=payload.get("name"),
+                    owner=payload.get("owner"),
+                    env=payload.get("env"),
+                    repo_root=payload.get("repo_root"),
+                    nanobot_bin=payload.get("nanobot_bin"),
+                    gateway_port=payload.get("gateway_port"),
+                    runtime_mode=payload.get("runtime_mode"),
+                    sandbox_profile=payload.get("sandbox_profile"),
+                    sandbox_image=payload.get("sandbox_image"),
+                    sandbox_execution_strategy=payload.get("sandbox_execution_strategy"),
+                    sandbox_cpu_limit=payload.get("sandbox_cpu_limit"),
+                    sandbox_memory_limit=payload.get("sandbox_memory_limit"),
+                    sandbox_pids_limit=payload.get("sandbox_pids_limit"),
+                    sandbox_tmpfs_size_mb=payload.get("sandbox_tmpfs_size_mb"),
+                    sandbox_network_policy=payload.get("sandbox_network_policy"),
+                    sandbox_timeout_seconds=payload.get("sandbox_timeout_seconds"),
+                )
+                return HTTPStatus.OK, result
+            except ValueError as exc:
+                return HTTPStatus.BAD_REQUEST, {"error": str(exc)}
+            except Exception as exc:
+                return HTTPStatus.INTERNAL_SERVER_ERROR, {"error": f"Failed to update instance: {str(exc)}"}
 
         if path == "/admin/providers/default":
             instance_id = payload.get("instance_id") or "default"

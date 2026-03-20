@@ -5045,11 +5045,26 @@ async function handleInstanceAction(key) {
     if (result.ok) {
       clearBanner();
     } else {
-      setBanner(summarizeCommandResult(result), "error");
+      // Check for specific error messages from the server
+      const errorMsg = result.error || summarizeCommandResult(result);
+      if (errorMsg.includes("API key") || errorMsg.includes("provider")) {
+        setBanner(errorMsg, "error");
+      } else {
+        setBanner(summarizeCommandResult(result), "error");
+      }
     }
     await loadDashboard();
   } catch (error) {
-    setBanner(`Unable to ${action} instance '${instanceId}': ${error.message}`, "error");
+    // Handle HTTP errors (like 502) with better context
+    let errorMessage = error.message || "Unknown error";
+    if (error.message?.includes("502")) {
+      errorMessage = "Instance failed to start. Check the instance logs for details. Common issues: missing API key, invalid config, or port conflict.";
+    } else if (error.message?.includes("403")) {
+      errorMessage = `Permission denied. You need '${action}' permission to perform this action.`;
+    } else if (error.message?.includes("API key") || error.message?.includes("provider")) {
+      errorMessage = error.message;
+    }
+    setBanner(`Unable to ${action} instance '${instanceId}': ${errorMessage}`, "error");
   } finally {
     state.busyKey = "";
     renderInstances();
@@ -5089,6 +5104,11 @@ async function runAutoLifecycleAfterSave(instance) {
   }
   const result = await postJson(`/admin/instances/${instanceId}/${action}`, {});
   if (!result.ok) {
+    const errorMsg = result.error || summarizeCommandResult(result);
+    // Provide specific error for API key issues
+    if (errorMsg.includes("API key") || errorMsg.includes("provider") || errorMsg.includes("No API")) {
+      throw new Error(errorMsg);
+    }
     throw new Error(summarizeCommandResult(result));
   }
 }
@@ -5160,10 +5180,18 @@ async function handleInstanceFormSubmit() {
     let savedInstance = null;
     if (editor.mode === "edit") {
       const result = await patchJson(`/admin/instances/${editor.targetId}`, payload);
+      // Check for server error in response
+      if (result.error) {
+        throw new Error(result.error);
+      }
       savedInstance = result.instance || null;
       clearBanner();
     } else {
       const result = await postJson("/admin/instances", payload);
+      // Check for server error in response
+      if (result.error) {
+        throw new Error(result.error);
+      }
       savedInstance = result.instance || null;
       clearBanner();
       state.selectedInstanceId = payload.instance_id;
@@ -5175,7 +5203,16 @@ async function handleInstanceFormSubmit() {
     state.instanceWorkspaceTab = "manage";
     await loadDashboard();
   } catch (error) {
-    setBanner(`Unable to save instance: ${error.message}`, "error");
+    // Provide specific error messages for common issues
+    let errorMessage = error.message || "Unknown error";
+    if (errorMessage.includes("API key") || errorMessage.includes("provider")) {
+      errorMessage = errorMessage + " Please configure your provider in the Providers tab.";
+    } else if (errorMessage.includes("port") || errorMessage.includes("Port")) {
+      errorMessage = errorMessage + " Try changing the gateway port.";
+    } else if (errorMessage.includes("config") || errorMessage.includes("Config")) {
+      errorMessage = "Configuration error: " + errorMessage;
+    }
+    setBanner(`Unable to save instance: ${errorMessage}`, "error");
   } finally {
     state.busyKey = "";
     renderInstances();
@@ -5410,11 +5447,28 @@ async function handleProviderValidate(key) {
       instance_id: instanceId,
     });
     const validationMessage = formatValidationMessage(`Provider '${providerName}'`, result);
-    const restartMessage = buildProviderRestartMessage(instanceId, result.instance_restart, "validated");
-    setBanner(
-      restartMessage ? `${restartMessage} ${validationMessage}` : validationMessage,
-      result.status === "error" ? "error" : "warning",
-    );
+    
+    // Handle restart warning separately from validation result
+    let bannerMessage = validationMessage;
+    let bannerType = result.status === "error" ? "error" : "warning";
+    
+    if (result.instance_restart_warning) {
+      // Restart failed but validation succeeded - show as additional info
+      const restartError = result.instance_restart_warning;
+      if (restartError.includes("docker") || restartError.includes("permission")) {
+        bannerMessage = `${validationMessage} Note: Instance restart failed due to Docker permission issues. The Admin service needs to be restarted with proper Docker group access. Provider validation: ${result.status}.`;
+      } else {
+        bannerMessage = `${validationMessage} Note: Instance restart failed: ${restartError}. Provider validation: ${result.status}.`;
+      }
+      bannerType = "warning";
+    } else {
+      const restartMessage = buildProviderRestartMessage(instanceId, result.instance_restart, "validated");
+      if (restartMessage) {
+        bannerMessage = `${restartMessage} ${validationMessage}`;
+      }
+    }
+    
+    setBanner(bannerMessage, bannerType);
   } catch (error) {
     setBanner(`Unable to validate provider '${providerName}': ${error.message}`, "error");
   } finally {

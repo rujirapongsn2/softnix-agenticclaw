@@ -2398,13 +2398,24 @@ class AdminService:
         status = "ok" if not any(item["severity"] == "error" for item in findings) else "error"
         if status == "ok" and any(item["severity"] == "warning" for item in findings):
             status = "warning"
-        return {
+        
+        # Build response with restart info
+        response = {
             "instance_id": target.id,
             "provider_name": provider_name,
             "status": status,
             "findings": findings,
-            "instance_restart": restart_result,
         }
+        
+        # Include restart result if attempted, but don't fail validation if restart failed
+        if restart_result.get("attempted"):
+            if restart_result.get("error"):
+                # Restart was attempted but failed - add as warning, not error
+                response["instance_restart_warning"] = restart_result.get("error")
+            elif restart_result.get("ok"):
+                response["instance_restart"] = restart_result
+        
+        return response
 
     def _validate_provider_live(
         self,
@@ -2683,10 +2694,18 @@ class AdminService:
 
     def _restart_instance_if_supported(self, target: InstanceTarget) -> dict[str, Any]:
         restart_result: dict[str, Any] | None = None
+        restart_error: str | None = None
         if target.source == "registry" and target.lifecycle and self._lifecycle_command(target, "restart"):
-            restart_result = self.execute_instance_action(instance_id=target.id, action="restart")
+            try:
+                restart_result = self.execute_instance_action(instance_id=target.id, action="restart")
+            except Exception as exc:
+                # Capture restart error but don't fail the entire operation
+                # This can happen if Docker permissions are not set up correctly
+                restart_error = str(exc)
         return {
-            "attempted": restart_result is not None,
+            "attempted": restart_result is not None or restart_error is not None,
+            "success": restart_result is not None and restart_result.get("ok", False),
+            "error": restart_error,
             **(restart_result or {}),
         }
 
@@ -2807,13 +2826,32 @@ class AdminService:
             timeout=60,
             check=False,
         )
+        
+        # Detect common configuration errors and provide user-friendly messages
+        stderr = (result.stderr or "").strip()
+        stdout = (result.stdout or "").strip()
+        error_output = stderr + "\n" + stdout
+        
+        if result.returncode != 0:
+            if "No API key configured" in error_output or "No API key" in error_output:
+                raise ValueError(
+                    f"Missing provider API key. Please configure your LLM provider in the Providers tab "
+                    f"or edit the instance config at '{target.config_path}'. "
+                    f"Error: {stderr or stdout}"
+                )
+            elif "API key" in error_output and "not configured" in error_output:
+                raise ValueError(
+                    f"Provider API key is missing. Go to Providers tab to add your API key. "
+                    f"Error: {stderr or stdout}"
+                )
+        
         payload = {
             "instance": self._collect_instance(target),
             "action": action,
             "command": command,
             "returncode": result.returncode,
-            "stdout": (result.stdout or "").strip()[:2000],
-            "stderr": (result.stderr or "").strip()[:2000],
+            "stdout": stdout[:2000],
+            "stderr": stderr[:2000],
             "ok": result.returncode == 0,
         }
         self._append_audit_event(

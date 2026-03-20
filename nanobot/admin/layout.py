@@ -497,8 +497,22 @@ def bootstrap_softnix_instance(
 
 
 def _load_source_config(source_config: Path | None) -> Config:
+    """Load source config, with fallback to default-prod instance if available."""
+    # If explicit source config provided, use it
     if source_config and source_config.expanduser().exists():
         return load_config(source_config.expanduser())
+    
+    # Fallback: Try to load from default-prod instance if it exists
+    # This ensures new instances inherit the same provider/model settings
+    default_prod_config = Path.home() / ".softnix" / "instances" / "default-prod" / "config.json"
+    if default_prod_config.exists():
+        try:
+            return load_config(default_prod_config)
+        except Exception:
+            # If loading fails, fall through to empty Config()
+            pass
+    
+    # Return empty default config if no source available
     return Config()
 
 
