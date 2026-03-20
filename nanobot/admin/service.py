@@ -13,6 +13,7 @@ import subprocess
 import asyncio
 import socket
 import os
+import re
 import signal
 import secrets
 import threading
@@ -60,6 +61,7 @@ from nanobot.channels.access_requests import AccessRequestStore
 from nanobot.providers.custom_provider import SOFTNIX_GENAI_USER_AGENT
 from nanobot.providers.registry import PROVIDERS
 from nanobot.runtime.audit import runtime_audit_path
+from nanobot.security.policy import GlobalControlPolicyStore, PolicyValidationError, get_policy_catalog
 from nanobot.session.manager import SessionManager
 from nanobot.utils.helpers import sync_workspace_templates
 
@@ -300,6 +302,21 @@ class AdminService:
             return False
         return True
 
+    @staticmethod
+    def _normalize_mobile_sender_identity(value: str | None) -> str:
+        raw = str(value or "").strip()
+        if not raw:
+            return ""
+        if raw.startswith("mobile-"):
+            raw = raw[len("mobile-"):]
+        match = re.match(
+            r"^(mob-[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})(?:-.+)?$",
+            raw,
+        )
+        if match:
+            return match.group(1)
+        return raw
+
     def _ensure_mobile_push_keys(self) -> dict[str, Any] | None:
         existing = self.auth_store.get_mobile_push_keys()
         if existing:
@@ -481,7 +498,9 @@ class AdminService:
                 self._dispatch_mobile_push(target.id, payload)
 
     def _dispatch_mobile_push(self, instance_id: str, payload: dict[str, Any]) -> None:
-        sender_id = str(payload.get("sender_id") or "").strip()
+        sender_id = self._normalize_mobile_sender_identity(
+            str(payload.get("sender_id") or payload.get("session_id") or "").strip()
+        )
         if not sender_id or str(payload.get("type") or "answer") != "answer":
             return
         subscriptions = self.auth_store.list_mobile_push_subscriptions(instance_id, sender_id)
@@ -632,10 +651,13 @@ class AdminService:
         target = next((t for t in self._load_targets() if t.id == instance_id), None)
         if not target:
             return []
-            
+
         outbound_file = target.workspace_path / "mobile_relay" / "outbound.jsonl"
         if not outbound_file.exists():
             return []
+
+        normalized_sender_id = self._normalize_mobile_sender_identity(sender_id)
+        session_prefix = f"mobile-{normalized_sender_id}" if normalized_sender_id else ""
             
         all_replies = []
         remaining_lines = []
@@ -646,7 +668,13 @@ class AdminService:
                 if not line.strip():
                     continue
                 data = json.loads(line)
-                if data.get("sender_id") == sender_id:
+                data_sender_id = self._normalize_mobile_sender_identity(str(data.get("sender_id") or ""))
+                data_session_id = str(data.get("session_id") or "").strip()
+                if (
+                    data_sender_id == normalized_sender_id
+                    or data_session_id == sender_id
+                    or (session_prefix and data_session_id.startswith(session_prefix))
+                ):
                     all_replies.append(data)
                 else:
                     remaining_lines.append(line)
@@ -889,6 +917,9 @@ class AdminService:
     def _audit_path(self, instance_id: str) -> Path:
         return self._audit_dir() / f"{instance_id}.jsonl"
 
+    def _global_policy_store(self) -> GlobalControlPolicyStore:
+        return GlobalControlPolicyStore(self.auth_store.security_dir / "content-intent-policy.json")
+
     def _append_audit_event(
         self,
         *,
@@ -926,21 +957,24 @@ class AdminService:
     ) -> dict[str, Any]:
         """Read and filter the auth audit log for the Security Audit viewer."""
         audit_path = self.auth_store.audit_path
-        if not audit_path.exists():
-            return {"events": [], "total": 0, "offset": offset, "limit": limit}
-        try:
-            raw_lines = [line for line in audit_path.read_text(encoding="utf-8").splitlines() if line.strip()]
-        except Exception:
-            return {"events": [], "total": 0, "offset": offset, "limit": limit}
-
         events: list[dict[str, Any]] = []
-        for raw in raw_lines:
+        if audit_path.exists():
             try:
-                record = json.loads(raw)
+                raw_lines = [line for line in audit_path.read_text(encoding="utf-8").splitlines() if line.strip()]
             except Exception:
-                continue
-            if not isinstance(record, dict):
-                continue
+                raw_lines = []
+            for raw in raw_lines:
+                try:
+                    record = json.loads(raw)
+                except Exception:
+                    continue
+                if not isinstance(record, dict):
+                    continue
+                events.append(record)
+
+        events.extend(self._collect_policy_security_audit_events())
+        filtered_events: list[dict[str, Any]] = []
+        for record in events:
             ev_category = str(record.get("category") or "")
             ev_outcome = str(record.get("outcome") or "")
             if category != "all" and ev_category != category:
@@ -966,12 +1000,45 @@ class AdminService:
                 ]).lower()
                 if needle not in haystack:
                     continue
-            events.append(record)
+            filtered_events.append(record)
 
-        events.sort(key=lambda e: str(e.get("ts") or ""), reverse=True)
-        total = len(events)
-        page = events[offset : offset + limit]
+        filtered_events.sort(key=lambda e: str(e.get("ts") or ""), reverse=True)
+        total = len(filtered_events)
+        page = filtered_events[offset : offset + limit]
         return {"events": page, "total": total, "offset": offset, "limit": limit}
+
+    def _collect_policy_security_audit_events(self) -> list[dict[str, Any]]:
+        events: list[dict[str, Any]] = []
+        for event in self._collect_policy_runtime_events():
+            action = str(event.get("policy_action") or event.get("action") or "allow")
+            outcome = "denied" if action in {"block", "escalate"} else "success"
+            events.append(
+                {
+                    "ts": str(event.get("ts") or ""),
+                    "event_type": f"security.policy_enforcement_{action}",
+                    "category": "policy_runtime",
+                    "outcome": outcome,
+                    "actor": {
+                        "user_id": None,
+                        "username": "runtime",
+                        "role": "system",
+                    },
+                    "resource": {
+                        "type": "instance",
+                        "id": event.get("instance_id") or "",
+                        "name": event.get("instance_name") or "",
+                    },
+                    "detail": {
+                        "scope": event.get("scope") or "",
+                        "rule_ids": event.get("rule_ids") or [],
+                        "action": action,
+                        "policy_version": event.get("policy_version"),
+                        "channel": event.get("channel") or "",
+                        "session_key": event.get("session_key") or "",
+                    },
+                }
+            )
+        return events
 
     def bootstrap_admin_user(
         self,
@@ -1351,7 +1418,168 @@ class AdminService:
                 for item in instances
             ],
             "findings": findings,
+            "global_policy": self.get_global_policy_summary(),
+            "recent_policy_hits": self.get_global_policy_hits(limit=20)["events"],
+            "detections_by_instance": self.get_global_policy_detections_by_instance()["instances"],
         }
+
+    def get_global_policy(self) -> dict[str, Any]:
+        store = self._global_policy_store()
+        try:
+            policy = store.load()
+        except PolicyValidationError as exc:
+            return {
+                "policy": None,
+                "summary": {
+                    "path": str(store.path),
+                    "exists": store.path.exists(),
+                    "enabled": False,
+                    "mode": "error",
+                    "version": 0,
+                    "updated_at": "",
+                    "updated_by": {},
+                    "rule_count": 0,
+                    "enabled_rule_count": 0,
+                    "error": "; ".join(exc.errors),
+                },
+                "errors": exc.errors,
+                "warnings": exc.warnings,
+            }
+        return {
+            "policy": policy,
+            "summary": store.summarize(policy),
+            "catalog": get_policy_catalog(),
+        }
+
+    def get_global_policy_summary(self) -> dict[str, Any]:
+        store = self._global_policy_store()
+        try:
+            policy = store.load()
+        except PolicyValidationError as exc:
+            return {
+                "path": str(store.path),
+                "exists": store.path.exists(),
+                "enabled": False,
+                "mode": "error",
+                "version": 0,
+                "updated_at": "",
+                "updated_by": {},
+                "rule_count": 0,
+                "enabled_rule_count": 0,
+                "error": "; ".join(exc.errors),
+            }
+        return store.summarize(policy)
+
+    def validate_global_policy(self, *, policy: dict[str, Any]) -> dict[str, Any]:
+        store = self._global_policy_store()
+        normalized, errors, warnings = store.validate(policy)
+        return {
+            "valid": not errors,
+            "errors": errors,
+            "warnings": warnings,
+            "policy": normalized,
+            "summary": store.summarize(normalized) if not errors else None,
+            "catalog": get_policy_catalog(),
+        }
+
+    def update_global_policy(self, *, policy: dict[str, Any]) -> dict[str, Any]:
+        store = self._global_policy_store()
+        actor = get_request_audit_context() or {}
+        current = None
+        if store.path.exists():
+            try:
+                current = store.load()
+            except Exception:
+                current = None
+        try:
+            saved = store.save(policy, actor=actor)
+        except PolicyValidationError as exc:
+            self.auth_store.append_audit(
+                event_type="security.policy_global_validation_failed",
+                category="policy_admin",
+                outcome="failure",
+                resource={"type": "global_policy", "id": "content-intent-policy"},
+                payload={"errors": exc.errors, "warnings": exc.warnings},
+            )
+            raise
+
+        current_enabled = bool((current or {}).get("enabled", True))
+        if current is None:
+            event_type = "security.policy_global_created"
+        elif current_enabled != bool(saved.get("enabled", True)):
+            event_type = "security.policy_global_enabled" if bool(saved.get("enabled", True)) else "security.policy_global_disabled"
+        elif str((current or {}).get("mode") or "enforce") != str(saved.get("mode") or "enforce"):
+            event_type = "security.policy_mode_changed"
+        else:
+            event_type = "security.policy_global_updated"
+
+        self.auth_store.append_audit(
+            event_type=event_type,
+            category="policy_admin",
+            outcome="success",
+            resource={"type": "global_policy", "id": "content-intent-policy"},
+            payload={
+                "version": saved.get("version"),
+                "mode": saved.get("mode"),
+                "enabled": saved.get("enabled"),
+                "rule_count": len(saved.get("rules") or []),
+            },
+        )
+        return {
+            "policy": saved,
+            "summary": store.summarize(saved),
+            "catalog": get_policy_catalog(),
+        }
+
+    def get_global_policy_hits(self, *, limit: int = 100) -> dict[str, Any]:
+        events = self._collect_policy_runtime_events()
+        events.sort(key=lambda item: _ts_sort_key(item.get("ts")), reverse=True)
+        page = events[: max(1, min(limit, 500))]
+        return {
+            "events": page,
+            "count": len(page),
+            "total": len(events),
+        }
+
+    def get_global_policy_detections_by_instance(self) -> dict[str, Any]:
+        events = self._collect_policy_runtime_events()
+        grouped: dict[str, dict[str, Any]] = {}
+        for event in events:
+            key = str(event.get("instance_id") or "default")
+            item = grouped.setdefault(
+                key,
+                {
+                    "instance_id": key,
+                    "instance_name": event.get("instance_name") or key,
+                    "detection_count": 0,
+                    "blocked_count": 0,
+                    "masked_count": 0,
+                    "warn_count": 0,
+                    "latest_detected_at": None,
+                    "top_rules": {},
+                },
+            )
+            item["detection_count"] += 1
+            action = str(event.get("policy_action") or event.get("action") or "")
+            if action in {"block", "escalate"}:
+                item["blocked_count"] += 1
+            elif action == "mask":
+                item["masked_count"] += 1
+            elif action == "warn":
+                item["warn_count"] += 1
+            ts = str(event.get("ts") or "")
+            if ts and (not item["latest_detected_at"] or _ts_sort_key(ts) > _ts_sort_key(item["latest_detected_at"])):
+                item["latest_detected_at"] = ts
+            for rule_id in event.get("rule_ids") or []:
+                item["top_rules"][str(rule_id)] = int(item["top_rules"].get(str(rule_id), 0)) + 1
+
+        instances = []
+        for item in grouped.values():
+            top_rules = sorted(item["top_rules"].items(), key=lambda entry: entry[1], reverse=True)[:5]
+            item["top_rules"] = [{"rule_id": rule_id, "count": count} for rule_id, count in top_rules]
+            instances.append(item)
+        instances.sort(key=lambda item: (int(item.get("detection_count") or 0), str(item.get("latest_detected_at") or "")), reverse=True)
+        return {"instances": instances, "count": len(instances)}
 
     def get_runtime_audit_events(
         self,
@@ -3259,6 +3487,12 @@ class AdminService:
                 "message_preview": _truncate_text(payload.get("message_preview"), limit=320),
                 "result_preview": result_preview,
                 "exit_code": payload.get("exit_code"),
+                "scope": _truncate_text(payload.get("scope"), limit=64),
+                "policy_action": _truncate_text(payload.get("action"), limit=32),
+                "policy_severity": _truncate_text(payload.get("severity"), limit=32),
+                "policy_mode": _truncate_text(payload.get("policy_mode"), limit=32),
+                "policy_version": payload.get("policy_version"),
+                "rule_ids": payload.get("rule_ids") if isinstance(payload.get("rule_ids"), list) else [],
             }
             events.append(event)
 
@@ -3310,6 +3544,21 @@ class AdminService:
                     continue
             events.append(item)
             existing_keys.add(key)
+        return events
+
+    def _collect_policy_runtime_events(self) -> list[dict[str, Any]]:
+        events: list[dict[str, Any]] = []
+        for target in self._load_targets():
+            runtime_events = self._read_runtime_audit_events(
+                workspace_path=target.workspace_path,
+                instance_id=target.id,
+                instance_name=target.name,
+            )
+            for event in runtime_events:
+                if str(event.get("operation") or "") != "policy_detection":
+                    continue
+                events.append(event)
+        events.sort(key=lambda item: _ts_sort_key(item.get("ts")), reverse=True)
         return events
 
     def _read_session_events_for_runtime_audit(
@@ -3406,6 +3655,7 @@ class AdminService:
         file_op_count = 0
         package_install_count = 0
         blocked_count = 0
+        policy_detection_count = 0
         last_event_at: str | None = None
         for event in events:
             operation = str(event.get("operation") or "")
@@ -3415,7 +3665,11 @@ class AdminService:
                 file_op_count += 1
             if operation == "package_install":
                 package_install_count += 1
+            if operation == "policy_detection":
+                policy_detection_count += 1
             if "blocked by safety guard" in str(event.get("result_preview") or "").lower():
+                blocked_count += 1
+            if str(event.get("policy_action") or "") in {"block", "escalate"}:
                 blocked_count += 1
             ts = str(event.get("ts") or "")
             if ts:
@@ -3426,6 +3680,7 @@ class AdminService:
             "file_op_count": file_op_count,
             "package_install_count": package_install_count,
             "blocked_count": blocked_count,
+            "policy_detection_count": policy_detection_count,
             "last_event_at": last_event_at,
         }
 

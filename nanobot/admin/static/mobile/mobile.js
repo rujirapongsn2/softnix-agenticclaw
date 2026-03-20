@@ -247,7 +247,8 @@ async function pollReplies() {
   if (!device) return;
 
   try {
-    const url = `/admin/mobile/poll?instance_id=${encodeURIComponent(device.instance_id)}&sender_id=${encodeURIComponent(device.device_id)}`;
+    const senderId = getActiveSessionId() || device.device_id;
+    const url = `/admin/mobile/poll?instance_id=${encodeURIComponent(device.instance_id)}&sender_id=${encodeURIComponent(senderId)}`;
     const response = await apiFetch(url);
     if (!response.ok) return;
 
@@ -591,7 +592,9 @@ function showTypingIndicator(show) {
   let element = $("messages").querySelector(".typing-indicator");
   if (!element && show) {
     element = document.createElement("div");
-    element.className = "typing-indicator";
+    element.className = "typing-indicator spinner spinner--dots";
+    element.setAttribute("aria-label", "Agent is typing");
+    element.setAttribute("role", "status");
     element.innerHTML = "<span></span><span></span><span></span>";
     $("messages").appendChild(element);
   }
@@ -910,6 +913,7 @@ function showDisconnectMenu() {
       if (event.target === overlay) overlay.classList.remove("is-visible");
     });
   }
+  void syncPushStatus();
   renderPushSettings();
   overlay.classList.add("is-visible");
 }

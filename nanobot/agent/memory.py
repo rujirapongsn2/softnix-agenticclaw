@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from loguru import logger
 
@@ -45,10 +45,11 @@ _SAVE_MEMORY_TOOL = [
 class MemoryStore:
     """Two-layer memory: MEMORY.md (long-term facts) + HISTORY.md (grep-searchable log)."""
 
-    def __init__(self, workspace: Path):
+    def __init__(self, workspace: Path, *, policy_enforcer: Any | None = None):
         self.memory_dir = ensure_dir(workspace / "memory")
         self.memory_file = self.memory_dir / "MEMORY.md"
         self.history_file = self.memory_dir / "HISTORY.md"
+        self.policy_enforcer = policy_enforcer
 
     def read_long_term(self) -> str:
         if self.memory_file.exists():
@@ -56,9 +57,15 @@ class MemoryStore:
         return ""
 
     def write_long_term(self, content: str) -> None:
+        if self.policy_enforcer is not None:
+            content = self.policy_enforcer.sanitize_memory_text(content)
         self.memory_file.write_text(content, encoding="utf-8")
 
     def append_history(self, entry: str) -> None:
+        if self.policy_enforcer is not None:
+            entry = self.policy_enforcer.sanitize_memory_text(entry)
+        if not entry.strip():
+            return
         with open(self.history_file, "a", encoding="utf-8") as f:
             f.write(entry.rstrip() + "\n\n")
 

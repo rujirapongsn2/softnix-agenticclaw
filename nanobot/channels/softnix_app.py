@@ -4,6 +4,7 @@ import asyncio
 import json
 import mimetypes
 import os
+import re
 import shutil
 import secrets
 from datetime import datetime, timezone
@@ -122,6 +123,12 @@ class SoftnixAppChannel(BaseChannel):
             if sep in raw:
                 raw = raw.split(sep, 1)[0]
                 break
+        match = re.match(
+            r"^(mob-[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})(?:-.+)?$",
+            raw,
+        )
+        if match:
+            return match.group(1)
         return raw
 
     def _relay_media_ref(self, sender_id: str, media_path: str) -> dict[str, Any] | None:

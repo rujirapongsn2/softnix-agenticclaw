@@ -5,6 +5,19 @@ overview: null,
   qrModal: { open: false, instanceId: null, countdownTimer: null },
   accessRequests: { requests: [], count: 0 },
   security: null,
+  securityPolicy: {
+    policy: null,
+    catalog: [],
+    text: "",
+    errors: [],
+    warnings: [],
+    loading: false,
+    initialized: false,
+    dirty: false,
+    selectedRuleId: "",
+  },
+  securityTab: "policy",
+  securityPolicySection: "rules",
   activity: null,
   auth: {
     initialized: false,
@@ -364,6 +377,269 @@ function badgeClass(severity) {
   return "is-gray";
 }
 
+const POLICY_SCOPE_OPTIONS = [
+  { value: "input", label: "Input" },
+  { value: "output", label: "Output" },
+  { value: "tool_args", label: "Tool Args" },
+  { value: "memory_write", label: "Memory Write" },
+];
+
+const POLICY_MODE_OPTIONS = [
+  { value: "off", label: "Off" },
+  { value: "monitor", label: "Monitor" },
+  { value: "enforce", label: "Enforce" },
+];
+
+const POLICY_ACTION_OPTIONS = [
+  { value: "allow", label: "Allow" },
+  { value: "warn", label: "Warn" },
+  { value: "mask", label: "Mask" },
+  { value: "block", label: "Block" },
+  { value: "escalate", label: "Escalate" },
+];
+
+const POLICY_SEVERITY_OPTIONS = [
+  { value: "low", label: "Low" },
+  { value: "medium", label: "Medium" },
+  { value: "high", label: "High" },
+  { value: "critical", label: "Critical" },
+];
+
+function getPolicyCardCatalog() {
+  return Array.isArray(state.securityPolicy.catalog) ? state.securityPolicy.catalog : [];
+}
+
+function getPolicyCardTemplate(ruleId) {
+  return getPolicyCardCatalog()
+    .flatMap((group) => (Array.isArray(group.cards) ? group.cards : []))
+    .find((card) => String(card.rule_id || "") === String(ruleId || ""));
+}
+
+function getPolicyCardGroupLabel(ruleId) {
+  for (const group of getPolicyCardCatalog()) {
+    if ((Array.isArray(group.cards) ? group.cards : []).some((card) => String(card.rule_id || "") === String(ruleId || ""))) {
+      return String(group.group || "General");
+    }
+  }
+  return "General";
+}
+
+function buildPolicyRuleFromCatalog(template) {
+  const now = new Date().toISOString();
+  const rule = clonePolicyPayload(template || {});
+  rule.enabled = false;
+  rule.builtin = true;
+  rule.created_at = rule.created_at || now;
+  rule.updated_at = now;
+  return rule;
+}
+
+function handleSecurityPolicyCatalogAdd(ruleId) {
+  const template = getPolicyCardTemplate(ruleId);
+  if (!template) return;
+  updateSecurityPolicy((policy) => {
+    const exists = (policy.rules || []).some((rule) => String(rule.rule_id || "") === String(ruleId || ""));
+    if (exists) return;
+    const nextRule = buildPolicyRuleFromCatalog(template);
+    nextRule.group = nextRule.group || getPolicyCardGroupLabel(ruleId);
+    policy.rules.push(nextRule);
+  });
+  state.securityPolicy.selectedRuleId = String(ruleId || "");
+  renderSecurityControls();
+}
+
+function policyActionBadgeClass(action) {
+  if (action === "block" || action === "escalate") return "is-red";
+  if (action === "mask" || action === "warn") return "is-orange";
+  if (action === "allow") return "is-lime";
+  return "is-gray";
+}
+
+function clonePolicyPayload(policy) {
+  return JSON.parse(JSON.stringify(policy || {}));
+}
+
+function syncPolicyEditorText() {
+  if (!state.securityPolicy.policy) return;
+  state.securityPolicy.text = JSON.stringify(state.securityPolicy.policy, null, 2);
+  state.securityPolicy.dirty = true;
+}
+
+function ensureSelectedSecurityRule() {
+  const rules = Array.isArray(state.securityPolicy.policy?.rules) ? state.securityPolicy.policy.rules : [];
+  if (!rules.length) {
+    state.securityPolicy.selectedRuleId = "";
+    return null;
+  }
+  const selected = rules.find((rule) => String(rule.rule_id || "") === state.securityPolicy.selectedRuleId);
+  if (selected) return selected;
+  state.securityPolicy.selectedRuleId = String(rules[0].rule_id || "");
+  return rules[0];
+}
+
+function getSecurityRule(ruleId) {
+  const rules = Array.isArray(state.securityPolicy.policy?.rules) ? state.securityPolicy.policy.rules : [];
+  return rules.find((rule) => String(rule.rule_id || "") === String(ruleId || ""));
+}
+
+function updateSecurityPolicy(mutator) {
+  const nextPolicy = clonePolicyPayload(state.securityPolicy.policy || {});
+  if (!Array.isArray(nextPolicy.rules)) nextPolicy.rules = [];
+  mutator(nextPolicy);
+  nextPolicy.updated_at = new Date().toISOString();
+  state.securityPolicy.policy = nextPolicy;
+  state.securityPolicy.errors = [];
+  syncPolicyEditorText();
+}
+
+function handleSecurityPolicyRuleSelect(ruleId) {
+  state.securityPolicy.selectedRuleId = String(ruleId || "");
+  renderSecurityControls();
+}
+
+function handleSecurityPolicyEnabledToggle(enabled) {
+  updateSecurityPolicy((policy) => {
+    policy.enabled = enabled;
+  });
+  renderSecurityControls();
+}
+
+function handleSecurityPolicyModeChange(mode) {
+  updateSecurityPolicy((policy) => {
+    policy.mode = String(mode || "enforce");
+  });
+  renderSecurityControls();
+}
+
+function handleSecurityPolicyRuleEnabled(ruleId, enabled) {
+  updateSecurityPolicy((policy) => {
+    const rule = (policy.rules || []).find((item) => String(item.rule_id || "") === String(ruleId || ""));
+    if (rule) {
+      rule.enabled = enabled;
+      rule.updated_at = new Date().toISOString();
+    }
+  });
+  renderSecurityControls();
+}
+
+function handleSecurityPolicyRuleField(ruleId, field, value) {
+  updateSecurityPolicy((policy) => {
+    const rule = (policy.rules || []).find((item) => String(item.rule_id || "") === String(ruleId || ""));
+    if (rule) {
+      rule[field] = value;
+      rule.updated_at = new Date().toISOString();
+    }
+  });
+  renderSecurityControls();
+}
+
+function handleSecurityPolicyRuleScope(ruleId, scope, enabled) {
+  updateSecurityPolicy((policy) => {
+    const rule = (policy.rules || []).find((item) => String(item.rule_id || "") === String(ruleId || ""));
+    if (!rule) return;
+    const scopes = new Set(Array.isArray(rule.scope) ? rule.scope : []);
+    if (enabled) scopes.add(scope);
+    else scopes.delete(scope);
+    rule.scope = Array.from(scopes);
+    rule.updated_at = new Date().toISOString();
+  });
+  renderSecurityControls();
+}
+
+function renderPolicyChip(label, tone = "") {
+  return `<span class="policy-chip ${tone}">${escapeHtml(label)}</span>`;
+}
+
+function renderPolicyDetectorSummary(rule) {
+  const detectors = Array.isArray(rule?.detectors) ? rule.detectors : [];
+  if (!detectors.length) return renderPolicyChip("No detector", "is-muted");
+  return detectors
+    .map((detector) => {
+      const type = String(detector?.type || "custom");
+      if (type === "pii") {
+        const piiTypes = Array.isArray(detector?.pii_types) ? detector.pii_types.length : 0;
+        return renderPolicyChip(`PII ${piiTypes || 1}`, "is-blue");
+      }
+      if (type === "regex") {
+        const patterns = Array.isArray(detector?.patterns) ? detector.patterns.length : 0;
+        return renderPolicyChip(`Regex ${patterns || 1}`, "is-blue");
+      }
+      const values = Array.isArray(detector?.values) ? detector.values.length : 0;
+      return renderPolicyChip(`${type} ${values || 1}`, "is-blue");
+    })
+    .join("");
+}
+
+function renderPolicyCardCatalog(policyRules, canUpdatePolicy, policyBusy) {
+  const existingRuleIds = new Set((Array.isArray(policyRules) ? policyRules : []).map((rule) => String(rule.rule_id || "")));
+  const catalog = getPolicyCardCatalog();
+  if (!catalog.length) {
+    return `<p class="meta">No recommended policy cards are available.</p>`;
+  }
+  const catalogCount = catalog.reduce((total, group) => total + (Array.isArray(group.cards) ? group.cards.length : 0), 0);
+  const groups = catalog
+    .map((group) => {
+      const cards = Array.isArray(group.cards) ? group.cards : [];
+      if (!cards.length) return "";
+      return `
+        <section class="policy-catalog-group">
+          <div class="policy-catalog-group-header">
+            <div>
+              <h4>${escapeHtml(group.group || "General")}</h4>
+              <p class="meta">Recommended cards in this policy family.</p>
+            </div>
+            <span class="badge ${badgeClass("info")}">${escapeHtml(String(cards.length))} cards</span>
+          </div>
+          <div class="policy-catalog-grid">
+            ${cards
+              .map((template) => {
+                const ruleId = String(template.rule_id || "");
+                const exists = existingRuleIds.has(ruleId);
+                return `
+                  <article class="policy-catalog-card ${exists ? "is-added" : ""}">
+                    <div class="row-between policy-catalog-card-head">
+                      <div>
+                        <h4>${escapeHtml(template.name || ruleId || "Untitled card")}</h4>
+                        <p class="meta">${escapeHtml(ruleId)}</p>
+                      </div>
+                      <span class="badge ${exists ? badgeClass("ok") : badgeClass("warning")}">${exists ? "Added" : "Disabled"}</span>
+                    </div>
+                    <p class="policy-catalog-description">${escapeHtml(template.description || template.message_template || "No description")}</p>
+                    <div class="policy-catalog-actions">
+                      <button
+                        type="button"
+                        class="secondary-button is-small"
+                        data-policy-card-add="${escapeHtml(ruleId)}"
+                        ${!canUpdatePolicy || policyBusy || exists ? "disabled" : ""}
+                      >
+                        ${exists ? "Added" : "Add disabled"}
+                      </button>
+                    </div>
+                  </article>
+                `;
+              })
+              .join("")}
+          </div>
+        </section>
+      `;
+    })
+    .join("");
+  return `
+    <details class="policy-catalog-panel">
+      <summary>
+        <span>
+          <strong>Recommended Disabled Cards</strong>
+          <span class="meta">Open to add optional policy cards</span>
+        </span>
+        <span class="badge ${badgeClass("info")}">${escapeHtml(String(catalogCount))} cards</span>
+      </summary>
+      <div class="policy-catalog-body">
+        ${groups}
+      </div>
+    </details>
+  `;
+}
+
 async function fetchJson(path) {
   const response = await fetch(path, {
     cache: "no-store",
@@ -453,6 +729,14 @@ function setBanner(message, type = "warning") {
 
 function clearBanner() {
   document.getElementById("alert-banner").classList.add("is-hidden");
+}
+
+function setRefreshButtonState(loading) {
+  const button = document.getElementById("refresh-button");
+  if (!button) return;
+  button.disabled = loading;
+  button.classList.toggle("is-loading", loading);
+  button.textContent = loading ? "Refreshing..." : "Refresh";
 }
 
 function currentUserRole() {
@@ -1751,9 +2035,18 @@ function renderSelectedInstanceChannels(instance) {
                     &nbsp;·&nbsp; Last seen: ${escapeHtml(d.last_seen ? new Date(d.last_seen).toLocaleString() : "Never")}
                   </div>
                 </div>
-                <button class="secondary-button is-small is-danger"
-                  data-mobile-delete="${escapeHtml(d.device_id)}"
-                  data-mobile-instance="${escapeHtml(instance.id)}">Delete</button>
+                <div class="inline-actions mobile-device-actions">
+                  <button
+                    class="secondary-button is-small"
+                    data-mobile-qrcode="${escapeHtml(instance.id)}"
+                    title="Open a new QR code for pairing this instance again"
+                  >
+                    QRCode
+                  </button>
+                  <button class="secondary-button is-small is-danger"
+                    data-mobile-delete="${escapeHtml(d.device_id)}"
+                    data-mobile-instance="${escapeHtml(instance.id)}">Delete</button>
+                </div>
               </div>`).join("");
           return `
             <div class="field">
@@ -3052,7 +3345,6 @@ function renderInstanceForm() {
     : false;
   const busy = state.busyKey === "instance-form" ? "disabled" : "";
   const modeLabel = editor.mode === "edit" ? `Edit ${editor.targetId}` : "Create New Instance";
-  const runtimeAudit = selected?.runtime_audit || null;
   const showSandboxConfig = editor.runtimeMode === "sandbox" || editor.sandboxExecutionStrategy === "tool_ephemeral";
   const runtimeCustom = isCustomRuntimeConfig(editor);
   const showRuntimeOverrideControls = editor.mode === "edit" || editor.advanced;
@@ -3083,39 +3375,6 @@ function renderInstanceForm() {
         <p class="meta">${escapeHtml(selected.runtime.status)} · ${escapeHtml(selected.runtime.probe?.detail || selected.runtime.reason)}</p>
       </div>
       <span class="badge ${badgeClass(selected.runtime.status === "running" ? "ok" : selected.runtime.status === "stopped" ? "warning" : "info")}">${escapeHtml(selected.runtime.status)}</span>
-    </div>` : ""}
-    ${selected ? `
-    <div class="instance-summary-card">
-      <div class="row-between">
-        <div>
-          <p class="eyebrow">Runtime Audit</p>
-          <h4>Recent execution footprint</h4>
-        </div>
-        <span class="badge ${badgeClass((runtimeAudit?.blocked_count || 0) > 0 ? "warning" : "info")}">${formatNumber(runtimeAudit?.event_count || 0)} events</span>
-      </div>
-      <div class="instance-summary-list">
-        <div class="instance-summary-row">
-          <span>Shell Commands</span>
-          <strong>${formatNumber(runtimeAudit?.exec_count || 0)}</strong>
-        </div>
-        <div class="instance-summary-row">
-          <span>File Operations</span>
-          <strong>${formatNumber(runtimeAudit?.file_op_count || 0)}</strong>
-        </div>
-        <div class="instance-summary-row">
-          <span>Package Installs</span>
-          <strong>${formatNumber(runtimeAudit?.package_install_count || 0)}</strong>
-        </div>
-        <div class="instance-summary-row">
-          <span>Blocked Commands</span>
-          <strong>${formatNumber(runtimeAudit?.blocked_count || 0)}</strong>
-        </div>
-        <div class="instance-summary-row">
-          <span>Last Event</span>
-          <strong>${escapeHtml(formatDateTime(runtimeAudit?.last_event_at))}</strong>
-        </div>
-      </div>
-      <p class="meta">${runtimeAudit?.exists ? "Source: workspace/.nanobot/runtime-audit.jsonl" : "Runtime audit has not been initialized for this instance yet."}</p>
     </div>` : ""}
     <div class="item-card">
       <div class="row-between">
@@ -4515,27 +4774,290 @@ function renderChannels() {
 function renderSecurityTable() {
   const target = document.getElementById("security-table");
   if (!target) return;
-  target.innerHTML = state.security.findings
-    .map(
-      (finding) => `
-        <div class="item-card">
-          <div class="row-between">
-            <div>
-              <h4>${escapeHtml(finding.title)}</h4>
-              <p class="meta">${escapeHtml(finding.instance_name)} · ${escapeHtml(finding.code)}</p>
-            </div>
-            <span class="badge ${badgeClass(finding.severity)}">${escapeHtml(finding.severity)}</span>
-          </div>
-          <p>${escapeHtml(finding.detail)}</p>
+  const findings = state.security?.findings || [];
+  const detections = state.security?.detections_by_instance || [];
+  const hits = state.security?.recent_policy_hits || [];
+  target.innerHTML = `
+    <section class="panel">
+      <div class="panel-header">
+        <div>
+          <p class="eyebrow">Posture</p>
+          <h3>Security Findings</h3>
         </div>
-      `,
-    )
-    .join("");
+      </div>
+      <div class="stack">
+        ${
+          findings.length
+            ? findings
+                .map(
+                  (finding) => `
+                    <div class="item-card">
+                      <div class="row-between">
+                        <div>
+                          <h4>${escapeHtml(finding.title)}</h4>
+                          <p class="meta">${escapeHtml(finding.instance_name)} · ${escapeHtml(finding.code)}</p>
+                        </div>
+                        <span class="badge ${badgeClass(finding.severity)}">${escapeHtml(finding.severity)}</span>
+                      </div>
+                      <p>${escapeHtml(finding.detail)}</p>
+                    </div>
+                  `,
+                )
+                .join("")
+            : `<p class="meta">No security findings.</p>`
+        }
+      </div>
+    </section>
+    <section class="panel">
+      <div class="panel-header">
+        <div>
+          <p class="eyebrow">Policy Runtime</p>
+          <h3>Policy Detected by Instance</h3>
+        </div>
+      </div>
+      <div class="stack">
+        ${
+          detections.length
+            ? detections
+                .map(
+                  (item) => `
+                    <div class="item-card">
+                      <div class="row-between">
+                        <div>
+                          <h4>${escapeHtml(item.instance_name || item.instance_id)}</h4>
+                          <p class="meta">${escapeHtml(item.instance_id || "")}</p>
+                        </div>
+                        <span class="badge ${badgeClass(item.blocked_count > 0 ? "warning" : "ok")}">${escapeHtml(String(item.detection_count || 0))} detected</span>
+                      </div>
+                      <p class="meta">Blocked ${escapeHtml(String(item.blocked_count || 0))} · Masked ${escapeHtml(String(item.masked_count || 0))} · Warn ${escapeHtml(String(item.warn_count || 0))}</p>
+                      <p class="meta">Latest ${escapeHtml(formatDateTime(item.latest_detected_at))}</p>
+                      <p>${escapeHtml((item.top_rules || []).map((rule) => `${rule.rule_id} (${rule.count})`).join(", ") || "No top rules")}</p>
+                    </div>
+                  `,
+                )
+                .join("")
+            : `<p class="meta">No policy detections have been recorded yet.</p>`
+        }
+      </div>
+    </section>
+    <section class="panel">
+      <div class="panel-header">
+        <div>
+          <p class="eyebrow">Recent Hits</p>
+          <h3>Global Policy Hits</h3>
+        </div>
+      </div>
+      <div class="stack">
+        ${
+          hits.length
+            ? hits
+                .map(
+                  (event) => `
+                    <div class="item-card">
+                      <div class="row-between">
+                        <div>
+                          <h4>${escapeHtml(event.instance_name || event.instance_id || "Instance")}</h4>
+                          <p class="meta">${escapeHtml(event.scope || "")} · ${(event.rule_ids || []).map((ruleId) => escapeHtml(ruleId)).join(", ")}</p>
+                        </div>
+                        <span class="badge ${badgeClass((event.policy_action || "") === "block" || (event.policy_action || "") === "escalate" ? "warning" : "ok")}">${escapeHtml(event.policy_action || "allow")}</span>
+                      </div>
+                      <p class="meta">${escapeHtml(formatDateTime(event.ts))}</p>
+                      <p>${escapeHtml(event.result_preview || event.message_preview || "")}</p>
+                    </div>
+                  `,
+                )
+                .join("")
+            : `<p class="meta">No recent policy hits.</p>`
+        }
+      </div>
+    </section>
+  `;
+}
+
+function setSecurityTab(nextTab) {
+  state.securityTab = nextTab === "audit" ? "audit" : "policy";
+  renderSecurityTabs();
+}
+
+function renderSecurityTabs() {
+  const isPolicy = state.securityTab !== "audit";
+  const policyTab = document.getElementById("security-tab-policy");
+  const auditTab = document.getElementById("security-tab-audit");
+  const policyPanel = document.getElementById("security-panel-policy");
+  const auditPanel = document.getElementById("security-panel-audit");
+
+  if (policyTab) policyTab.classList.toggle("is-active", isPolicy);
+  if (auditTab) auditTab.classList.toggle("is-active", !isPolicy);
+  if (policyPanel) policyPanel.classList.toggle("is-hidden", !isPolicy);
+  if (auditPanel) auditPanel.classList.toggle("is-hidden", isPolicy);
+}
+
+function setSecurityPolicySection(nextSection) {
+  state.securityPolicySection = nextSection === "instances" ? "instances" : "rules";
+  renderSecurityControls();
 }
 
 function renderSecurityControls() {
   const target = document.getElementById("security-controls");
-  target.innerHTML = state.overview.instances
+  if (!target) return;
+  const summary = state.security?.global_policy || {};
+  const policyState = state.securityPolicy;
+  const canUpdatePolicy = hasAuthPermission("security.update");
+  const policyBusy = state.busyKey === "security-policy";
+  const policy = policyState.policy || {};
+  const rules = Array.isArray(policy.rules) ? policy.rules : [];
+  const instances = Array.isArray(state.overview?.instances) ? state.overview.instances : [];
+  const showRulesSection = state.securityPolicySection !== "instances";
+  const selectedRule = ensureSelectedSecurityRule();
+  const enabledRules = rules.filter((rule) => rule?.enabled).length;
+  const policyText = policyState.text || (policyState.policy ? JSON.stringify(policyState.policy, null, 2) : "");
+  const rulesWorkspace = `
+    <section class="item-card policy-summary-card">
+      <div class="row-between">
+        <div>
+          <p class="eyebrow">Guardrials Policy</p>
+          <h4>Guardrials</h4>
+          <p class="meta">${escapeHtml(summary.path || "")}</p>
+        </div>
+        <span class="badge ${badgeClass((policy.mode || summary.mode) === "enforce" ? "ok" : (policy.mode || summary.mode) === "monitor" ? "warning" : "gray")}">${escapeHtml(policy.mode || summary.mode || "unknown")}</span>
+      </div>
+      <div class="policy-toolbar">
+        <label class="policy-toggle">
+          <input type="checkbox" id="global-policy-enabled" ${policy.enabled !== false ? "checked" : ""} ${!canUpdatePolicy || policyBusy ? "disabled" : ""}>
+          <span>Global policy enabled</span>
+        </label>
+        <div class="field">
+          <label for="global-policy-mode">Mode</label>
+          <select id="global-policy-mode" ${!canUpdatePolicy || policyBusy ? "disabled" : ""}>
+            ${POLICY_MODE_OPTIONS.map((option) => `<option value="${option.value}" ${(policy.mode || summary.mode || "enforce") === option.value ? "selected" : ""}>${option.label}</option>`).join("")}
+          </select>
+        </div>
+        <div class="inline-actions policy-summary-actions">
+          <span class="meta">v${escapeHtml(String(summary.version || policy.version || 0))} · ${escapeHtml(String(enabledRules))}/${escapeHtml(String(rules.length))} enabled · ${escapeHtml(formatDateTime(summary.updated_at || policy.updated_at))}</span>
+          <button class="btn" id="global-policy-validate" ${!canUpdatePolicy || policyBusy ? "disabled" : ""}>Validate</button>
+          <button class="primary-button" id="global-policy-save" ${!canUpdatePolicy || policyBusy ? "disabled" : ""}>Save</button>
+        </div>
+      </div>
+      ${summary.error ? `<p class="meta policy-error-text">${escapeHtml(summary.error)}</p>` : ""}
+      ${policyState.errors.length ? `<p class="meta policy-error-text">Errors: ${escapeHtml(policyState.errors.join(" | "))}</p>` : ""}
+      ${policyState.warnings.length ? `<p class="meta">Warnings: ${escapeHtml(policyState.warnings.join(" | "))}</p>` : ""}
+    </section>
+    <div class="security-subtabs">
+      <button class="security-subtab ${showRulesSection ? "is-active" : ""}" type="button" data-security-policy-section="rules">Policy Rules</button>
+      <button class="security-subtab ${showRulesSection ? "" : "is-active"}" type="button" data-security-policy-section="instances">Instance Restrictions</button>
+    </div>
+    <section class="policy-workspace ${showRulesSection ? "" : "is-hidden"}">
+      <div class="panel policy-rule-panel">
+        <div class="panel-header">
+          <div>
+            <p class="eyebrow">Rules</p>
+            <h3>Current Policy Cards</h3>
+          </div>
+          <p class="meta">Select a rule to review its action, scope, and response. Additional cards are grouped below and start disabled.</p>
+        </div>
+        <div class="policy-card-grid">
+          ${
+            rules.length
+              ? rules
+                  .map((rule) => {
+                    const ruleId = String(rule.rule_id || "");
+                    const isSelected = selectedRule && String(selectedRule.rule_id || "") === ruleId;
+                    const description = rule.description || rule.message_template || "No description";
+                    return `
+                      <article class="policy-rule-card ${isSelected ? "is-active" : ""} ${rule.enabled ? "" : "is-disabled"}" data-policy-rule-select="${escapeHtml(ruleId)}" tabindex="0" role="button" aria-pressed="${isSelected ? "true" : "false"}">
+                        <div class="row-between policy-rule-card-head">
+                          <div>
+                            <h4>${escapeHtml(rule.name || ruleId || "Untitled rule")}</h4>
+                            <p class="meta">${escapeHtml(ruleId)}</p>
+                          </div>
+                          <label class="policy-toggle policy-toggle-compact">
+                            <span>${rule.enabled ? "Enabled" : "Disabled"}</span>
+                              <input type="checkbox" data-policy-rule-enabled="${escapeHtml(ruleId)}" ${rule.enabled ? "checked" : ""} ${!canUpdatePolicy || policyBusy ? "disabled" : ""}>
+                          </label>
+                        </div>
+                        <p class="policy-rule-description">${escapeHtml(description)}</p>
+                        <div class="policy-rule-footer">
+                          <span class="badge ${policyActionBadgeClass(rule.action)}">${escapeHtml(rule.action || "allow")}</span>
+                        </div>
+                      </article>
+                    `;
+                  })
+                  .join("")
+              : `<div class="item-card"><p class="meta">No policy rules are configured yet.</p></div>`
+          }
+        </div>
+        ${renderPolicyCardCatalog(rules, canUpdatePolicy, policyBusy)}
+      </div>
+      <div class="panel policy-detail-panel">
+        <div class="panel-header">
+          <div>
+            <p class="eyebrow">Rule Detail</p>
+            <h3>${escapeHtml(selectedRule?.name || "Select a rule")}</h3>
+          </div>
+          ${selectedRule ? `<span class="badge ${policyActionBadgeClass(selectedRule.action)}">${escapeHtml(selectedRule.action || "allow")}</span>` : ""}
+        </div>
+        ${
+          selectedRule
+            ? `
+              <div class="policy-detail-grid">
+                <div class="field">
+                  <label for="policy-rule-action">Action</label>
+                  <select id="policy-rule-action" data-policy-rule-field="action" ${!canUpdatePolicy || policyBusy ? "disabled" : ""}>
+                    ${POLICY_ACTION_OPTIONS.map((option) => `<option value="${option.value}" ${(selectedRule.action || "allow") === option.value ? "selected" : ""}>${option.label}</option>`).join("")}
+                  </select>
+                </div>
+                <div class="field">
+                  <label for="policy-rule-severity">Severity</label>
+                  <select id="policy-rule-severity" data-policy-rule-field="severity" ${!canUpdatePolicy || policyBusy ? "disabled" : ""}>
+                    ${POLICY_SEVERITY_OPTIONS.map((option) => `<option value="${option.value}" ${(selectedRule.severity || "medium") === option.value ? "selected" : ""}>${option.label}</option>`).join("")}
+                  </select>
+                </div>
+                <div class="field policy-detail-span">
+                  <label for="policy-rule-description">Short description</label>
+                  <textarea id="policy-rule-description" data-policy-rule-field="description" ${!canUpdatePolicy || policyBusy ? "disabled" : ""}>${escapeHtml(selectedRule.description || "")}</textarea>
+                </div>
+                <div class="field policy-detail-span">
+                  <label>Scope</label>
+                  <div class="policy-scope-list">
+                    ${POLICY_SCOPE_OPTIONS.map((option) => {
+                      const checked = Array.isArray(selectedRule.scope) && selectedRule.scope.includes(option.value);
+                      return `
+                        <label class="policy-scope-option">
+                          <input type="checkbox" data-policy-rule-scope="${option.value}" ${checked ? "checked" : ""} ${!canUpdatePolicy || policyBusy ? "disabled" : ""}>
+                          <span>${option.label}</span>
+                        </label>
+                      `;
+                    }).join("")}
+                  </div>
+                </div>
+              </div>
+            `
+            : `<p class="meta">Choose a policy card to manage it.</p>`
+        }
+        <details class="policy-advanced-editor">
+          <summary>Advanced</summary>
+          <div class="field">
+            <label for="global-policy-editor">Policy JSON</label>
+            <textarea id="global-policy-editor" class="memory-editor-textarea" ${!canUpdatePolicy || policyBusy ? "disabled" : ""}>${escapeHtml(policyText)}</textarea>
+          </div>
+          <p class="hint">Use this only for detector definitions, exceptions, and other fields not exposed above.</p>
+        </details>
+      </div>
+    </section>
+    <section class="stack ${showRulesSection ? "is-hidden" : ""}">
+      <div class="panel">
+        <div class="panel-header">
+          <div>
+            <p class="eyebrow">Runtime Guardrails</p>
+            <h3>Instance Restrictions</h3>
+          </div>
+          <p class="meta">Control workspace restriction per instance without mixing this into rule management.</p>
+        </div>
+        <div class="stack">${instances.length ? "__RESTRICTION_CARDS__" : `<p class="meta">No instances available.</p>`}</div>
+      </div>
+    </section>
+  `;
+  const restrictionCards = instances
     .map((instance) => {
       const key = `restriction:${instance.id}`;
       const disabled = state.busyKey === key ? "disabled" : "";
@@ -4581,9 +5103,153 @@ function renderSecurityControls() {
       `;
     })
     .join("");
+  target.innerHTML = rulesWorkspace.replace("__RESTRICTION_CARDS__", restrictionCards);
+  const editor = document.getElementById("global-policy-editor");
+  if (editor) {
+    editor.addEventListener("input", (event) => {
+      state.securityPolicy.text = event.target.value;
+      state.securityPolicy.dirty = true;
+    });
+  }
+  const validateButton = document.getElementById("global-policy-validate");
+  if (validateButton) {
+    validateButton.addEventListener("click", () => handleGlobalPolicyValidate());
+  }
+  const saveButton = document.getElementById("global-policy-save");
+  if (saveButton) {
+    saveButton.addEventListener("click", () => handleGlobalPolicySave());
+  }
+  const policyEnabled = document.getElementById("global-policy-enabled");
+  if (policyEnabled) {
+    policyEnabled.addEventListener("change", (event) => handleSecurityPolicyEnabledToggle(Boolean(event.target.checked)));
+  }
+  const policyMode = document.getElementById("global-policy-mode");
+  if (policyMode) {
+    policyMode.addEventListener("change", (event) => handleSecurityPolicyModeChange(event.target.value));
+  }
+  target.querySelectorAll("[data-policy-rule-select]").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      const inputToggle = event.target.closest("[data-policy-rule-enabled]");
+      if (inputToggle) return;
+      handleSecurityPolicyRuleSelect(button.dataset.policyRuleSelect);
+    });
+    button.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        handleSecurityPolicyRuleSelect(button.dataset.policyRuleSelect);
+      }
+    });
+  });
+  target.querySelectorAll("[data-policy-rule-enabled]").forEach((input) => {
+    input.addEventListener("click", (event) => event.stopPropagation());
+    input.addEventListener("change", (event) => {
+      handleSecurityPolicyRuleEnabled(input.dataset.policyRuleEnabled, Boolean(event.target.checked));
+    });
+  });
+  target.querySelectorAll("[data-policy-rule-field]").forEach((input) => {
+    input.addEventListener("change", (event) => {
+      if (!selectedRule) return;
+      handleSecurityPolicyRuleField(selectedRule.rule_id, input.dataset.policyRuleField, event.target.value);
+    });
+  });
+  target.querySelectorAll("[data-policy-rule-scope]").forEach((input) => {
+    input.addEventListener("change", (event) => {
+      if (!selectedRule) return;
+      handleSecurityPolicyRuleScope(selectedRule.rule_id, input.dataset.policyRuleScope, Boolean(event.target.checked));
+    });
+  });
+  target.querySelectorAll("[data-policy-card-add]").forEach((button) => {
+    button.addEventListener("click", () => handleSecurityPolicyCatalogAdd(button.dataset.policyCardAdd));
+  });
+  target.querySelectorAll("[data-security-policy-section]").forEach((button) => {
+    button.addEventListener("click", () => setSecurityPolicySection(button.dataset.securityPolicySection));
+  });
   target.querySelectorAll("[data-restriction-save]").forEach((button) => {
     button.addEventListener("click", () => handleRestrictionSave(button.dataset.restrictionSave));
   });
+}
+
+async function loadGlobalPolicy({ force = false, silent = false } = {}) {
+  if (!hasAuthPermission("security.read")) return;
+  if (state.securityPolicy.loading || (state.securityPolicy.initialized && !force)) return;
+  state.securityPolicy.loading = true;
+  try {
+    const payload = await fetchJson("/admin/security/policies/global");
+    state.securityPolicy.policy = payload.policy || null;
+    state.securityPolicy.catalog = Array.isArray(payload.catalog) ? payload.catalog : [];
+    state.securityPolicy.text = payload.policy ? JSON.stringify(payload.policy, null, 2) : "";
+    state.securityPolicy.errors = payload.errors || [];
+    state.securityPolicy.warnings = payload.warnings || [];
+    state.securityPolicy.initialized = true;
+    state.securityPolicy.dirty = false;
+    ensureSelectedSecurityRule();
+  } catch (error) {
+    state.securityPolicy.errors = [error.message];
+    state.securityPolicy.catalog = [];
+    if (!silent) {
+      setBanner(`Unable to load global policy: ${error.message}`, "error");
+    }
+  } finally {
+    state.securityPolicy.loading = false;
+    renderSecurityControls();
+  }
+}
+
+function parseGlobalPolicyEditor() {
+  const raw = document.getElementById("global-policy-editor")?.value || state.securityPolicy.text || "";
+  state.securityPolicy.text = raw;
+  try {
+    return JSON.parse(raw || "{}");
+  } catch (error) {
+    throw new Error(`Invalid JSON: ${error.message}`);
+  }
+}
+
+async function handleGlobalPolicyValidate() {
+  state.busyKey = "security-policy";
+  renderSecurityControls();
+  try {
+    const policy = parseGlobalPolicyEditor();
+    const payload = await postJson("/admin/security/policies/global/validate", { policy });
+    state.securityPolicy.errors = payload.errors || [];
+    state.securityPolicy.warnings = payload.warnings || [];
+    if (payload.valid) {
+      clearBanner();
+    } else {
+      setBanner(`Global policy validation failed: ${(payload.errors || []).join(" | ")}`, "error");
+    }
+  } catch (error) {
+    state.securityPolicy.errors = [error.message];
+    setBanner(`Unable to validate global policy: ${error.message}`, "error");
+  } finally {
+    state.busyKey = "";
+    renderSecurityControls();
+  }
+}
+
+async function handleGlobalPolicySave() {
+  state.busyKey = "security-policy";
+  renderSecurityControls();
+  try {
+    const policy = parseGlobalPolicyEditor();
+    const payload = await patchJson("/admin/security/policies/global", { policy });
+    state.securityPolicy.policy = payload.policy || null;
+    state.securityPolicy.catalog = Array.isArray(payload.catalog) ? payload.catalog : state.securityPolicy.catalog;
+    state.securityPolicy.text = payload.policy ? JSON.stringify(payload.policy, null, 2) : state.securityPolicy.text;
+    state.securityPolicy.errors = [];
+    state.securityPolicy.warnings = [];
+    state.securityPolicy.dirty = false;
+    ensureSelectedSecurityRule();
+    clearBanner();
+    await loadDashboard();
+    await loadGlobalPolicy({ force: true, silent: true });
+  } catch (error) {
+    state.securityPolicy.errors = [error.message];
+    setBanner(`Unable to save global policy: ${error.message}`, "error");
+  } finally {
+    state.busyKey = "";
+    renderSecurityControls();
+  }
 }
 
 function auditLogOutcomeBadgeClass(outcome) {
@@ -4599,6 +5265,8 @@ function auditLogCategoryBadgeClass(category) {
   if (category === "user_management") return "is-lime";
   if (category === "configuration") return "is-orange";
   if (category === "instance_management") return "is-blue";
+  if (category === "policy_admin") return "is-orange";
+  if (category === "policy_runtime") return "is-blue";
   return "is-gray";
 }
 
@@ -4757,6 +5425,27 @@ function switchView(nextView) {
   if (state.currentView === "security" && !state.auditLog.initialized && !state.auditLog.loading) {
     void refreshAuditLog();
   }
+  if (state.currentView === "security" && !state.securityPolicy.initialized && !state.securityPolicy.loading) {
+    void loadGlobalPolicy();
+  }
+  if (state.currentView === "security") {
+    renderSecurityTabs();
+  }
+}
+
+async function refreshCurrentView() {
+  setRefreshButtonState(true);
+  try {
+    if (state.currentView === "security" && state.securityTab === "audit") {
+      await refreshAuditLog();
+      return;
+    }
+    await loadDashboard();
+  } catch (error) {
+    setBanner(`Unable to refresh view: ${error.message}`, "error");
+  } finally {
+    setRefreshButtonState(false);
+  }
 }
 
 async function loadDashboard() {
@@ -4789,6 +5478,9 @@ async function loadDashboard() {
     state.overview = overview;
     state.channels = channels.channels;
     state.security = security;
+    if (hasAuthPermission("security.read")) {
+      await loadGlobalPolicy({ force: true, silent: true });
+    }
     state.activity = activity;
     state.liveActivityVisibleCount = 20;
     state.accessRequests = accessRequests;
@@ -4841,6 +5533,7 @@ async function loadDashboard() {
     renderChannels();
     renderSecurityTable();
     renderSecurityControls();
+    renderSecurityTabs();
     renderAuditLog();
     renderUsersPanel();
     renderAccountPanel();
@@ -5603,8 +6296,11 @@ document.querySelectorAll(".nav-item").forEach((button) => {
   button.addEventListener("click", () => switchView(button.dataset.view));
 });
 
-document.getElementById("refresh-button").addEventListener("click", () => {
-  void loadDashboard();
+document.getElementById("security-tab-policy")?.addEventListener("click", () => setSecurityTab("policy"));
+document.getElementById("security-tab-audit")?.addEventListener("click", () => setSecurityTab("audit"));
+
+document.getElementById("refresh-button")?.addEventListener("click", () => {
+  void refreshCurrentView();
 });
 document.getElementById("live-instance-filter")?.addEventListener("change", (event) => {
   state.liveInstanceFilter = event.target.value || "all";
@@ -5881,6 +6577,8 @@ async function initializeApp() {
   document.addEventListener("click", (e) => {
     const pairBtn = e.target.closest("[data-mobile-pair]");
     if (pairBtn) { void openQRModal(pairBtn.dataset.mobilePair); return; }
+    const qrBtn = e.target.closest("[data-mobile-qrcode]");
+    if (qrBtn) { void openQRModal(qrBtn.dataset.mobileQrcode); return; }
     const delBtn = e.target.closest("[data-mobile-delete]");
     if (delBtn) { void handleMobileDeviceDelete(delBtn.dataset.mobileDelete, delBtn.dataset.mobileInstance); return; }
   });

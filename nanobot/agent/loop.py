@@ -27,6 +27,7 @@ from nanobot.bus.queue import MessageBus
 from nanobot.providers.base import LLMProvider
 from nanobot.runtime.audit import RuntimeAuditLogger
 from nanobot.runtime.ephemeral_runner import DockerEphemeralTaskRunner
+from nanobot.security.policy import GlobalControlPolicyStore, GlobalPolicyEnforcer, PolicyCache
 from nanobot.session.manager import Session, SessionManager
 
 if TYPE_CHECKING:
@@ -77,6 +78,9 @@ class AgentLoop:
         tool_task_runner: DockerEphemeralTaskRunner | None = None,
         tool_execution_strategy: str = "persistent",
         enable_interactive_tools: bool = True,
+        global_policy_path: Path | None = None,
+        instance_id: str = "default",
+        instance_name: str | None = None,
     ):
         from nanobot.config.schema import ExecToolConfig
         self.bus = bus
@@ -97,10 +101,20 @@ class AgentLoop:
         self.tool_task_runner = tool_task_runner
         self.tool_execution_strategy = tool_execution_strategy
         self.enable_interactive_tools = enable_interactive_tools
+        self.instance_id = instance_id
+        self.instance_name = instance_name or instance_id
 
         self.context = ContextBuilder(workspace)
         self.sessions = session_manager or SessionManager(workspace)
         self._runtime_audit = RuntimeAuditLogger(workspace)
+        self._policy_enforcer: GlobalPolicyEnforcer | None = None
+        if global_policy_path is not None:
+            try:
+                self._policy_enforcer = GlobalPolicyEnforcer(
+                    PolicyCache(GlobalControlPolicyStore(global_policy_path))
+                )
+            except Exception:
+                self._policy_enforcer = None
         self.tools = ToolRegistry(
             on_execute=self._audit_tool_execution,
             on_start=self._audit_tool_start,
@@ -137,6 +151,117 @@ class AgentLoop:
 
     def _audit_tool_start(self, tool_name: str, params: dict[str, Any]) -> None:
         self._runtime_audit.log_tool_start(tool_name, params)
+
+    def _record_policy_decision(
+        self,
+        decision: Any,
+        *,
+        scope: str,
+        channel: str | None = None,
+        session_key: str | None = None,
+        tool_name: str | None = None,
+    ) -> None:
+        if not decision or not getattr(decision, "matched", False):
+            return
+        try:
+            self._runtime_audit.log_policy_event(
+                scope=scope,
+                decision={
+                    "action": decision.action,
+                    "blocked": decision.blocked,
+                    "severity": decision.severity,
+                    "matched_rules": decision.matched_rules,
+                    "mode": decision.mode,
+                    "monitor_only": decision.monitor_only,
+                    "text": decision.text,
+                    "sanitized_text": decision.sanitized_text,
+                    "policy_version": self._policy_enforcer.cache.version if self._policy_enforcer else None,
+                },
+                channel=channel,
+                session_key=session_key,
+                tool_name=tool_name,
+                instance_id=self.instance_id,
+                instance_name=self.instance_name,
+            )
+        except Exception:
+            return
+
+    def _enforce_text(
+        self,
+        text: str,
+        *,
+        scope: str,
+        channel: str | None = None,
+        session_key: str | None = None,
+        tool_name: str | None = None,
+    ) -> Any:
+        if self._policy_enforcer is None:
+            return None
+        try:
+            decision = self._policy_enforcer.enforce_text(
+                text,
+                scope=scope,
+                channel=channel,
+                session_key=session_key,
+                tool_name=tool_name,
+            )
+        except Exception:
+            return None
+        self._record_policy_decision(
+            decision,
+            scope=scope,
+            channel=channel,
+            session_key=session_key,
+            tool_name=tool_name,
+        )
+        return decision
+
+    @staticmethod
+    def _contains_thai(text: str) -> bool:
+        return bool(re.search(r"[\u0E00-\u0E7F]", str(text or "")))
+
+    def _is_sensitive_persistence_request(self, original_text: str, sanitized_text: str) -> bool:
+        if not original_text or original_text == sanitized_text:
+            return False
+        normalized = str(original_text or "").casefold()
+        patterns = (
+            r"\bremember\b",
+            r"\bsave\b",
+            r"\bstore\b",
+            r"\bkeep\b",
+            r"\brecord\b",
+            r"\bmemorize\b",
+            r"\bretain\b",
+            r"จำ",
+            r"บันทึก",
+            r"เก็บ",
+            r"เซฟ",
+        )
+        return any(re.search(pattern, normalized) for pattern in patterns)
+
+    def _masked_persistence_response(self, original_text: str) -> str:
+        if self._contains_thai(original_text):
+            return (
+                "ผมไม่สามารถเก็บข้อมูลจริงที่ถูกจัดเป็นข้อมูลอ่อนไหวได้\n"
+                "ระบบจะเก็บได้เฉพาะค่าที่ถูกปกปิดแล้วเท่านั้น เช่น `[REDACTED_EMAIL]`"
+            )
+        return (
+            "I can't store the original sensitive data.\n"
+            "The system can only retain the redacted value, such as `[REDACTED_EMAIL]`."
+        )
+
+    def _tool_arg_field(self, tool_name: str, args: dict[str, Any]) -> tuple[str | None, str | None]:
+        if tool_name == "message" and isinstance(args.get("content"), str):
+            return "content", str(args.get("content") or "")
+        if tool_name == "exec" and isinstance(args.get("command"), str):
+            return "command", str(args.get("command") or "")
+        if tool_name == "write_file" and isinstance(args.get("content"), str):
+            return "content", str(args.get("content") or "")
+        if tool_name == "edit_file" and isinstance(args.get("new_text"), str):
+            return "new_text", str(args.get("new_text") or "")
+        if tool_name == "web_fetch" and isinstance(args.get("url"), str):
+            return "url", str(args.get("url") or "")
+        return None, None
 
     def _register_default_tools(self) -> None:
         """Register the default set of tools."""
@@ -311,7 +436,25 @@ class AgentLoop:
                     tools_used.append(tool_call.name)
                     args_str = json.dumps(tool_call.arguments, ensure_ascii=False)
                     logger.info("Tool call: {}({})", tool_call.name, args_str[:200])
-                    result = await self.tools.execute(tool_call.name, tool_call.arguments)
+                    tool_args = tool_call.arguments if isinstance(tool_call.arguments, dict) else {}
+                    field_name, field_value = self._tool_arg_field(tool_call.name, tool_args)
+                    if field_name and field_value is not None:
+                        decision = self._enforce_text(
+                            field_value,
+                            scope="tool_args",
+                            tool_name=tool_call.name,
+                        )
+                        if decision and decision.blocked:
+                            result = (
+                                "Error: Tool execution blocked by global control policy."
+                                if not decision.message else f"Error: {decision.message}"
+                            )
+                        else:
+                            if decision and decision.action == "mask" and not decision.monitor_only:
+                                tool_args[field_name] = decision.effective_text()
+                            result = await self.tools.execute(tool_call.name, tool_args)
+                    else:
+                        result = await self.tools.execute(tool_call.name, tool_call.arguments)
                     messages = self.context.add_tool_result(
                         messages, tool_call.id, tool_call.name, result
                     )
@@ -466,11 +609,46 @@ class AgentLoop:
         logger.info("Processing message from {}:{}: {}", msg.channel, msg.sender_id, preview)
 
         key = session_key or msg.session_key
+        input_decision = self._enforce_text(
+            msg.content,
+            scope="input",
+            channel=msg.channel,
+            session_key=key,
+        )
+        incoming_content = msg.content
+        if input_decision and input_decision.blocked:
+            blocked_content = input_decision.message or "Request blocked by global control policy."
+            self._runtime_audit.log_message_event(
+                "completed",
+                channel=msg.channel,
+                session_key=key,
+                content=blocked_content,
+                status="error",
+            )
+            return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id, content=blocked_content)
+        if input_decision and input_decision.action == "mask" and not input_decision.monitor_only:
+            incoming_content = input_decision.effective_text()
+            if self._is_sensitive_persistence_request(msg.content, incoming_content):
+                refusal = self._masked_persistence_response(msg.content)
+                self._runtime_audit.log_message_event(
+                    "received",
+                    channel=msg.channel,
+                    session_key=key,
+                    content=incoming_content,
+                )
+                self._runtime_audit.log_message_event(
+                    "completed",
+                    channel=msg.channel,
+                    session_key=key,
+                    content=refusal,
+                    status="error",
+                )
+                return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id, content=refusal)
         self._runtime_audit.log_message_event(
             "received",
             channel=msg.channel,
             session_key=key,
-            content=msg.content,
+            content=incoming_content,
         )
         session = self.sessions.get_or_create(key)
 
@@ -534,7 +712,7 @@ class AgentLoop:
         history = session.get_history(max_messages=self.memory_window)
         initial_messages = self.context.build_messages(
             history=history,
-            current_message=msg.content,
+            current_message=incoming_content,
             media=msg.media if msg.media else None,
             channel=msg.channel, chat_id=msg.chat_id,
         )
@@ -562,6 +740,17 @@ class AgentLoop:
 
         if final_content is None:
             final_content = "I've completed processing but have no response to give."
+
+        output_decision = self._enforce_text(
+            final_content,
+            scope="output",
+            channel=msg.channel,
+            session_key=key,
+        )
+        if output_decision and output_decision.blocked:
+            final_content = output_decision.message or "Response withheld by global control policy."
+        elif output_decision and output_decision.action == "mask" and not output_decision.monitor_only:
+            final_content = output_decision.effective_text()
 
         self._save_turn(session, all_msgs, 1 + len(history))
         self.sessions.save(session)
@@ -683,7 +872,7 @@ class AgentLoop:
 
     async def _consolidate_memory(self, session, archive_all: bool = False) -> bool:
         """Delegate to MemoryStore.consolidate(). Returns True on success."""
-        return await MemoryStore(self.workspace).consolidate(
+        return await MemoryStore(self.workspace, policy_enforcer=self._policy_enforcer).consolidate(
             session, self.provider, self.model,
             archive_all=archive_all, memory_window=self.memory_window,
         )
