@@ -125,6 +125,7 @@ ADMIN_ROLE_PERMISSIONS: dict[str, set[str]] = {
         "schedule.run",
         "access_request.review",
         "security.read",
+        "security.update",
         "user.read",
         "user.create",
         "user.update",

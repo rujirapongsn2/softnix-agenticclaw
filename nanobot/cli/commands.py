@@ -32,6 +32,7 @@ from rich.text import Text
 
 from nanobot import __logo__, __version__
 from nanobot.config.schema import Config
+from nanobot.security.policy import infer_global_policy_path
 from nanobot.utils.helpers import sync_workspace_templates
 
 app = typer.Typer(
@@ -49,6 +50,16 @@ EXIT_COMMANDS = {"exit", "quit", "/exit", "/quit", ":q"}
 
 _PROMPT_SESSION: PromptSession | None = None
 _SAVED_TERM_ATTRS = None  # original termios settings, restored on exit
+
+
+def _infer_instance_identity(config_path: Path | None, workspace: Path) -> tuple[str, str]:
+    if config_path is not None:
+        resolved = config_path.expanduser().resolve()
+        if resolved.parent.parent.name == "instances":
+            instance_id = resolved.parent.name
+            return instance_id, instance_id
+    name = workspace.expanduser().resolve().name or "default"
+    return ("default", name)
 
 
 def _flush_pending_tty_input() -> None:
@@ -285,6 +296,7 @@ def gateway(
     config = load_config(config_path)
     if workspace:
         config.agents.defaults.workspace = workspace
+    instance_id, instance_name = _infer_instance_identity(config_path, config.workspace_path)
 
     console.print(f"{__logo__} Starting nanobot gateway on port {port}...")
     sync_workspace_templates(config.workspace_path)
@@ -326,6 +338,9 @@ def gateway(
         channels_config=config.channels,
         tool_task_runner=tool_task_runner,
         tool_execution_strategy=tool_execution_strategy,
+        global_policy_path=infer_global_policy_path(config_path),
+        instance_id=instance_id,
+        instance_name=instance_name,
     )
 
     # Set cron callback (needs agent)
@@ -514,6 +529,7 @@ def task_run(
 
     bus = MessageBus()
     provider = _make_provider(loaded)
+    instance_id, instance_name = _infer_instance_identity(config_path, loaded.workspace_path)
     agent = AgentLoop(
         bus=bus,
         provider=provider,
@@ -534,6 +550,9 @@ def task_run(
         channels_config=loaded.channels,
         tool_execution_strategy="persistent",
         enable_interactive_tools=False,
+        global_policy_path=infer_global_policy_path(config_path),
+        instance_id=instance_id,
+        instance_name=instance_name,
     )
 
     async def _run() -> str:
@@ -591,6 +610,7 @@ def agent(
     else:
         logger.disable("nanobot")
 
+    instance_id, instance_name = _infer_instance_identity(None, config.workspace_path)
     agent_loop = AgentLoop(
         bus=bus,
         provider=provider,
@@ -608,6 +628,9 @@ def agent(
         restrict_to_workspace=config.tools.restrict_to_workspace,
         mcp_servers=config.tools.mcp_servers,
         channels_config=config.channels,
+        global_policy_path=infer_global_policy_path(),
+        instance_id=instance_id,
+        instance_name=instance_name,
     )
 
     # Show spinner when logs are off (no output to miss); skip when logs are on

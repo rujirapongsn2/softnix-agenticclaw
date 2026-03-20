@@ -101,6 +101,28 @@ async def test_softnix_app_channel_relays_attachment_metadata(tmp_path: Path) ->
     assert (workspace / "mobile_relay" / "outbound_media" / "mob-9" / copied_name).exists()
 
 
+async def test_softnix_app_channel_extracts_sender_id_from_mobile_session_id(tmp_path: Path) -> None:
+    class _Config:
+        allow_from = ["*"]
+
+    workspace = tmp_path / "workspace"
+    channel = SoftnixAppChannel(_Config(), MessageBus(), workspace)
+
+    await channel.send(
+        OutboundMessage(
+            channel="softnix_app",
+            chat_id="mobile-mob-a7d516b7-e5f0-4bb6-b5dc-136d876c0c3f-9d284171-c296-4f23-9b97-c82a0d85f156",
+            content="scheduled reply",
+            metadata={},
+        )
+    )
+
+    outbound_path = workspace / "mobile_relay" / "outbound.jsonl"
+    payload = json.loads(outbound_path.read_text(encoding="utf-8").splitlines()[0])
+    assert payload["sender_id"] == "mob-a7d516b7-e5f0-4bb6-b5dc-136d876c0c3f"
+    assert payload["session_id"] == "mobile-mob-a7d516b7-e5f0-4bb6-b5dc-136d876c0c3f-9d284171-c296-4f23-9b97-c82a0d85f156"
+
+
 async def test_softnix_app_channel_processes_threaded_inbound_message(tmp_path: Path) -> None:
     class _Config:
         allow_from = ["mob-2"]

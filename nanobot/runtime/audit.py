@@ -119,6 +119,40 @@ def summarize_tool_call(workspace: Path, tool_name: str, params: dict[str, Any],
     return summary
 
 
+def summarize_policy_event(
+    scope: str,
+    decision: dict[str, Any],
+    *,
+    channel: str | None = None,
+    session_key: str | None = None,
+    tool_name: str | None = None,
+    instance_id: str | None = None,
+    instance_name: str | None = None,
+) -> dict[str, Any]:
+    action = str(decision.get("action") or "allow")
+    blocked = bool(decision.get("blocked"))
+    preview = str(decision.get("sanitized_text") or decision.get("text") or "")
+    status = "error" if blocked else "ok"
+    return {
+        "operation": "policy_detection",
+        "status": status,
+        "scope": str(scope or ""),
+        "action": action,
+        "severity": str(decision.get("severity") or ""),
+        "rule_ids": list(decision.get("matched_rules") or []),
+        "policy_mode": str(decision.get("mode") or ""),
+        "monitor_only": bool(decision.get("monitor_only")),
+        "tool_name": str(tool_name or ""),
+        "channel": str(channel or ""),
+        "session_key": str(session_key or ""),
+        "instance_id": str(instance_id or ""),
+        "instance_name": str(instance_name or ""),
+        "message_preview": _truncate(decision.get("text"), 240),
+        "result_preview": _truncate(preview, 240),
+        "policy_version": decision.get("policy_version"),
+    }
+
+
 class RuntimeAuditLogger:
     """Append JSONL audit records for runtime tool execution."""
 
@@ -167,3 +201,26 @@ class RuntimeAuditLogger:
 
     def log_tool_call(self, tool_name: str, params: dict[str, Any], result: str) -> None:
         self._append_record("tool.execute", summarize_tool_call(self.workspace, tool_name, params, result))
+
+    def log_policy_event(
+        self,
+        *,
+        scope: str,
+        decision: dict[str, Any],
+        channel: str | None = None,
+        session_key: str | None = None,
+        tool_name: str | None = None,
+        instance_id: str | None = None,
+        instance_name: str | None = None,
+    ) -> None:
+        payload = summarize_policy_event(
+            scope,
+            decision,
+            channel=channel,
+            session_key=session_key,
+            tool_name=tool_name,
+            instance_id=instance_id,
+            instance_name=instance_name,
+        )
+        event_type = f"policy.{payload['action']}" if payload.get("action") else "policy.detected"
+        self._append_record(event_type, payload)

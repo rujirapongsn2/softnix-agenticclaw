@@ -47,6 +47,9 @@ def resolve_admin_get(service: AdminService, raw_path: str) -> tuple[HTTPStatus,
                 "/admin/providers",
                 "/admin/mcp/servers",
                 "/admin/security",
+                "/admin/security/policies/global",
+                "/admin/security/policies/global/hits",
+                "/admin/security/policies/global/detections-by-instance",
                 "/admin/runtime-audit",
                 "/admin/users",
             ],
@@ -121,6 +124,14 @@ def resolve_admin_get(service: AdminService, raw_path: str) -> tuple[HTTPStatus,
         return HTTPStatus.OK, service.list_mcp_servers()
     if path == "/admin/security":
         return HTTPStatus.OK, service.get_security()
+    if path == "/admin/security/policies/global":
+        return HTTPStatus.OK, service.get_global_policy()
+    if path == "/admin/security/policies/global/hits":
+        query = parse_qs(parsed.query)
+        limit = int((query.get("limit") or [100])[0])
+        return HTTPStatus.OK, service.get_global_policy_hits(limit=min(limit, 500))
+    if path == "/admin/security/policies/global/detections-by-instance":
+        return HTTPStatus.OK, service.get_global_policy_detections_by_instance()
     if path == "/admin/auth-audit":
         query = parse_qs(parsed.query)
         limit = int((query.get("limit") or [100])[0])
@@ -354,6 +365,11 @@ def resolve_admin_patch(
                 restrict_to_workspace=bool(payload.get("restrict_to_workspace")),
             )
             return HTTPStatus.OK, {"instance": instance}
+        if path == "/admin/security/policies/global":
+            policy = payload.get("policy")
+            if not isinstance(policy, dict):
+                return HTTPStatus.BAD_REQUEST, {"error": "Missing policy payload"}
+            return HTTPStatus.OK, service.update_global_policy(policy=policy)
 
         if path == "/admin/mcp/servers":
             instance_id = payload.get("instance_id") or "default"
@@ -515,6 +531,11 @@ def resolve_admin_post(
         if path == "/admin/mobile/ngrok/start":
             port = int(payload.get("port") or (service.admin_port if hasattr(service, "admin_port") else 18880))
             return HTTPStatus.OK, service.start_ngrok(port)
+        if path == "/admin/security/policies/global/validate":
+            policy = payload.get("policy")
+            if not isinstance(policy, dict):
+                return HTTPStatus.BAD_REQUEST, {"error": "Missing policy payload"}
+            return HTTPStatus.OK, service.validate_global_policy(policy=policy)
 
         if path == "/admin/auth/bootstrap":
             user = service.bootstrap_admin_user(
@@ -680,6 +701,8 @@ def _match_permission(method: str, path: str) -> str | None:
             return "mcp.read"
         if path == "/admin/security":
             return "security.read"
+        if path.startswith("/admin/security/policies/global"):
+            return "security.read"
         if path == "/admin/auth-audit":
             return "security.read"
         if path == "/admin/runtime-audit":
@@ -711,6 +734,8 @@ def _match_permission(method: str, path: str) -> str | None:
             return "channel.update"
         if path == "/admin/security/workspace-restriction":
             return "config.update"
+        if path == "/admin/security/policies/global":
+            return "security.update"
         if path == "/admin/mcp/servers":
             return "mcp.update"
         if path.startswith("/admin/schedules/") and path.endswith("/enabled"):
@@ -739,6 +764,8 @@ def _match_permission(method: str, path: str) -> str | None:
             return "schedule.update"
         if path.startswith("/admin/schedules/") and path.endswith("/run"):
             return "schedule.run"
+        if path == "/admin/security/policies/global/validate":
+            return "security.update"
         if path in {"/admin/access-requests/approve", "/admin/access-requests/reject"}:
             return "access_request.review"
     if method == "DELETE":

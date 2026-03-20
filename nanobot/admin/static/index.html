@@ -15,8 +15,7 @@
       <div class="brand auth-brand">
         <img class="brand-logo auth-brand-logo" src="/static/Logo_Softnix.png" alt="Softnix Logo">
         <div>
-          <p class="brand-eyebrow">AgenticClaw</p>
-          <p class="brand-byline">| by Softnix</p>
+          <p class="brand-eyebrow">SoftnixClaw</p>
         </div>
       </div>
       <div id="auth-panel" class="stack"></div>
@@ -28,8 +27,7 @@
       <div class="brand">
         <img class="brand-logo" src="/static/softnix-logo-white.png" alt="Softnix Logo">
         <div>
-          <p class="brand-eyebrow">AgenticClaw</p>
-          <p class="brand-byline">| by Softnix</p>
+          <p class="brand-eyebrow">SoftnixClaw</p>
           <h1>Admin Console</h1>
         </div>
       </div>
@@ -49,7 +47,7 @@
           <h2 id="page-title">Overview</h2>
         </div>
         <div class="topbar-actions">
-          <button id="refresh-button" class="secondary-button">Refresh</button>
+          <button id="refresh-button" class="secondary-button" type="button">Refresh</button>
           <div id="health-pill" class="health-pill">Loading</div>
           <div id="auth-user-menu"></div>
         </div>
@@ -221,21 +219,23 @@
       </section>
 
       <section id="security-view" class="view">
-        <div class="content-grid security-layout">
-          <aside class="stack">
-            <section class="panel">
-              <div class="panel-header">
-                <div>
-                  <p class="eyebrow">Controls</p>
-                  <h3>Workspace Restriction</h3>
-                </div>
-              </div>
-              <div id="security-controls" class="stack"></div>
-            </section>
-          </aside>
+        <div class="security-workspace">
+          <div class="security-tabs" role="tablist" aria-label="Security sections">
+            <button id="security-tab-policy" class="security-tab is-active" type="button" role="tab" aria-controls="security-panel-policy">Guardrials</button>
+            <button id="security-tab-audit" class="security-tab" type="button" role="tab" aria-controls="security-panel-audit">Security Audit Log</button>
+          </div>
 
-          <main class="stack">
-            <section class="panel audit-log-panel">
+          <section id="security-panel-policy" class="panel security-tab-panel" role="tabpanel">
+            <div class="panel-header">
+              <div>
+                <p class="eyebrow">Controls</p>
+                <h3>Guardrials</h3>
+              </div>
+            </div>
+            <div id="security-controls" class="stack"></div>
+          </section>
+
+          <section id="security-panel-audit" class="panel audit-log-panel security-tab-panel is-hidden" role="tabpanel">
               <div class="panel-header">
                 <div>
                   <p class="eyebrow">ISO 27001 A.8.15</p>
@@ -251,6 +251,8 @@
                   <option value="user_management">User Management</option>
                   <option value="configuration">Configuration</option>
                   <option value="instance_management">Instance Management</option>
+                  <option value="policy_admin">Policy Admin</option>
+                  <option value="policy_runtime">Policy Runtime</option>
                 </select>
                 <select id="audit-log-outcome" onchange="onAuditLogFilterChange()">
                   <option value="all">All Outcomes</option>
@@ -263,7 +265,6 @@
               <div id="audit-log-table" class="audit-log-table-container"></div>
               <div id="audit-log-footer"></div>
             </section>
-          </main>
         </div>
       </section>
 
