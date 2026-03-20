@@ -713,12 +713,13 @@ def _write_lifecycle_scripts(
     }
     if runtime_mode == "sandbox":
         bodies = {
-            "start": f"""#!/bin/zsh
+            "start": f"""#!/usr/bin/env bash
 set -euo pipefail
 
 CIDFILE="{cidfile}"
 PIDFILE="{pidfile}"
 INSTANCE_HOME="{instance_home}"
+ADMIN_HOME="{instance_home.parent.parent / 'admin'}"
 CONFIG="{config_path}"
 WORKSPACE="{workspace_path}"
 PORT="{gateway_port}"
@@ -774,6 +775,7 @@ cmd=(
   -e "PIP_CACHE_DIR=$SANDBOX_HOME/.cache/pip"
   -e "PATH=/usr/local/bin:/usr/bin:/bin:$SANDBOX_HOME/.local/bin"
   -v "$INSTANCE_HOME:$INSTANCE_HOME"
+  -v "${{ADMIN_HOME}}:${{ADMIN_HOME}}:ro"
   -w "$WORKSPACE"
   -p "$PORT:$PORT"
   --pids-limit "{sandbox_pids_limit}"
@@ -793,8 +795,8 @@ fi
 
 if [ "$NETWORK_POLICY" != "none" ] && [ -n "$DNS_SERVERS" ]; then
   OLDIFS="$IFS"
-  IFS=','
-  for dns in ${{=DNS_SERVERS}}; do
+  IFS=',' read -r -a dns_list <<< "$DNS_SERVERS"
+  for dns in "${{dns_list[@]}}"; do
     dns="$(printf "%s" "$dns" | tr -d '[:space:]')"
     if [ -n "$dns" ]; then
       cmd+=(--dns "$dns")
@@ -809,7 +811,7 @@ cmd+=("$IMAGE" gateway --config "$CONFIG" --workspace "$WORKSPACE" -p "$PORT")
 docker inspect -f '{{{{.Id}}}}' "$CONTAINER_NAME" > "$CIDFILE"
 echo "started"
 """,
-            "stop": f"""#!/bin/zsh
+            "stop": f"""#!/usr/bin/env bash
 set -euo pipefail
 
 CIDFILE="{cidfile}"
@@ -843,13 +845,13 @@ fi
 
 echo "stopped"
 """,
-            "restart": f"""#!/bin/zsh
+            "restart": f"""#!/usr/bin/env bash
 set -euo pipefail
 
 "{scripts['stop']}" || true
 "{scripts['start']}"
 """,
-            "status": f"""#!/bin/zsh
+            "status": f"""#!/usr/bin/env bash
 set -euo pipefail
 
 CONTAINER_NAME="{container_name}"
@@ -876,7 +878,7 @@ exit 1
         }
     else:
         bodies = {
-            "start": f"""#!/bin/zsh
+            "start": f"""#!/usr/bin/env bash
 set -euo pipefail
 
 PIDFILE="{pidfile}"
@@ -894,7 +896,7 @@ find_host_gateway_pid() {{
   local pid cmd candidate
   if [ -f "$PIDFILE" ]; then
     pid="$(cat "$PIDFILE" 2>/dev/null || true)"
-    if [[ "$pid" == <-> ]] && kill -0 "$pid" 2>/dev/null; then
+    if [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then
       cmd="$(ps -p "$pid" -o command= 2>/dev/null || true)"
       if [[ "$cmd" == *" gateway "* ]] && [[ "$cmd" == *"$CONFIG"* ]]; then
         printf '%s\\n' "$pid"
@@ -904,7 +906,7 @@ find_host_gateway_pid() {{
   fi
   if command -v pgrep >/dev/null 2>&1; then
     while IFS= read -r candidate; do
-      if [[ "$candidate" != <-> ]]; then
+      if ! [[ "$candidate" =~ ^[0-9]+$ ]]; then
         continue
       fi
       cmd="$(ps -p "$candidate" -o command= 2>/dev/null || true)"
@@ -959,7 +961,7 @@ echo "gateway failed to start" >&2
 tail -n 20 "$ERRFILE" 2>/dev/null >&2 || true
 exit 1
 """,
-        "stop": f"""#!/bin/zsh
+            "stop": f"""#!/usr/bin/env bash
 set -euo pipefail
 
 PIDFILE="{pidfile}"
@@ -972,7 +974,7 @@ find_host_gateway_pid() {{
   local pid cmd candidate
   if [ -f "$PIDFILE" ]; then
     pid="$(cat "$PIDFILE" 2>/dev/null || true)"
-    if [[ "$pid" == <-> ]] && kill -0 "$pid" 2>/dev/null; then
+    if [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then
       cmd="$(ps -p "$pid" -o command= 2>/dev/null || true)"
       if [[ "$cmd" == *" gateway "* ]] && [[ "$cmd" == *"$CONFIG"* ]]; then
         printf '%s\\n' "$pid"
@@ -982,7 +984,7 @@ find_host_gateway_pid() {{
   fi
   if command -v pgrep >/dev/null 2>&1; then
     while IFS= read -r candidate; do
-      if [[ "$candidate" != <-> ]]; then
+      if ! [[ "$candidate" =~ ^[0-9]+$ ]]; then
         continue
       fi
       cmd="$(ps -p "$candidate" -o command= 2>/dev/null || true)"
@@ -1044,13 +1046,13 @@ fi
 rm -f "$CIDFILE"
 echo "stopped"
 """,
-        "restart": f"""#!/bin/zsh
+            "restart": f"""#!/usr/bin/env bash
 set -euo pipefail
 
 "{scripts['stop']}" || true
 "{scripts['start']}"
 """,
-        "status": f"""#!/bin/zsh
+            "status": f"""#!/usr/bin/env bash
 set -euo pipefail
 
 PIDFILE="{pidfile}"
@@ -1061,7 +1063,7 @@ find_host_gateway_pid() {{
   local pid cmd candidate
   if [ -f "$PIDFILE" ]; then
     pid="$(cat "$PIDFILE" 2>/dev/null || true)"
-    if [[ "$pid" == <-> ]] && kill -0 "$pid" 2>/dev/null; then
+    if [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then
       cmd="$(ps -p "$pid" -o command= 2>/dev/null || true)"
       if [[ "$cmd" == *" gateway "* ]] && [[ "$cmd" == *"$CONFIG"* ]]; then
         printf '%s\\n' "$pid"
@@ -1071,7 +1073,7 @@ find_host_gateway_pid() {{
   fi
   if command -v pgrep >/dev/null 2>&1; then
     while IFS= read -r candidate; do
-      if [[ "$candidate" != <-> ]]; then
+      if ! [[ "$candidate" =~ ^[0-9]+$ ]]; then
         continue
       fi
       cmd="$(ps -p "$candidate" -o command= 2>/dev/null || true)"
