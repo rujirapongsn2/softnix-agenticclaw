@@ -232,8 +232,8 @@ update_project() {
 
     # 5. Verify service is running
     echo "5. Verifying service health..."
-    sleep 3
-    if curl -s "http://$ADMIN_HOST:$ADMIN_PORT/admin/health" > /dev/null 2>&1; then
+    sleep 5
+    if curl -s --max-time 10 "http://$ADMIN_HOST:$ADMIN_PORT/admin/health" > /dev/null 2>&1; then
         echo "✅ Update Complete! Service is healthy."
     else
         echo "⚠️ Update Complete but service health check failed. Check logs: $LOG_FILE"
