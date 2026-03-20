@@ -179,7 +179,14 @@ Keep your installation up-to-date with a single command:
 ```bash
 ./softnixclaw update
 ```
-*This performs a `git pull`, updates dependencies, restarts `Softnix Admin`, and automatically rebuilds sandbox images / restarts running instances when runtime code changes are detected.*
+*This performs a `git pull`, updates dependencies, restarts `Softnix Admin`, and then decides whether sandbox images or running instances must be refreshed based on the files changed in the new commit range.*
+
+Update behavior is intentionally automatic:
+- UI / docs / static asset changes: restart `Softnix Admin` only
+- Runtime, dependency, or Docker changes: rebuild sandbox images and restart running instances that use the updated runtime
+- Instance lifecycle changes: restart only the instances that are currently running
+
+If the repository is not a git checkout, `./softnixclaw update` skips `git pull` and only applies the local service restart flow.
 
 ---
 
