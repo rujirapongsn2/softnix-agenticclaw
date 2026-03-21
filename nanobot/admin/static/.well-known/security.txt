@@ -1,0 +1,3 @@
+Contact: mailto:security@softnix.ai
+Preferred-Languages: th, en
+Canonical: https://softnixclaw.softnix.ai/.well-known/security.txt

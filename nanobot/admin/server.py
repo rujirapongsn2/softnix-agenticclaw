@@ -18,6 +18,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 SOFTNIX_WHITE_LOGO = PROJECT_ROOT / "softnix-logo-white.png"
 SOFTNIX_LOGIN_LOGO = STATIC_DIR / "Logo_Softnix.png"
 PUBLIC_HTTPS_REDIRECT_HOSTS = {"softnixclaw.softnix.ai"}
+SECURITY_TXT_PATH = STATIC_DIR / ".well-known" / "security.txt"
 
 
 def _normalize_host_name(value: str | None) -> str:
@@ -701,6 +702,8 @@ def resolve_static_asset(raw_path: str) -> tuple[Path | None, str]:
         return SOFTNIX_WHITE_LOGO, "image/png"
     if path == "/favicon.ico":
         return SOFTNIX_WHITE_LOGO, "image/png"
+    if path == "/.well-known/security.txt":
+        return SECURITY_TXT_PATH, "text/plain; charset=utf-8"
     # Mobile web app
     if path == "/mobile" or path.startswith("/mobile/"):
         subpath = path[len("/mobile"):].lstrip("/") or "index.html"
@@ -1263,9 +1266,7 @@ def create_admin_server(host: str, port: int, service: AdminService) -> Threadin
             body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
             self.send_response(status)
             self._write_headers("application/json; charset=utf-8", len(body))
-            self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
-            self.send_header("Pragma", "no-cache")
-            self.send_header("Expires", "0")
+            self._write_no_cache_headers()
             for key, value in (extra_headers or {}).items():
                 self.send_header(key, value)
             self.end_headers()
@@ -1277,9 +1278,7 @@ def create_admin_server(host: str, port: int, service: AdminService) -> Threadin
             body = path.read_bytes()
             self.send_response(HTTPStatus.OK)
             self._write_headers(content_type, len(body))
-            self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
-            self.send_header("Pragma", "no-cache")
-            self.send_header("Expires", "0")
+            self._write_no_cache_headers()
             self.end_headers()
             self.wfile.write(body)
 
@@ -1298,8 +1297,49 @@ def create_admin_server(host: str, port: int, service: AdminService) -> Threadin
         def _write_headers(self, content_type: str, content_length: int | None = None) -> None:
             self.send_header("Content-Type", content_type)
             self.send_header("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
-            self.send_header("Access-Control-Allow-Headers", "Content-Type, X-CSRF-Token")
+            self.send_header("Access-Control-Allow-Headers", "Content-Type, X-CSRF-Token, X-Mobile-Token")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("X-Frame-Options", "DENY")
+            self.send_header("Referrer-Policy", "strict-origin-when-cross-origin")
+            if self._should_send_security_headers():
+                self.send_header(
+                    "Content-Security-Policy",
+                    (
+                        "default-src 'self'; "
+                        "base-uri 'self'; "
+                        "frame-ancestors 'none'; "
+                        "object-src 'none'; "
+                        "form-action 'self'; "
+                        "script-src 'self' https://cdnjs.cloudflare.com; "
+                        "style-src 'self' 'unsafe-inline'; "
+                        "img-src 'self' data: blob: https:; "
+                        "media-src 'self' data: blob:; "
+                        "connect-src 'self'; "
+                        "font-src 'self' data:; "
+                        "worker-src 'self' blob:; "
+                        "manifest-src 'self'"
+                    ),
+                )
+            if self._should_send_hsts():
+                self.send_header("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
             if content_length is not None:
                 self.send_header("Content-Length", str(content_length))
+
+        def _write_no_cache_headers(self) -> None:
+            self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+            self.send_header("Pragma", "no-cache")
+            self.send_header("Expires", "0")
+
+        def _should_send_hsts(self) -> bool:
+            host = _normalize_host_name(self.headers.get("X-Forwarded-Host") or self.headers.get("Host"))
+            if host not in PUBLIC_HTTPS_REDIRECT_HOSTS:
+                return False
+            forwarded_proto = str(self.headers.get("X-Forwarded-Proto") or self.headers.get("Forwarded") or "").strip().lower()
+            return "proto=https" in forwarded_proto or forwarded_proto == "https"
+
+        def _should_send_security_headers(self) -> bool:
+            parsed = urlparse(self.path)
+            path = parsed.path.rstrip("/") or "/"
+            return path == "/" or path.startswith("/mobile") or path.startswith("/admin")
 
     return ThreadingHTTPServer((host, port), AdminHandler)
