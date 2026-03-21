@@ -243,10 +243,12 @@ AgenticClaw supports multiple profiles to match your security and performance ne
 
 AgenticClaw implements a strict permission matrix:
 
--   **Viewer:** Read-only access to dashboard and logs.
--   **Operator:** Can Start/Stop instances and manually trigger scheduled tasks.
--   **Admin:** Full configuration access, memory/skill editing, and user management.
--   **Owner:** Full system control, user deletion, and administrative overrides.
+-   **Viewer:** Read-only access to the dashboard, logs, and assigned instances.
+-   **Operator:** Can control assigned instances and manually trigger schedules.
+-   **Admin:** Can manage configuration, content, and users within assigned instance scope. Admin cannot create or delete instances.
+-   **Owner System:** Full system control, including instance creation/deletion, security policy changes, and owner-level user management.
+
+Instance visibility is scoped by `instance_ids` on the user record. Non-owner users only see and manage the instances assigned to them. Security Audit Log is also scoped to the current user by default, with filters for own events, assigned instances, and full-access views for Owner System accounts.
 
 ---
 

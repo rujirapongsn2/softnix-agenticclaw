@@ -284,6 +284,8 @@ scripts เหล่านี้ทำงานดังนี้
 
 ระบบใช้ 4 roles เรียงลำดับจากสิทธิ์น้อยไปมาก: **viewer → operator → admin → owner**
 
+ใน UI บางจุดจะแสดง `Owner System` แทน `owner` เพื่อให้อ่านง่ายขึ้น แต่ค่าจริงในระบบยังเป็น `owner`
+
 ตัวย่อ: `✅` = มีสิทธิ์ · `❌` = ไม่มีสิทธิ์
 
 ### 10.1 Permission Matrix
@@ -295,9 +297,10 @@ scripts เหล่านี้ทำงานดังนี้
 | ดู Activity Log | `activity.read` | ✅ | ✅ | ✅ | ✅ |
 | ดู Runtime Audit Log | `runtime_audit.read` | ✅ | ✅ | ✅ | ✅ |
 | ดู Security Audit / Auth Log | `security.read` | ✅ | ✅ | ✅ | ✅ |
+| แก้ไข Security / Guardrails | `security.update` | ❌ | ❌ | ❌ | ✅ |
 | **Instance Management** |||||
 | ดูรายการ / รายละเอียด instance | `instance.read` | ✅ | ✅ | ✅ | ✅ |
-| สร้าง instance | `instance.create` | ❌ | ❌ | ✅ | ✅ |
+| สร้าง instance | `instance.create` | ❌ | ❌ | ❌ | ✅ |
 | แก้ไข instance (profile, env, gateway port) | `instance.update` | ❌ | ❌ | ✅ | ✅ |
 | ลบ instance | `instance.delete` | ❌ | ❌ | ❌ | ✅ |
 | Start / Stop / Restart instance | `instance.control` | ❌ | ✅ | ✅ | ✅ |
@@ -343,12 +346,12 @@ scripts เหล่านี้ทำงานดังนี้
 
 | มิติ | viewer | operator | admin | owner |
 |---|---|---|---|---|
-| **อ่านข้อมูลทั้งหมด** | ✅ | ✅ | ✅ | ✅ |
+| **อ่านข้อมูลใน scope ของตัวเอง** | ✅ | ✅ | ✅ | ✅ |
 | **ควบคุม instance** (start/stop) | ❌ | ✅ | ✅ | ✅ |
 | **อนุมัติ Access Request** | ❌ | ✅ | ✅ | ✅ |
 | **รัน Schedule ทันที** | ❌ | ✅ | ✅ | ✅ |
 | **แก้ไข config / channels / providers** | ❌ | ❌ | ✅ | ✅ |
-| **จัดการ instance** (สร้าง/แก้ไข) | ❌ | ❌ | ✅ | ✅ |
+| **จัดการ instance** (สร้าง/แก้ไข) | ❌ | ❌ | ❌ | ✅ |
 | **จัดการ Users** (ยกเว้น owner) | ❌ | ❌ | ✅ | ✅ |
 | **ลบ instance** | ❌ | ❌ | ❌ | ✅ |
 | **Disable User** | ❌ | ❌ | ❌ | ✅ |
@@ -356,7 +359,22 @@ scripts เหล่านี้ทำงานดังนี้
 
 ---
 
-### 10.3 กฎพิเศษ Owner-Only
+### 10.3 Instance Scope
+
+ผู้ใช้แต่ละคนสามารถมี `instance_ids` กำกับไว้ในโปรไฟล์ได้ เมื่อเป็น non-owner:
+
+- หน้า Overview / Instances / Live / Activity / Runtime Audit จะแสดงเฉพาะ instance ที่มีสิทธิ์
+- หน้า Users จะแสดง user ภายใน scope ที่เข้าถึงได้
+- หน้า Security Audit Log จะถูกกรองตาม session ของผู้ใช้ โดยดูได้เฉพาะ
+  - event ของตัวเอง
+  - event ของ instance ที่รับผิดชอบ
+  - ถ้าเป็น `Owner System` จะเลือกดู `All accessible` ได้
+
+ถ้าผู้ใช้ไม่มี `instance_ids` ระบบจะถือว่าเห็นทุก instance ที่มีสิทธิ์ตาม role นั้น ๆ
+
+---
+
+### 10.4 กฎพิเศษ Owner-Only
 
 กฎต่อไปนี้บังคับใช้ที่ layer HTTP request (นอกเหนือจาก permission matrix) โดย endpoint จะ return `403 Forbidden` ทันทีและบันทึก `auth.forbidden` ลง audit log:
 
@@ -370,7 +388,7 @@ scripts เหล่านี้ทำงานดังนี้
 
 ---
 
-### 10.4 Security Events ที่ถูกบันทึกใน Audit Log
+### 10.5 Security Events ที่ถูกบันทึกใน Audit Log
 
 ทุก permission failure จะถูกบันทึกลง `security/auth_audit.jsonl` โดยอัตโนมัติ:
 
