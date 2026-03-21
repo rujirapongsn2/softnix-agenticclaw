@@ -101,6 +101,39 @@ async def test_softnix_app_channel_relays_attachment_metadata(tmp_path: Path) ->
     assert (workspace / "mobile_relay" / "outbound_media" / "mob-9" / copied_name).exists()
 
 
+async def test_softnix_app_channel_extracts_inline_audio_path_from_content(tmp_path: Path) -> None:
+    class _Config:
+        allow_from = ["*"]
+
+    workspace = tmp_path / "workspace"
+    audio_source = workspace / "skills" / "read-aloud"
+    audio_source.mkdir(parents=True, exist_ok=True)
+    audio_file = audio_source / "out.mp3"
+    audio_file.write_bytes(b"mp3-bytes")
+    channel = SoftnixAppChannel(_Config(), MessageBus(), workspace)
+
+    await channel.send(
+        OutboundMessage(
+            channel="softnix_app",
+            chat_id="mobile-mob-10#thread:root-10",
+            content="ไฟล์เสียงสร้างเสร็จแล้วที่ workspace/skills/read-aloud/out.mp3 — กดเล่นได้เลย",
+            metadata={
+                "sender_id": "mob-10",
+                "message_id": "msg-10",
+                "reply_to": "msg-10",
+                "thread_root_id": "root-10",
+            },
+        )
+    )
+
+    outbound_path = workspace / "mobile_relay" / "outbound.jsonl"
+    payload = json.loads(outbound_path.read_text(encoding="utf-8").splitlines()[0])
+    assert payload["attachments"][0]["kind"] == "audio"
+    assert payload["attachments"][0]["mime_type"] == "audio/mpeg"
+    copied_name = payload["attachments"][0]["file_name"]
+    assert (workspace / "mobile_relay" / "outbound_media" / "mob-10" / copied_name).exists()
+
+
 async def test_softnix_app_channel_extracts_sender_id_from_mobile_session_id(tmp_path: Path) -> None:
     class _Config:
         allow_from = ["*"]

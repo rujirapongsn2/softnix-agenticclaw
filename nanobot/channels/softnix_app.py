@@ -162,6 +162,37 @@ class SoftnixAppChannel(BaseChannel):
             ),
         }
 
+    _INLINE_AUDIO_PATH_PATTERN = re.compile(
+        r"(?P<path>(?:[A-Za-z]:[\\/]|/|\.{1,2}[\\/]|workspace[\\/])?[^\s`\"'<>|]+\.(?:mp3|wav|m4a|ogg|aac|flac|webm))",
+        re.IGNORECASE,
+    )
+
+    def _extract_inline_media_paths(self, content: str) -> list[str]:
+        if not content:
+            return []
+        matches: list[str] = []
+        for raw_match in self._INLINE_AUDIO_PATH_PATTERN.finditer(content):
+            raw_path = str(raw_match.group("path") or "").strip().strip(".,;:!?)]}>\"'")
+            if not raw_path.lower().endswith((".mp3", ".wav", ".m4a", ".ogg", ".aac", ".flac", ".webm")):
+                continue
+            candidate_paths = []
+            candidate = Path(raw_path).expanduser()
+            candidate_paths.append(candidate)
+            if not candidate.is_absolute():
+                candidate_paths.append((self.workspace_path / candidate).expanduser())
+                parts = candidate.parts
+                if parts and parts[0] == "workspace" and len(parts) > 1:
+                    candidate_paths.append((self.workspace_path / Path(*parts[1:])).expanduser())
+            for path_candidate in candidate_paths:
+                try:
+                    resolved = path_candidate.resolve(strict=False)
+                except Exception:
+                    continue
+                if resolved.exists() and resolved.is_file():
+                    matches.append(str(resolved))
+                    break
+        return list(dict.fromkeys(matches))
+
     async def send(self, message: OutboundMessage) -> None:
         """Write the agent reply to the outbound relay file."""
         try:
@@ -181,7 +212,8 @@ class SoftnixAppChannel(BaseChannel):
                 msg_type = "answer"
 
             attachments = []
-            for media_path in (message.media or []):
+            media_paths = list(dict.fromkeys([*(message.media or []), *self._extract_inline_media_paths(message.content)]))
+            for media_path in media_paths:
                 if item := self._relay_media_ref(sender_id, media_path):
                     attachments.append(item)
 
