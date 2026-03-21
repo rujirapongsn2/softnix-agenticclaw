@@ -18,6 +18,7 @@ let selectedAttachments = [];
 let pushRegistration = null;
 let pushConfig = null;
 let pushSubscribed = false;
+let activeAudioPlayer = null;
 
 const seenMessageIds = new Set();
 const messageStore = new Map();
@@ -323,6 +324,7 @@ function normalizeAttachments(items) {
         kind: item.kind || attachmentKind(mimeType),
         url,
         previewUrl: item.previewUrl || url,
+        duration: Number(item.duration || item.audio_duration || 0) || 0,
       };
     });
 }
@@ -534,13 +536,19 @@ function createAttachmentList(attachments) {
   const wrapper = document.createElement("div");
   wrapper.className = "msg-attachments";
   attachments.forEach((attachment) => {
+    const kind = attachment.kind || attachmentKind(attachment.mimeType || attachment.mime_type || "");
+    if (kind === "audio") {
+      wrapper.appendChild(createAudioAttachmentPlayer(attachment));
+      return;
+    }
+
     const link = document.createElement("a");
-    link.className = `msg-attachment msg-attachment--${attachment.kind || "file"}`;
+    link.className = `msg-attachment msg-attachment--${kind || "file"}`;
     link.href = attachment.url || attachment.previewUrl || "#";
     link.target = "_blank";
     link.rel = "noopener noreferrer";
 
-    if (attachment.kind === "image" && (attachment.previewUrl || attachment.url)) {
+    if (kind === "image" && (attachment.previewUrl || attachment.url)) {
       const image = document.createElement("img");
       image.src = attachment.previewUrl || attachment.url;
       image.alt = attachment.name || "Attachment";
@@ -549,7 +557,7 @@ function createAttachmentList(attachments) {
     } else {
       const icon = document.createElement("span");
       icon.className = "msg-attachment-icon";
-      icon.textContent = attachment.kind === "audio" ? "Audio" : attachment.kind === "video" ? "Video" : "File";
+      icon.textContent = kind === "video" ? "Video" : "File";
       link.appendChild(icon);
     }
 
@@ -563,6 +571,137 @@ function createAttachmentList(attachments) {
     wrapper.appendChild(link);
   });
   return wrapper;
+}
+
+function createAudioAttachmentPlayer(attachment) {
+  const card = document.createElement("div");
+  card.className = "msg-attachment msg-attachment--audio msg-audio-card";
+  const src = attachment.url || attachment.previewUrl || "";
+  const attachmentName = attachment.name || "Audio";
+
+  card.innerHTML = `
+    <div class="msg-audio-header">
+      <span class="msg-attachment-icon msg-attachment-icon--audio">Audio</span>
+      <div class="msg-audio-copy">
+        <strong>${escapeHtml(attachmentName)}</strong>
+        <span>${escapeHtml(formatBytes(attachment.size || 0))}</span>
+      </div>
+    </div>
+    <div class="msg-audio-controls">
+      <button type="button" class="msg-audio-button msg-audio-button--play" aria-label="Play audio">Play</button>
+      <button type="button" class="msg-audio-button msg-audio-button--stop" aria-label="Stop audio">Stop</button>
+      <span class="msg-audio-time">0:00 / 0:00</span>
+    </div>
+    <div class="msg-audio-progress" aria-hidden="true">
+      <div class="msg-audio-progress-bar"></div>
+    </div>
+    <audio preload="none" playsinline></audio>
+  `;
+
+  const audio = card.querySelector("audio");
+  const playButton = card.querySelector(".msg-audio-button--play");
+  const stopButton = card.querySelector(".msg-audio-button--stop");
+  const timeLabel = card.querySelector(".msg-audio-time");
+  const progressBar = card.querySelector(".msg-audio-progress-bar");
+  if (!(audio instanceof HTMLAudioElement) || !(playButton instanceof HTMLButtonElement) || !(stopButton instanceof HTMLButtonElement) || !(timeLabel instanceof HTMLElement) || !(progressBar instanceof HTMLElement)) {
+    return card;
+  }
+
+  if (src) {
+    audio.src = src;
+  }
+  if (attachment.mimeType) {
+    audio.setAttribute("type", attachment.mimeType);
+  }
+
+  const controller = {
+    audio,
+    stop(reset = true) {
+      audio.pause();
+      if (reset) {
+        audio.currentTime = 0;
+      }
+      updateUI();
+    },
+  };
+
+  const formatClock = (seconds) => {
+    const value = Number.isFinite(seconds) && seconds > 0 ? seconds : 0;
+    const mins = Math.floor(value / 60);
+    const secs = Math.floor(value % 60);
+    return `${mins}:${String(secs).padStart(2, "0")}`;
+  };
+
+  const updateUI = () => {
+    const duration = Number.isFinite(audio.duration) ? audio.duration : Number(attachment.duration || 0);
+    const current = Number.isFinite(audio.currentTime) ? audio.currentTime : 0;
+    const ratio = duration > 0 ? Math.max(0, Math.min(1, current / duration)) : 0;
+    const isPlaying = !audio.paused && !audio.ended;
+
+    playButton.textContent = isPlaying ? "Pause" : "Play";
+    playButton.setAttribute("aria-label", isPlaying ? "Pause audio" : "Play audio");
+    stopButton.disabled = !isPlaying && current === 0;
+    timeLabel.textContent = `${formatClock(current)} / ${formatClock(duration)}`;
+    progressBar.style.width = `${Math.max(0, Math.min(100, ratio * 100))}%`;
+    card.classList.toggle("is-playing", isPlaying);
+  };
+
+  const activate = async () => {
+    if (activeAudioPlayer && activeAudioPlayer !== controller) {
+      activeAudioPlayer.stop(true);
+    }
+    activeAudioPlayer = controller;
+    try {
+      await audio.play();
+    } catch (error) {
+      setBanner(`Unable to play audio: ${error.message || "Playback failed"}`, "error");
+    }
+  };
+
+  playButton.addEventListener("click", () => {
+    if (audio.paused) {
+      void activate();
+    } else {
+      audio.pause();
+      updateUI();
+    }
+  });
+
+  stopButton.addEventListener("click", () => {
+    controller.stop(true);
+    if (activeAudioPlayer === controller) {
+      activeAudioPlayer = null;
+    }
+  });
+
+  audio.addEventListener("loadedmetadata", updateUI);
+  audio.addEventListener("timeupdate", updateUI);
+  audio.addEventListener("play", updateUI);
+  audio.addEventListener("pause", () => {
+    updateUI();
+    if (audio.currentTime === 0 && activeAudioPlayer === controller) {
+      activeAudioPlayer = null;
+    }
+  });
+  audio.addEventListener("ended", () => {
+    audio.currentTime = 0;
+    updateUI();
+    if (activeAudioPlayer === controller) {
+      activeAudioPlayer = null;
+    }
+  });
+  audio.addEventListener("error", () => {
+    playButton.disabled = true;
+    stopButton.disabled = true;
+    timeLabel.textContent = "Unable to load audio";
+    card.classList.add("is-error");
+    if (activeAudioPlayer === controller) {
+      activeAudioPlayer = null;
+    }
+  });
+
+  updateUI();
+  return card;
 }
 
 function insertMessageElement(element) {
@@ -1488,6 +1627,7 @@ function sanitizeMessageForStorage(message) {
       kind: attachment.kind || "file",
       url: attachment.url || "",
       previewUrl: attachment.url || attachment.previewUrl || "",
+      duration: Number(attachment.duration || 0) || 0,
     })),
   };
 }

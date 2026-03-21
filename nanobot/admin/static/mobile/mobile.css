@@ -1378,6 +1378,110 @@ body {
   background: var(--bg-subtle);
 }
 
+.msg-audio-card {
+  display: grid;
+  gap: 10px;
+  cursor: default;
+}
+
+.msg-audio-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.msg-audio-copy {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+}
+
+.msg-audio-copy strong,
+.msg-audio-copy span {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.msg-audio-copy strong {
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.msg-audio-copy span {
+  font-size: 12px;
+  opacity: 0.7;
+}
+
+.msg-audio-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.msg-audio-button {
+  appearance: none;
+  border: 1px solid var(--border);
+  background: rgba(255,255,255,0.12);
+  color: var(--fg);
+  border-radius: 999px;
+  padding: 8px 12px;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+  transition: transform 0.15s ease, background 0.15s ease, border-color 0.15s ease;
+}
+
+.msg--agent .msg-audio-button {
+  background: var(--bg-card);
+}
+
+.msg-audio-button--play {
+  background: linear-gradient(180deg, rgba(var(--accent-soft-rgb), 0.22), rgba(var(--accent-soft-rgb), 0.12));
+  border-color: rgba(var(--accent-soft-rgb), 0.32);
+}
+
+.msg-audio-button:active {
+  transform: translateY(1px);
+}
+
+.msg-audio-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.msg-audio-time {
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-secondary);
+}
+
+.msg-audio-progress {
+  width: 100%;
+  height: 4px;
+  border-radius: 999px;
+  background: rgba(127, 127, 127, 0.16);
+  overflow: hidden;
+}
+
+.msg-audio-progress-bar {
+  width: 0%;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, rgba(var(--accent-soft-rgb), 0.95), rgba(var(--accent-soft-rgb), 0.72));
+  transition: width 0.12s linear;
+}
+
+.msg-audio-card.is-playing .msg-audio-progress {
+  background: rgba(var(--accent-soft-rgb), 0.18);
+}
+
 .msg-attachment img {
   width: 64px;
   height: 64px;
@@ -1400,8 +1504,17 @@ body {
   flex-shrink: 0;
 }
 
+.msg-attachment-icon--audio {
+  background: linear-gradient(135deg, rgba(var(--accent-soft-rgb), 0.28), rgba(45, 48, 71, 0.18));
+  color: var(--fg);
+}
+
 .msg--agent .msg-attachment-icon {
   background: var(--bg-card);
+}
+
+.msg--agent .msg-attachment-icon--audio {
+  background: linear-gradient(135deg, rgba(var(--accent-soft-rgb), 0.2), rgba(255, 255, 255, 0.92));
 }
 
 .msg-attachment-meta {
