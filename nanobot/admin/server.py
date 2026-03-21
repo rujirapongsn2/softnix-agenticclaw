@@ -701,7 +701,7 @@ def resolve_static_asset(raw_path: str) -> tuple[Path | None, str]:
     if path == "/static/softnix-logo-white.png":
         return SOFTNIX_WHITE_LOGO, "image/png"
     if path == "/favicon.ico":
-        return SOFTNIX_WHITE_LOGO, "image/png"
+        return STATIC_DIR / "mobile" / "apple-touch-icon.png", "image/png"
     if path == "/.well-known/security.txt":
         return SECURITY_TXT_PATH, "text/plain; charset=utf-8"
     # Mobile web app
