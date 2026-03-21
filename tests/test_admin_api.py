@@ -136,6 +136,20 @@ def test_admin_server_supports_http_range_requests_for_static_files() -> None:
     assert len(body) == 4
 
 
+def test_admin_server_returns_forbidden_for_inaccessible_mobile_media() -> None:
+    class DummyService:
+        def get_mobile_media_file(self, *args, **kwargs):  # noqa: ANN002, ANN003
+            raise PermissionError("Instance 'bigbike2-prod' is not accessible")
+
+    status, payload = resolve_admin_get(
+        DummyService(),
+        "/admin/mobile/media?instance_id=bigbike2-prod&sender_id=mob-1&file=out.mp3",
+    )
+
+    assert status == HTTPStatus.FORBIDDEN
+    assert payload["error"] == "Instance 'bigbike2-prod' is not accessible"
+
+
 def test_admin_service_reports_security_findings(tmp_path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()

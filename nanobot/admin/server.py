@@ -244,6 +244,8 @@ def resolve_admin_get(
             return HTTPStatus.BAD_REQUEST, {"error": "Missing instance_id, sender_id, or file"}
         try:
             media_path, content_type = service.get_mobile_media_file(instance_id, sender_id, file_name, accessible_instance_ids=accessible_instance_ids)
+        except PermissionError as exc:
+            return HTTPStatus.FORBIDDEN, {"error": str(exc)}
         except ValueError as exc:
             return HTTPStatus.BAD_REQUEST, {"error": str(exc)}
         return HTTPStatus.OK, {"_file_path": str(media_path), "_content_type": content_type}
@@ -779,18 +781,23 @@ def _read_file_response(path: Path, range_header: str | None = None) -> tuple[HT
     body = path.read_bytes()
     headers: dict[str, str] = {"Accept-Ranges": "bytes"}
     range_value = str(range_header or "").strip()
-    if range_value.startswith("bytes="):
-        start_text, end_text = range_value[len("bytes="):].split("-", 1)
-        file_size = len(body)
-        start = int(start_text) if start_text else 0
-        end = int(end_text) if end_text else file_size - 1
-        if start < 0 or end < start or start >= file_size:
-            headers["Content-Range"] = f"bytes */{file_size}"
-            return HTTPStatus.REQUESTED_RANGE_NOT_SATISFIABLE, b"", headers
-        end = min(end, file_size - 1)
-        partial_body = body[start : end + 1]
-        headers["Content-Range"] = f"bytes {start}-{end}/{file_size}"
-        return HTTPStatus.PARTIAL_CONTENT, partial_body, headers
+    if range_value.startswith("bytes=") and "," not in range_value:
+        try:
+            start_text, end_text = range_value[len("bytes="):].split("-", 1)
+            file_size = len(body)
+            start = int(start_text) if start_text else 0
+            end = int(end_text) if end_text else file_size - 1
+            if start < 0 or end < start or start >= file_size:
+                headers["Content-Range"] = f"bytes */{file_size}"
+                return HTTPStatus.REQUESTED_RANGE_NOT_SATISFIABLE, b"", headers
+            end = min(end, file_size - 1)
+            partial_body = body[start : end + 1]
+            headers["Content-Range"] = f"bytes {start}-{end}/{file_size}"
+            return HTTPStatus.PARTIAL_CONTENT, partial_body, headers
+        except Exception:
+            # Some clients send conservative or malformed range hints; fall back to a full response
+            # rather than dropping the connection and breaking audio playback.
+            return HTTPStatus.OK, body, headers
     return HTTPStatus.OK, body, headers
 
 
@@ -921,7 +928,7 @@ def create_admin_server(host: str, port: int, service: AdminService) -> Threadin
                 if not self._authorize_mobile_request():
                     return
                 self._set_audit_context(context)
-                accessible_ids = _accessible_instance_ids(context)
+                accessible_ids = self._mobile_accessible_instance_ids() or _accessible_instance_ids(context)
                 current_user_id = str((context.get("user") or {}).get("id") or "").strip() or None
                 status, payload = resolve_admin_get(
                     service,
@@ -932,6 +939,10 @@ def create_admin_server(host: str, port: int, service: AdminService) -> Threadin
                 if isinstance(payload, dict) and "_file_path" in payload:
                     return self._send_file(Path(str(payload["_file_path"])), str(payload.get("_content_type") or "application/octet-stream"))
                 self._send_json(payload, status=status)
+            except PermissionError as exc:
+                return self._send_json({"error": str(exc)}, status=HTTPStatus.FORBIDDEN)
+            except ValueError as exc:
+                return self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
             finally:
                 clear_request_audit_context()
 
@@ -998,7 +1009,7 @@ def create_admin_server(host: str, port: int, service: AdminService) -> Threadin
                 _mobile_unauthenticated = self.path.startswith("/admin/mobile/") and not self.path.rstrip("/").endswith("/pair")
                 if not _mobile_unauthenticated and not self._authorize_user_mutation(method="POST", path=self.path, payload=payload, context=context):
                     return
-                accessible_ids = _accessible_instance_ids(context)
+                accessible_ids = self._mobile_accessible_instance_ids(payload) or _accessible_instance_ids(context)
                 status, response = resolve_admin_post(service, self.path, payload, accessible_instance_ids=accessible_ids)
                 self._send_json(response, status=status)
             finally:
@@ -1124,6 +1135,18 @@ def create_admin_server(host: str, port: int, service: AdminService) -> Threadin
             query_token = str((query.get("mobile_token") or [None])[0] or "").strip()
             return header_token or payload_token or query_token
 
+        def _mobile_accessible_instance_ids(self, payload: dict[str, Any] | None = None) -> set[str] | None:
+            token = self._mobile_token(payload)
+            if not token:
+                return None
+            device = service.auth_store.get_mobile_device_by_token(token)
+            if device is None:
+                return None
+            instance_id = str(device.get("instance_id") or "").strip()
+            if not instance_id:
+                return None
+            return {instance_id}
+
         def _mobile_device_for_request(self, *, path: str, payload: dict[str, Any] | None, token: str) -> dict[str, Any] | None:
             parsed = urlparse(self.path)
             query = parse_qs(parsed.query)
@@ -1153,7 +1176,6 @@ def create_admin_server(host: str, port: int, service: AdminService) -> Threadin
             token_device_id = str(device.get("device_id") or "").strip()
             if path in {
                 "/admin/mobile/message",
-                "/admin/mobile/media",
                 "/admin/mobile/push/subscribe",
                 "/admin/mobile/push/unsubscribe",
                 "/admin/mobile/transfer-session/create",
