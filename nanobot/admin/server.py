@@ -44,7 +44,25 @@ def _public_https_redirect_location(host_header: str | None, forwarded_proto: st
     return f"https://{host}{path}"
 
 
-def resolve_admin_get(service: AdminService, raw_path: str) -> tuple[HTTPStatus, Any]:
+def _accessible_instance_ids(context: dict[str, Any] | None) -> set[str] | None:
+    if not context or not isinstance(context.get("user"), dict):
+        return None
+    raw_ids = context["user"].get("instance_ids")
+    if raw_ids is None:
+        return None
+    if not isinstance(raw_ids, list):
+        return set()
+    cleaned = {str(item or "").strip() for item in raw_ids if str(item or "").strip()}
+    return cleaned
+
+
+def resolve_admin_get(
+    service: AdminService,
+    raw_path: str,
+    *,
+    current_user_id: str | None = None,
+    accessible_instance_ids: set[str] | list[str] | tuple[str, ...] | None = None,
+) -> tuple[HTTPStatus, Any]:
     """Resolve one GET request path into a JSON payload."""
     parsed = urlparse(raw_path)
     path = parsed.path.rstrip("/") or "/"
@@ -85,13 +103,13 @@ def resolve_admin_get(service: AdminService, raw_path: str) -> tuple[HTTPStatus,
     if path == "/admin/auth/bootstrap-status":
         return HTTPStatus.OK, {"bootstrap_required": not service.has_admin_users()}
     if path == "/admin/overview":
-        return HTTPStatus.OK, service.get_overview()
+        return HTTPStatus.OK, service.get_overview(accessible_instance_ids=accessible_instance_ids)
     if path == "/admin/instances":
-        return HTTPStatus.OK, {"instances": service.list_instances()}
+        return HTTPStatus.OK, {"instances": service.list_instances(accessible_instance_ids=accessible_instance_ids)}
     if path == "/admin/activity":
-        return HTTPStatus.OK, service.get_activity()
+        return HTTPStatus.OK, service.get_activity(accessible_instance_ids=accessible_instance_ids)
     if path == "/admin/activity/debug":
-        return HTTPStatus.OK, service.get_activity_debug()
+        return HTTPStatus.OK, service.get_activity_debug(accessible_instance_ids=accessible_instance_ids)
     if path == "/admin/analytics/activity-heatmap":
         query = parse_qs(parsed.query)
         instance_id = (query.get("instance_id") or [None])[0]
@@ -101,17 +119,18 @@ def resolve_admin_get(service: AdminService, raw_path: str) -> tuple[HTTPStatus,
             instance_id=instance_id,
             period=period,
             days=days,
+            accessible_instance_ids=accessible_instance_ids,
         )
     if path == "/admin/access-requests":
-        return HTTPStatus.OK, service.list_access_requests()
+        return HTTPStatus.OK, service.list_access_requests(accessible_instance_ids=accessible_instance_ids)
     if path == "/admin/schedules":
-        return HTTPStatus.OK, service.list_schedules()
+        return HTTPStatus.OK, service.list_schedules(accessible_instance_ids=accessible_instance_ids)
     if path == "/admin/users":
-        return HTTPStatus.OK, service.list_admin_users()
+        return HTTPStatus.OK, service.list_admin_users(accessible_instance_ids=accessible_instance_ids)
     if path.startswith("/admin/instances/") and path.endswith("/memory-files"):
         instance_id = path.split("/")[-2]
         try:
-            return HTTPStatus.OK, service.get_instance_memory_files(instance_id=instance_id)
+            return HTTPStatus.OK, service.get_instance_memory_files(instance_id=instance_id, accessible_instance_ids=accessible_instance_ids)
         except ValueError as exc:
             return HTTPStatus.BAD_REQUEST, {"error": str(exc)}
     if path.startswith("/admin/instances/") and "/skills/" in path:
@@ -123,40 +142,40 @@ def resolve_admin_get(service: AdminService, raw_path: str) -> tuple[HTTPStatus,
         except (ValueError, IndexError):
             return HTTPStatus.BAD_REQUEST, {"error": "Invalid skills path"}
         try:
-            return HTTPStatus.OK, service.get_instance_skill(instance_id=instance_id, skill_name=skill_name)
+            return HTTPStatus.OK, service.get_instance_skill(instance_id=instance_id, skill_name=skill_name, accessible_instance_ids=accessible_instance_ids)
         except ValueError as exc:
             return HTTPStatus.BAD_REQUEST, {"error": str(exc)}
     if path.startswith("/admin/instances/") and path.endswith("/skills"):
         instance_id = path.split("/")[-2]
         try:
-            return HTTPStatus.OK, service.list_instance_skills(instance_id=instance_id)
+            return HTTPStatus.OK, service.list_instance_skills(instance_id=instance_id, accessible_instance_ids=accessible_instance_ids)
         except ValueError as exc:
             return HTTPStatus.BAD_REQUEST, {"error": str(exc)}
     if path.startswith("/admin/instances/") and path.endswith("/config"):
         instance_id = path.split("/")[-2]
-        return HTTPStatus.OK, service.get_instance_config(instance_id=instance_id)
+        return HTTPStatus.OK, service.get_instance_config(instance_id=instance_id, accessible_instance_ids=accessible_instance_ids)
     if path.startswith("/admin/instances/"):
         instance_id = path.rsplit("/", 1)[-1]
-        instance = service.get_instance(instance_id)
+        instance = service.get_instance(instance_id, accessible_instance_ids=accessible_instance_ids)
         if instance is None:
             return HTTPStatus.NOT_FOUND, {"error": "Instance not found"}
         return HTTPStatus.OK, instance
     if path == "/admin/channels":
-        return HTTPStatus.OK, {"channels": service.list_channels()}
+        return HTTPStatus.OK, {"channels": service.list_channels(accessible_instance_ids=accessible_instance_ids)}
     if path == "/admin/providers":
-        return HTTPStatus.OK, service.list_providers()
+        return HTTPStatus.OK, service.list_providers(accessible_instance_ids=accessible_instance_ids)
     if path == "/admin/mcp/servers":
-        return HTTPStatus.OK, service.list_mcp_servers()
+        return HTTPStatus.OK, service.list_mcp_servers(accessible_instance_ids=accessible_instance_ids)
     if path == "/admin/security":
-        return HTTPStatus.OK, service.get_security()
+        return HTTPStatus.OK, service.get_security(accessible_instance_ids=accessible_instance_ids)
     if path == "/admin/security/policies/global":
         return HTTPStatus.OK, service.get_global_policy()
     if path == "/admin/security/policies/global/hits":
         query = parse_qs(parsed.query)
         limit = int((query.get("limit") or [100])[0])
-        return HTTPStatus.OK, service.get_global_policy_hits(limit=min(limit, 500))
+        return HTTPStatus.OK, service.get_global_policy_hits(limit=min(limit, 500), accessible_instance_ids=accessible_instance_ids)
     if path == "/admin/security/policies/global/detections-by-instance":
-        return HTTPStatus.OK, service.get_global_policy_detections_by_instance()
+        return HTTPStatus.OK, service.get_global_policy_detections_by_instance(accessible_instance_ids=accessible_instance_ids)
     if path == "/admin/auth-audit":
         query = parse_qs(parsed.query)
         limit = int((query.get("limit") or [100])[0])
@@ -164,12 +183,16 @@ def resolve_admin_get(service: AdminService, raw_path: str) -> tuple[HTTPStatus,
         category = (query.get("category") or ["all"])[0]
         outcome = (query.get("outcome") or ["all"])[0]
         search = (query.get("search") or [""])[0]
+        scope = (query.get("scope") or ["accessible"])[0]
         return HTTPStatus.OK, service.get_auth_audit_log(
             limit=min(limit, 200),
             offset=max(offset, 0),
             category=category,
             outcome=outcome,
             search=search,
+            scope=scope,
+            current_user_id=current_user_id,
+            accessible_instance_ids=accessible_instance_ids,
         )
     if path == "/admin/runtime-audit":
         query = parse_qs(parsed.query)
@@ -187,6 +210,7 @@ def resolve_admin_get(service: AdminService, raw_path: str) -> tuple[HTTPStatus,
                 status=status_filter,
                 operation=operation,
                 search=search,
+                accessible_instance_ids=accessible_instance_ids,
             )
         except ValueError as exc:
             return HTTPStatus.BAD_REQUEST, {"error": str(exc)}
@@ -199,14 +223,14 @@ def resolve_admin_get(service: AdminService, raw_path: str) -> tuple[HTTPStatus,
         sender_id = (query.get("sender_id") or [None])[0]
         if not instance_id or not sender_id:
             return HTTPStatus.BAD_REQUEST, {"error": "Missing instance_id or sender_id"}
-        return HTTPStatus.OK, {"replies": service.get_mobile_replies(instance_id, sender_id)}
+        return HTTPStatus.OK, {"replies": service.get_mobile_replies(instance_id, sender_id, accessible_instance_ids=accessible_instance_ids)}
 
     if path == "/admin/mobile/devices":
         query = parse_qs(parsed.query)
         instance_id = (query.get("instance_id") or [None])[0]
         if not instance_id:
             return HTTPStatus.BAD_REQUEST, {"error": "Missing instance_id"}
-        return HTTPStatus.OK, {"devices": service.list_mobile_devices(instance_id)}
+        return HTTPStatus.OK, {"devices": service.list_mobile_devices(instance_id, accessible_instance_ids=accessible_instance_ids)}
 
     if path == "/admin/mobile/push/config":
         return HTTPStatus.OK, service.get_mobile_push_config()
@@ -219,7 +243,7 @@ def resolve_admin_get(service: AdminService, raw_path: str) -> tuple[HTTPStatus,
         if not instance_id or not sender_id or not file_name:
             return HTTPStatus.BAD_REQUEST, {"error": "Missing instance_id, sender_id, or file"}
         try:
-            media_path, content_type = service.get_mobile_media_file(instance_id, sender_id, file_name)
+            media_path, content_type = service.get_mobile_media_file(instance_id, sender_id, file_name, accessible_instance_ids=accessible_instance_ids)
         except ValueError as exc:
             return HTTPStatus.BAD_REQUEST, {"error": str(exc)}
         return HTTPStatus.OK, {"_file_path": str(media_path), "_content_type": content_type}
@@ -260,7 +284,11 @@ def resolve_admin_get(service: AdminService, raw_path: str) -> tuple[HTTPStatus,
 
 
 def resolve_admin_patch(
-    service: AdminService, raw_path: str, payload: dict[str, Any]
+    service: AdminService,
+    raw_path: str,
+    payload: dict[str, Any],
+    *,
+    accessible_instance_ids: set[str] | list[str] | tuple[str, ...] | None = None,
 ) -> tuple[HTTPStatus, Any]:
     """Resolve one PATCH request path into a JSON payload."""
     parsed = urlparse(raw_path)
@@ -271,12 +299,15 @@ def resolve_admin_patch(
             return HTTPStatus.BAD_REQUEST, {"error": "Missing authenticated user"}
         if path.startswith("/admin/users/"):
             user_id = path.rsplit("/", 1)[-1]
+            instance_ids = payload["instance_ids"] if "instance_ids" in payload else ...
             return HTTPStatus.OK, service.update_admin_user(
                 user_id=user_id,
                 display_name=payload.get("display_name"),
                 email=payload.get("email"),
                 role=payload.get("role"),
                 status=payload.get("status"),
+                instance_ids=instance_ids,
+                allowed_instance_ids=accessible_instance_ids,
             )
         if path.startswith("/admin/instances/") and path.endswith("/memory-files"):
             instance_id = path.split("/")[-2]
@@ -290,6 +321,7 @@ def resolve_admin_patch(
                 instance_id=instance_id,
                 relative_path=relative_path,
                 content=content,
+                accessible_instance_ids=accessible_instance_ids,
             )
             return HTTPStatus.OK, result
         if path.startswith("/admin/instances/") and "/skills/" in path:
@@ -312,6 +344,7 @@ def resolve_admin_patch(
                     skill_name=skill_name,
                     relative_path=relative_path,
                     content=content,
+                    accessible_instance_ids=accessible_instance_ids,
                 )
                 return HTTPStatus.OK, result
             except ValueError as exc:
@@ -323,7 +356,7 @@ def resolve_admin_patch(
             if not isinstance(config_data, dict):
                 return HTTPStatus.BAD_REQUEST, {"error": "Missing config payload"}
             try:
-                result = service.update_instance_config(instance_id=instance_id, config_data=config_data)
+                result = service.update_instance_config(instance_id=instance_id, config_data=config_data, accessible_instance_ids=accessible_instance_ids)
                 return HTTPStatus.OK, result
             except ValueError as exc:
                 return HTTPStatus.BAD_REQUEST, {"error": str(exc)}
@@ -351,6 +384,7 @@ def resolve_admin_patch(
                     sandbox_tmpfs_size_mb=payload.get("sandbox_tmpfs_size_mb"),
                     sandbox_network_policy=payload.get("sandbox_network_policy"),
                     sandbox_timeout_seconds=payload.get("sandbox_timeout_seconds"),
+                    accessible_instance_ids=accessible_instance_ids,
                 )
                 return HTTPStatus.OK, result
             except ValueError as exc:
@@ -364,6 +398,7 @@ def resolve_admin_patch(
                 instance_id=instance_id,
                 model=payload.get("model"),
                 provider=payload.get("provider"),
+                accessible_instance_ids=accessible_instance_ids,
             )
             return HTTPStatus.OK, {"instance": instance}
 
@@ -376,6 +411,7 @@ def resolve_admin_patch(
                 api_key=payload.get("api_key"),
                 api_base=payload.get("api_base"),
                 extra_headers=payload.get("extra_headers"),
+                accessible_instance_ids=accessible_instance_ids,
             )
             return HTTPStatus.OK, {"instance": instance}
 
@@ -388,6 +424,7 @@ def resolve_admin_patch(
                 enabled=payload.get("enabled"),
                 allow_from=payload.get("allow_from"),
                 settings=payload.get("settings"),
+                accessible_instance_ids=accessible_instance_ids,
             )
             return HTTPStatus.OK, {"instance": instance}
 
@@ -398,6 +435,7 @@ def resolve_admin_patch(
             instance = service.update_workspace_restriction(
                 instance_id=instance_id,
                 restrict_to_workspace=bool(payload.get("restrict_to_workspace")),
+                accessible_instance_ids=accessible_instance_ids,
             )
             return HTTPStatus.OK, {"instance": instance}
         if path == "/admin/security/policies/global":
@@ -416,6 +454,7 @@ def resolve_admin_patch(
                 instance_id=instance_id,
                 server_name=server_name,
                 server_data=server_data,
+                accessible_instance_ids=accessible_instance_ids,
             )
             return HTTPStatus.OK, {"instance": instance}
 
@@ -428,6 +467,7 @@ def resolve_admin_patch(
                 instance_id=instance_id,
                 job_id=job_id,
                 enabled=bool(payload.get("enabled")),
+                accessible_instance_ids=accessible_instance_ids,
             )
             return HTTPStatus.OK, result
     except ValueError as exc:
@@ -437,7 +477,11 @@ def resolve_admin_patch(
 
 
 def resolve_admin_delete(
-    service: AdminService, raw_path: str, payload: dict[str, Any]
+    service: AdminService,
+    raw_path: str,
+    payload: dict[str, Any],
+    *,
+    accessible_instance_ids: set[str] | list[str] | tuple[str, ...] | None = None,
 ) -> tuple[HTTPStatus, Any]:
     """Resolve one DELETE request path into a JSON payload."""
     parsed = urlparse(raw_path)
@@ -452,7 +496,7 @@ def resolve_admin_delete(
             except (ValueError, IndexError):
                 return HTTPStatus.BAD_REQUEST, {"error": "Invalid skills path"}
             try:
-                result = service.delete_instance_skill(instance_id=instance_id, skill_name=skill_name)
+                result = service.delete_instance_skill(instance_id=instance_id, skill_name=skill_name, accessible_instance_ids=accessible_instance_ids)
                 return HTTPStatus.OK, result
             except ValueError as exc:
                 return HTTPStatus.BAD_REQUEST, {"error": str(exc)}
@@ -461,31 +505,36 @@ def resolve_admin_delete(
             result = service.delete_instance(
                 instance_id=instance_id,
                 purge_files=bool(payload.get("purge_files")),
+                accessible_instance_ids=accessible_instance_ids,
             )
             return HTTPStatus.OK, result
         if path.startswith("/admin/schedules/"):
             job_id = path.rsplit("/", 1)[-1]
             instance_id = payload.get("instance_id") or "default"
-            result = service.delete_schedule(instance_id=instance_id, job_id=job_id)
+            result = service.delete_schedule(instance_id=instance_id, job_id=job_id, accessible_instance_ids=accessible_instance_ids)
             return HTTPStatus.OK, result
         if path.startswith("/admin/mcp/servers/"):
             server_name = path.rsplit("/", 1)[-1]
             instance_id = payload.get("instance_id") or "default"
-            instance = service.delete_mcp_server(instance_id=instance_id, server_name=server_name)
+            instance = service.delete_mcp_server(instance_id=instance_id, server_name=server_name, accessible_instance_ids=accessible_instance_ids)
             return HTTPStatus.OK, {"instance": instance}
         if path.startswith("/admin/mobile/devices/"):
             device_id = path.rsplit("/", 1)[-1]
             instance_id = payload.get("instance_id")
             if not instance_id:
                 return HTTPStatus.BAD_REQUEST, {"error": "instance_id required"}
-            return HTTPStatus.OK, service.delete_mobile_device(instance_id, device_id)
+            return HTTPStatus.OK, service.delete_mobile_device(instance_id, device_id, accessible_instance_ids=accessible_instance_ids)
     except ValueError as exc:
         return HTTPStatus.BAD_REQUEST, {"error": str(exc)}
     return HTTPStatus.NOT_FOUND, {"error": "Not found"}
 
 
 def resolve_admin_post(
-    service: AdminService, raw_path: str, payload: dict[str, Any]
+    service: AdminService,
+    raw_path: str,
+    payload: dict[str, Any],
+    *,
+    accessible_instance_ids: set[str] | list[str] | tuple[str, ...] | None = None,
 ) -> tuple[HTTPStatus, Any]:
     """Resolve one POST request path into a JSON payload."""
     parsed = urlparse(raw_path)
@@ -496,7 +545,7 @@ def resolve_admin_post(
             instance_id = payload.get("instance_id")
             if not instance_id:
                 return HTTPStatus.BAD_REQUEST, {"error": "instance_id is required"}
-            return HTTPStatus.OK, service.get_mobile_pairing_data(instance_id)
+            return HTTPStatus.OK, service.get_mobile_pairing_data(instance_id, accessible_instance_ids=accessible_instance_ids)
             
         if path == "/admin/mobile/register":
             instance_id = payload.get("instance_id")
@@ -505,7 +554,7 @@ def resolve_admin_post(
                 return HTTPStatus.BAD_REQUEST, {"error": "instance_id and device_id are required"}
             pairing_token = payload.get("pairing_token")
             label = payload.get("label", "")
-            return HTTPStatus.OK, service.register_mobile_client(instance_id, device_id, pairing_token, label)
+            return HTTPStatus.OK, service.register_mobile_client(instance_id, device_id, pairing_token, label, accessible_instance_ids=accessible_instance_ids)
             
         if path == "/admin/mobile/message":
             instance_id = payload.get("instance_id")
@@ -525,6 +574,7 @@ def resolve_admin_post(
                 reply_to=payload.get("reply_to"),
                 thread_root_id=payload.get("thread_root_id"),
                 attachments=attachments,
+                accessible_instance_ids=accessible_instance_ids,
             )
 
         if path == "/admin/mobile/transfer-session/create":
@@ -535,6 +585,7 @@ def resolve_admin_post(
                 device=device,
                 active_session_id=payload.get("active_session_id"),
                 conversations=payload.get("conversations"),
+                accessible_instance_ids=accessible_instance_ids,
             )
 
         if path == "/admin/mobile/transfer-session/consume":
@@ -553,6 +604,7 @@ def resolve_admin_post(
                 instance_id=instance_id,
                 device_id=device_id,
                 subscription=subscription,
+                accessible_instance_ids=accessible_instance_ids,
             )
 
         if path == "/admin/mobile/push/unsubscribe":
@@ -560,7 +612,7 @@ def resolve_admin_post(
             device_id = payload.get("device_id")
             if not instance_id or not device_id:
                 return HTTPStatus.BAD_REQUEST, {"error": "instance_id and device_id are required"}
-            return HTTPStatus.OK, service.unsubscribe_mobile_push(instance_id=instance_id, device_id=device_id)
+            return HTTPStatus.OK, service.unsubscribe_mobile_push(instance_id=instance_id, device_id=device_id, accessible_instance_ids=accessible_instance_ids)
 
         # ngrok management (requires admin session — NOT in mobile unauthenticated block)
         if path == "/admin/mobile/ngrok/start":
@@ -594,6 +646,8 @@ def resolve_admin_post(
                 email=payload.get("email"),
                 role=str(payload.get("role") or "viewer"),
                 status=str(payload.get("status") or "active"),
+                instance_ids=payload["instance_ids"] if "instance_ids" in payload else None,
+                allowed_instance_ids=accessible_instance_ids,
             )
             return HTTPStatus.OK, result
         if path.startswith("/admin/users/") and path.endswith("/reset-password"):
@@ -630,18 +684,18 @@ def resolve_admin_post(
             parts = path.split("/")
             instance_id = parts[-2]
             action = parts[-1]
-            result = service.execute_instance_action(instance_id=instance_id, action=action)
+            result = service.execute_instance_action(instance_id=instance_id, action=action, accessible_instance_ids=accessible_instance_ids)
             status = HTTPStatus.OK if result["ok"] else HTTPStatus.BAD_GATEWAY
             return status, result
         if path.startswith("/admin/providers/") and path.endswith("/validate"):
             provider_name = path.split("/")[-2]
             instance_id = payload.get("instance_id") or "default"
-            result = service.validate_provider(instance_id=instance_id, provider_name=provider_name)
+            result = service.validate_provider(instance_id=instance_id, provider_name=provider_name, accessible_instance_ids=accessible_instance_ids)
             return HTTPStatus.OK, result
         if path.startswith("/admin/mcp/servers/") and path.endswith("/validate"):
             server_name = path.split("/")[-2]
             instance_id = payload.get("instance_id") or "default"
-            result = service.validate_mcp_server(instance_id=instance_id, server_name=server_name)
+            result = service.validate_mcp_server(instance_id=instance_id, server_name=server_name, accessible_instance_ids=accessible_instance_ids)
             return HTTPStatus.OK, result
         if path == "/admin/schedules":
             instance_id = payload.get("instance_id") or "default"
@@ -657,18 +711,20 @@ def resolve_admin_post(
                 channel=payload.get("channel"),
                 to=payload.get("to"),
                 delete_after_run=bool(payload.get("delete_after_run")),
+                accessible_instance_ids=accessible_instance_ids,
             )
             return HTTPStatus.OK, result
         if path.startswith("/admin/schedules/") and path.endswith("/run"):
             job_id = path.split("/")[-2]
             instance_id = payload.get("instance_id") or "default"
-            result = service.run_schedule(instance_id=instance_id, job_id=job_id, force=True)
+            result = service.run_schedule(instance_id=instance_id, job_id=job_id, force=True, accessible_instance_ids=accessible_instance_ids)
             return HTTPStatus.OK, result
         if path == "/admin/access-requests/approve":
             result = service.approve_access_request(
                 instance_id=payload.get("instance_id") or "default",
                 channel_name=payload.get("channel_name") or "",
                 sender_id=payload.get("sender_id") or "",
+                accessible_instance_ids=accessible_instance_ids,
             )
             return HTTPStatus.OK, result
         if path == "/admin/access-requests/reject":
@@ -676,6 +732,7 @@ def resolve_admin_post(
                 instance_id=payload.get("instance_id") or "default",
                 channel_name=payload.get("channel_name") or "",
                 sender_id=payload.get("sender_id") or "",
+                accessible_instance_ids=accessible_instance_ids,
             )
             return HTTPStatus.OK, result
     except PermissionError as exc:
@@ -843,7 +900,14 @@ def create_admin_server(host: str, port: int, service: AdminService) -> Threadin
                 if not self._authorize_mobile_request():
                     return
                 self._set_audit_context(context)
-                status, payload = resolve_admin_get(service, self.path)
+                accessible_ids = _accessible_instance_ids(context)
+                current_user_id = str((context.get("user") or {}).get("id") or "").strip() or None
+                status, payload = resolve_admin_get(
+                    service,
+                    self.path,
+                    current_user_id=current_user_id,
+                    accessible_instance_ids=accessible_ids,
+                )
                 if isinstance(payload, dict) and "_file_path" in payload:
                     return self._send_file(Path(str(payload["_file_path"])), str(payload.get("_content_type") or "application/octet-stream"))
                 self._send_json(payload, status=status)
@@ -872,7 +936,8 @@ def create_admin_server(host: str, port: int, service: AdminService) -> Threadin
                 self._set_audit_context(context)
                 if not self._authorize_user_mutation(method="PATCH", path=self.path, payload=payload, context=context):
                     return
-                status, response = resolve_admin_patch(service, self.path, payload)
+                accessible_ids = _accessible_instance_ids(context)
+                status, response = resolve_admin_patch(service, self.path, payload, accessible_instance_ids=accessible_ids)
                 self._send_json(response, status=status)
             finally:
                 clear_request_audit_context()
@@ -888,7 +953,8 @@ def create_admin_server(host: str, port: int, service: AdminService) -> Threadin
                 if context is None:
                     return
                 self._set_audit_context(context)
-                status, response = resolve_admin_delete(service, self.path, payload)
+                accessible_ids = _accessible_instance_ids(context)
+                status, response = resolve_admin_delete(service, self.path, payload, accessible_instance_ids=accessible_ids)
                 self._send_json(response, status=status)
             finally:
                 clear_request_audit_context()
@@ -911,7 +977,8 @@ def create_admin_server(host: str, port: int, service: AdminService) -> Threadin
                 _mobile_unauthenticated = self.path.startswith("/admin/mobile/") and not self.path.rstrip("/").endswith("/pair")
                 if not _mobile_unauthenticated and not self._authorize_user_mutation(method="POST", path=self.path, payload=payload, context=context):
                     return
-                status, response = resolve_admin_post(service, self.path, payload)
+                accessible_ids = _accessible_instance_ids(context)
+                status, response = resolve_admin_post(service, self.path, payload, accessible_instance_ids=accessible_ids)
                 self._send_json(response, status=status)
             finally:
                 clear_request_audit_context()

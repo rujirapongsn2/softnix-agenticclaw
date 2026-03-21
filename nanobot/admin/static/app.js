@@ -81,12 +81,14 @@ overview: null,
     total: 0,
     offset: 0,
     limit: 100,
+    scope: "accessible",
     category: "all",
     outcome: "all",
     search: "",
     loading: false,
     initialized: false,
     debounceId: null,
+    requestSeq: 0,
   },
 };
 
@@ -743,11 +745,36 @@ function currentUserRole() {
   return state.auth.user?.role || "viewer";
 }
 
+function defaultAuditLogScope() {
+  return currentUserRole() === "owner" ? "all" : "accessible";
+}
+
+function syncAuditLogScopeWithUser({ resetToDefault = false } = {}) {
+  if (resetToDefault) {
+    state.auditLog.scope = defaultAuditLogScope();
+    return;
+  }
+  const allowed = new Set(auditLogScopeOptions().map((item) => item.value));
+  if (!allowed.has(state.auditLog.scope)) {
+    state.auditLog.scope = defaultAuditLogScope();
+  }
+  if (!allowed.has(state.auditLog.scope)) {
+    state.auditLog.scope = auditLogScopeOptions()[0]?.value || "accessible";
+  }
+}
+
 function roleLabel(role) {
-  if (role === "owner") return "Owner";
+  if (role === "owner") return "Owner System";
   if (role === "admin") return "Admin";
   if (role === "operator") return "Operator";
   return "Viewer";
+}
+
+function roleClass(role) {
+  if (role === "owner") return "role-owner";
+  if (role === "admin") return "role-admin";
+  if (role === "operator") return "role-operator";
+  return "role-viewer";
 }
 
 function authDisplayName(user) {
@@ -951,6 +978,16 @@ function renderUsersPanel() {
   });
 }
 
+function getUserScopeInstanceOptions() {
+  const instances = Array.isArray(state.overview?.instances) ? state.overview.instances : [];
+  return instances
+    .map((instance) => ({
+      id: String(instance.id || "").trim(),
+      name: String(instance.name || instance.id || "").trim(),
+    }))
+    .filter((instance) => instance.id);
+}
+
 function renderAccountPanel() {
   const target = document.getElementById("account-panel");
   if (!target) return;
@@ -1026,8 +1063,12 @@ function renderUserModal() {
   const userId = state.userModal.userId;
   const isEdit = !!userId;
   const user = isEdit ? state.auth.users.find((u) => u.id === userId) : null;
-  const canEditRole = !isEdit || currentUserRole() === "owner" || !!(user && user.role !== "owner");
+  const instanceOptions = getUserScopeInstanceOptions();
+  const selectedInstanceIds = new Set(Array.isArray(user?.instance_ids) ? user.instance_ids.map((value) => String(value || "").trim()).filter(Boolean) : []);
+  const scopeMode = isEdit && Array.isArray(user?.instance_ids) ? "selected" : "all";
+  const canEditRole = !isEdit || currentUserRole() === "owner";
   const canDisable = hasAuthPermission("user.disable");
+  const roleValue = isEdit ? (user?.role || "viewer") : "viewer";
   titleEl.textContent = isEdit ? `Edit — ${user ? authDisplayName(user) : "User"}` : "Add Team Member";
   body.innerHTML = `
     <div class="stack">
@@ -1046,14 +1087,60 @@ function renderUserModal() {
         <input id="modal-user-email" type="email" placeholder="jane@example.com"
           value="${isEdit && user ? escapeHtml(user.email || "") : ""}">
       </div>
+      ${canEditRole ? `
       <div class="field">
         <label for="modal-user-role">Role</label>
-        <select id="modal-user-role" ${!canEditRole ? "disabled" : ""}>
-          <option value="viewer"   ${isEdit && user?.role === "viewer"   ? "selected" : ""}>Viewer</option>
-          <option value="operator" ${isEdit && user?.role === "operator" ? "selected" : ""}>Operator</option>
-          <option value="admin"    ${isEdit && user?.role === "admin"    ? "selected" : ""}>Admin</option>
-          ${currentUserRole() === "owner" ? `<option value="owner" ${isEdit && user?.role === "owner" ? "selected" : ""}>Owner</option>` : ""}
+        <select id="modal-user-role">
+          ${currentUserRole() === "owner" ? `<option value="owner" ${roleValue === "owner" ? "selected" : ""}>Owner System</option>` : ""}
+          <option value="admin"    ${roleValue === "admin"    ? "selected" : ""}>Admin</option>
+          <option value="operator" ${roleValue === "operator" ? "selected" : ""}>Operator</option>
+          <option value="viewer"   ${roleValue === "viewer"   ? "selected" : ""}>Viewer</option>
         </select>
+      </div>
+      ` : `
+      <div class="field">
+        <label>Role</label>
+        <div class="user-role-readonly">
+          <span class="role-badge ${roleClass(roleValue)}">${escapeHtml(roleLabel(roleValue))}</span>
+          <span class="meta">You do not have permission to change this role.</span>
+        </div>
+      </div>
+      `}
+      <div class="field">
+        <label>Instance access</label>
+        <div class="user-instance-scope-toggle">
+          <label class="user-instance-scope-option">
+            <input type="radio" name="modal-user-instance-scope" value="all" ${scopeMode === "all" ? "checked" : ""}>
+            <span>All accessible instances</span>
+          </label>
+          <label class="user-instance-scope-option">
+            <input type="radio" name="modal-user-instance-scope" value="selected" ${scopeMode === "selected" ? "checked" : ""}>
+            <span>Selected instances</span>
+          </label>
+        </div>
+        <div class="user-instance-scope-list" id="modal-user-instance-list">
+          ${
+            instanceOptions.length
+              ? instanceOptions
+                  .map((instance) => `
+                    <label class="user-instance-scope-item">
+                      <input
+                        type="checkbox"
+                        data-user-instance-id="${escapeHtml(instance.id)}"
+                        ${selectedInstanceIds.has(instance.id) ? "checked" : ""}
+                        ${scopeMode === "all" ? "disabled" : ""}
+                      >
+                      <span>
+                        <strong>${escapeHtml(instance.name || instance.id)}</strong>
+                        <span class="meta">${escapeHtml(instance.id)}</span>
+                      </span>
+                    </label>
+                  `)
+                  .join("")
+              : `<p class="meta">No instances are available to assign.</p>`
+          }
+        </div>
+        <p class="meta">Selected instances limit what the user can see and manage after login.</p>
       </div>
       ${isEdit ? `
       <div class="field">
@@ -1082,6 +1169,40 @@ function renderUserModal() {
   document.getElementById("modal-reset-pw-btn")?.addEventListener("click", () => {
     void handleResetUserPassword(userId);
   });
+  const scopeRadios = Array.from(body.querySelectorAll('input[name="modal-user-instance-scope"]'));
+  const instanceChecks = Array.from(body.querySelectorAll("[data-user-instance-id]"));
+  const syncInstanceSelectionState = () => {
+    const selectedMode = body.querySelector('input[name="modal-user-instance-scope"]:checked')?.value || "all";
+    instanceChecks.forEach((input) => {
+      input.disabled = selectedMode === "all";
+    });
+  };
+  scopeRadios.forEach((radio) => {
+    radio.addEventListener("change", syncInstanceSelectionState);
+  });
+  syncInstanceSelectionState();
+}
+
+function collectUserInstanceIdsFromModal() {
+  const selectedMode = document.querySelector('input[name="modal-user-instance-scope"]:checked')?.value || "all";
+  if (selectedMode === "all") {
+    return null;
+  }
+  return Array.from(document.querySelectorAll("[data-user-instance-id]"))
+    .filter((input) => input instanceof HTMLInputElement && input.checked)
+    .map((input) => input.dataset.userInstanceId || "")
+    .map((value) => value.trim())
+    .filter(Boolean);
+}
+
+function getModalUserRoleValue() {
+  const roleInput = document.getElementById("modal-user-role");
+  if (roleInput instanceof HTMLSelectElement) {
+    return roleInput.value || "viewer";
+  }
+  const userId = state.userModal.userId;
+  const user = userId ? state.auth.users.find((item) => item.id === userId) : null;
+  return user?.role || "viewer";
 }
 
 function renderAuthShell() {
@@ -1116,6 +1237,11 @@ async function loadAuthState() {
   state.auth.bootstrapRequired = !!data.bootstrap_required;
   state.auth.user = data.user || null;
   state.auth.session = data.session || null;
+  if (state.auth.authenticated) {
+    syncAuditLogScopeWithUser({ resetToDefault: true });
+  } else {
+    state.auditLog.scope = "accessible";
+  }
   if (!state.auth.authenticated) {
     state.auth.users = [];
   } else if (hasAuthPermission("user.read")) {
@@ -1179,6 +1305,7 @@ async function handleLogout() {
   state.auth.user = null;
   state.auth.session = null;
   state.auth.users = [];
+  state.auditLog.scope = "accessible";
   renderAuthShell();
 }
 
@@ -1188,8 +1315,9 @@ async function handleCreateUser() {
       display_name: document.getElementById("modal-user-display-name")?.value || "",
       username: document.getElementById("modal-user-username")?.value || "",
       email: document.getElementById("modal-user-email")?.value || "",
-      role: document.getElementById("modal-user-role")?.value || "viewer",
+      role: getModalUserRoleValue(),
       password: document.getElementById("modal-user-password")?.value || "",
+      instance_ids: collectUserInstanceIdsFromModal(),
     });
     clearBanner();
     closeUserModal();
@@ -1204,8 +1332,9 @@ async function handleSaveUser(userId) {
     await patchJson(`/admin/users/${encodeURIComponent(userId)}`, {
       display_name: document.getElementById("modal-user-display-name")?.value || "",
       email: document.getElementById("modal-user-email")?.value || "",
-      role: document.getElementById("modal-user-role")?.value || "viewer",
+      role: getModalUserRoleValue(),
       status: document.getElementById("modal-user-status")?.value || "active",
+      instance_ids: collectUserInstanceIdsFromModal(),
     });
     clearBanner();
     closeUserModal();
@@ -1371,6 +1500,9 @@ function buildInstanceEditorFromInstance(instance) {
 }
 
 function openCreateInstanceEditor() {
+  if (currentUserRole() !== "owner" || !hasAuthPermission("instance.create")) {
+    return;
+  }
   state.instanceEditor = defaultInstanceEditor();
   state.instanceEditor.mode = "create";
   state.instanceCreateOpen = true;
@@ -1685,6 +1817,10 @@ async function renderActivityHeatmap() {
 function renderInstances() {
   const target = document.getElementById("instances-list-panel");
   if (!target) return;
+  const canCreateInstance = currentUserRole() === "owner" && hasAuthPermission("instance.create");
+  const canUpdateInstance = hasAuthPermission("instance.update");
+  const canDeleteInstance = hasAuthPermission("instance.delete");
+  const canControlInstance = hasAuthPermission("instance.control");
   const rows = state.overview.instances
     .map((instance) => {
       const runtimeStatus = instance.runtime.status || "unknown";
@@ -1721,15 +1857,15 @@ function renderInstances() {
                 const disabledByState =
                   (action === "start" && runtimeStatus === "running") ||
                   (action === "stop" && runtimeStatus === "stopped");
-                const disabled = !supported || disabledByState || instanceBusy ? "disabled" : "";
+                const disabled = !supported || !canControlInstance || disabledByState || instanceBusy ? "disabled" : "";
                 const cssClass = action === "restart" ? "primary-button is-small" : "secondary-button is-small";
                 const loadingLabels = { start: "Starting…", restart: "Restarting…", stop: "Stopping…" };
                 const spinner = isThisActionBusy ? `<span class="btn-spinner"></span>` : "";
                 const label = isThisActionBusy ? loadingLabels[action] : (action.charAt(0).toUpperCase() + action.slice(1));
                 return `<button class="${cssClass}" data-instance-action="${escapeHtml(key)}" ${disabled}>${spinner}${label}</button>`;
               }).join("")}
-              <button class="secondary-button is-small" data-instance-edit="${escapeHtml(instance.id)}">Manage</button>
-              <button class="secondary-button is-small" data-instance-delete="${escapeHtml(instance.id)}">Delete</button>
+              <button class="secondary-button is-small" data-instance-edit="${escapeHtml(instance.id)}" ${!canUpdateInstance ? "disabled" : ""}>Manage</button>
+              <button class="secondary-button is-small" data-instance-delete="${escapeHtml(instance.id)}" ${!canDeleteInstance ? "disabled" : ""}>Delete</button>
             </div>
           </td>
         </tr>
@@ -1741,7 +1877,7 @@ function renderInstances() {
     <div class="instance-toolbar">
       <div class="table-primary">${escapeHtml(state.overview.instances.length)} instances</div>
       <div class="inline-actions">
-        <button id="instance-create-shortcut" class="primary-button is-small">Add Instance</button>
+        <button id="instance-create-shortcut" class="primary-button is-small" ${!canCreateInstance ? "disabled" : ""}>Add Instance</button>
       </div>
     </div>
     <div class="table-wrap">
@@ -1772,6 +1908,7 @@ function renderInstances() {
     button.addEventListener("click", () => handleInstanceDelete(button.dataset.instanceDelete));
   });
   document.getElementById("instance-create-shortcut")?.addEventListener("click", () => {
+    if (!canCreateInstance) return;
     openCreateInstanceEditor();
     renderInstances();
     syncLocationState();
@@ -5060,7 +5197,7 @@ function renderSecurityControls() {
   const restrictionCards = instances
     .map((instance) => {
       const key = `restriction:${instance.id}`;
-      const disabled = state.busyKey === key ? "disabled" : "";
+      const disabled = !canUpdatePolicy || state.busyKey === key ? "disabled" : "";
       const checked = instance.security.findings.every((finding) => finding.code !== "workspace_restriction_disabled");
       const sandboxProfile = normalizeSandboxProfile(instance.runtime_config?.sandbox?.profile || "balanced");
       const impact = runtimeImpactSummary({
@@ -5270,6 +5407,80 @@ function auditLogCategoryBadgeClass(category) {
   return "is-gray";
 }
 
+function auditLogScopeLabel(scope) {
+  if (scope === "mine") return "My events";
+  if (scope === "instances") return "My instances";
+  if (scope === "all") return "All accessible";
+  return "Accessible scope";
+}
+
+function auditLogScopeOptions() {
+  const role = currentUserRole();
+  if (role === "owner") {
+    return [
+      { value: "accessible", label: "Accessible scope" },
+      { value: "mine", label: "My events" },
+      { value: "instances", label: "My instances" },
+      { value: "all", label: "All accessible" },
+    ];
+  }
+  const instanceIds = Array.isArray(state.auth.user?.instance_ids)
+    ? state.auth.user.instance_ids.map((value) => String(value || "").trim()).filter(Boolean)
+    : [];
+  return [
+    { value: "accessible", label: instanceIds.length ? "My events + instances" : "My events" },
+    { value: "mine", label: "My events" },
+    ...(instanceIds.length ? [{ value: "instances", label: "My instances" }] : []),
+  ];
+}
+
+function renderAuditLogScopeSelector() {
+  const slot = document.getElementById("audit-log-scope-slot");
+  if (!slot) return;
+  const options = auditLogScopeOptions();
+  const allowed = new Set(options.map((item) => item.value));
+  if (!allowed.has(state.auditLog.scope)) {
+    state.auditLog.scope = options[0]?.value || "accessible";
+  }
+  slot.innerHTML = `
+    <select id="audit-log-scope">
+      ${options.map((item) => `<option value="${escapeHtml(item.value)}" ${state.auditLog.scope === item.value ? "selected" : ""}>${escapeHtml(item.label)}</option>`).join("")}
+    </select>
+  `;
+  const scopeEl = document.getElementById("audit-log-scope");
+  if (scopeEl && !scopeEl.dataset.bound) {
+    scopeEl.dataset.bound = "1";
+    scopeEl.addEventListener("change", onAuditLogScopeChange);
+  }
+}
+
+function auditLogScopeDescription() {
+  const user = state.auth.user;
+  if (!user) return "";
+  const instanceIds = Array.isArray(user.instance_ids)
+    ? user.instance_ids.map((value) => String(value || "").trim()).filter(Boolean)
+    : null;
+  const scope = state.auditLog.scope || "accessible";
+  if (scope === "mine") {
+    return "Showing your own audit events only.";
+  }
+  if (scope === "instances") {
+    return instanceIds && instanceIds.length
+      ? `Showing activity for assigned instances: ${instanceIds.join(", ")}.`
+      : "Showing assigned instance activity.";
+  }
+  if (scope === "all") {
+    return "Showing all audit events you can access.";
+  }
+  if (instanceIds === null) {
+    return "Showing all audit events you can access.";
+  }
+  if (instanceIds.length === 0) {
+    return "Showing your own audit events only.";
+  }
+  return `Showing your own events and activity for assigned instances: ${instanceIds.join(", ")}.`;
+}
+
 function renderAuditLog() {
   const tableEl = document.getElementById("audit-log-table");
   const footerEl = document.getElementById("audit-log-footer");
@@ -5283,19 +5494,22 @@ function renderAuditLog() {
     return;
   }
 
+  renderAuditLogScopeSelector();
+  const scopeNote = auditLogScopeDescription();
+
   if (!al.initialized) {
-    tableEl.innerHTML = `<p class="meta" style="padding:12px 0">Select the Security view to load the audit log.</p>`;
+    tableEl.innerHTML = `${scopeNote ? `<p class="meta audit-log-scope-note">${escapeHtml(scopeNote)}</p>` : ""}<p class="meta" style="padding:12px 0">Select the Security view to load the audit log.</p>`;
     footerEl.innerHTML = "";
     return;
   }
 
   if (al.events.length === 0) {
-    tableEl.innerHTML = `<p class="meta" style="padding:12px 0">No audit events found.</p>`;
+    tableEl.innerHTML = `${scopeNote ? `<p class="meta audit-log-scope-note">${escapeHtml(scopeNote)}</p>` : ""}<p class="meta" style="padding:12px 0">No audit events found.</p>`;
     footerEl.innerHTML = "";
     return;
   }
 
-  tableEl.innerHTML = `<div class="audit-log-table">${al.events.map((ev) => {
+  tableEl.innerHTML = `${scopeNote ? `<p class="meta audit-log-scope-note">${escapeHtml(scopeNote)}</p>` : ""}<div class="audit-log-table">${al.events.map((ev) => {
     const actor = ev.actor || {};
     const resource = ev.resource || {};
     const detail = ev.detail || {};
@@ -5348,6 +5562,8 @@ function renderAuditLog() {
 
 async function refreshAuditLog() {
   const al = state.auditLog;
+  const requestSeq = al.requestSeq + 1;
+  al.requestSeq = requestSeq;
   al.loading = true;
   renderAuditLog();
   try {
@@ -5357,14 +5573,24 @@ async function refreshAuditLog() {
       category: al.category,
       outcome: al.outcome,
       search: al.search,
+      scope: al.scope,
     });
     const data = await fetchJson(`/admin/auth-audit?${params}`);
+    if (state.auditLog.requestSeq !== requestSeq) {
+      return;
+    }
     al.events = data.events || [];
     al.total = data.total || 0;
     al.initialized = true;
   } catch (err) {
+    if (state.auditLog.requestSeq !== requestSeq) {
+      return;
+    }
     setBanner(`Unable to load audit log: ${err.message}`, "error");
   } finally {
+    if (state.auditLog.requestSeq !== requestSeq) {
+      return;
+    }
     al.loading = false;
     renderAuditLog();
     const catEl = document.getElementById("audit-log-category");
@@ -5373,6 +5599,7 @@ async function refreshAuditLog() {
     if (catEl) catEl.value = al.category;
     if (outEl) outEl.value = al.outcome;
     if (srchEl && document.activeElement !== srchEl) srchEl.value = al.search;
+    renderAuditLogScopeSelector();
   }
 }
 
@@ -5381,6 +5608,13 @@ function onAuditLogFilterChange() {
   const outEl = document.getElementById("audit-log-outcome");
   if (catEl) state.auditLog.category = catEl.value;
   if (outEl) state.auditLog.outcome = outEl.value;
+  state.auditLog.offset = 0;
+  void refreshAuditLog();
+}
+
+function onAuditLogScopeChange() {
+  const scopeEl = document.getElementById("audit-log-scope");
+  if (scopeEl) state.auditLog.scope = scopeEl.value;
   state.auditLog.offset = 0;
   void refreshAuditLog();
 }
@@ -6298,6 +6532,12 @@ document.querySelectorAll(".nav-item").forEach((button) => {
 
 document.getElementById("security-tab-policy")?.addEventListener("click", () => setSecurityTab("policy"));
 document.getElementById("security-tab-audit")?.addEventListener("click", () => setSecurityTab("audit"));
+document.getElementById("audit-log-refresh-btn")?.addEventListener("click", () => {
+  void refreshAuditLog();
+});
+document.getElementById("audit-log-category")?.addEventListener("change", onAuditLogFilterChange);
+document.getElementById("audit-log-outcome")?.addEventListener("change", onAuditLogFilterChange);
+document.getElementById("audit-log-search")?.addEventListener("input", onAuditLogSearchInput);
 
 document.getElementById("refresh-button")?.addEventListener("click", () => {
   void refreshCurrentView();

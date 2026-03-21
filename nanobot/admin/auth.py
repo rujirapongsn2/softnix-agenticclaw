@@ -6,6 +6,7 @@ import hmac
 import secrets
 import threading
 from datetime import datetime, timedelta, timezone
+from typing import Any
 
 _audit_request_ctx: threading.local = threading.local()
 
@@ -73,7 +74,6 @@ ADMIN_ROLE_PERMISSIONS: dict[str, set[str]] = {
         "activity.read",
         "runtime_audit.read",
         "instance.read",
-        "instance.create",
         "instance.update",
         "instance.control",
         "config.read",
@@ -169,6 +169,22 @@ def normalize_email(value: str | None) -> str | None:
     return email or None
 
 
+def normalize_instance_ids(value: Any) -> list[str] | None:
+    if value is None:
+        return None
+    if not isinstance(value, (list, tuple, set)):
+        return None
+    cleaned = []
+    seen: set[str] = set()
+    for item in value:
+        item_id = str(item or "").strip()
+        if not item_id or item_id in seen:
+            continue
+        seen.add(item_id)
+        cleaned.append(item_id)
+    return cleaned
+
+
 def new_user_id() -> str:
     return secrets.token_hex(12)
 
@@ -234,6 +250,7 @@ def is_session_expired(expires_at: str | None) -> bool:
 
 def sanitize_user(user: dict[str, object]) -> dict[str, object]:
     role = normalize_role(str(user.get("role") or "viewer"))
+    instance_ids = normalize_instance_ids(user.get("instance_ids"))
     return {
         "id": user.get("id"),
         "username": user.get("username"),
@@ -244,5 +261,6 @@ def sanitize_user(user: dict[str, object]) -> dict[str, object]:
         "created_at": user.get("created_at"),
         "updated_at": user.get("updated_at"),
         "last_login_at": user.get("last_login_at"),
+        "instance_ids": instance_ids,
         "permissions": permissions_for_role(role),
     }

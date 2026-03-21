@@ -8,7 +8,16 @@ from typing import Any
 
 import hmac
 
-from nanobot.admin.auth import get_request_audit_context, iso_in, iso_now, is_session_expired, normalize_email, normalize_role, normalize_username
+from nanobot.admin.auth import (
+    get_request_audit_context,
+    iso_in,
+    iso_now,
+    is_session_expired,
+    normalize_email,
+    normalize_instance_ids,
+    normalize_role,
+    normalize_username,
+)
 from nanobot.admin.layout import get_softnix_admin_dir
 from nanobot.utils.helpers import ensure_dir
 
@@ -94,6 +103,11 @@ class AdminAuthStore:
         record["email"] = normalize_email(record.get("email"))
         record["role"] = normalize_role(str(record.get("role") or "viewer"))
         record["status"] = str(record.get("status") or "active").strip().lower() or "active"
+        instance_ids = normalize_instance_ids(record.get("instance_ids"))
+        if instance_ids is None:
+            record.pop("instance_ids", None)
+        else:
+            record["instance_ids"] = instance_ids
         if not record["username"]:
             raise ValueError("Username is required")
         replaced = False

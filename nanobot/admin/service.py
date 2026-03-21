@@ -40,6 +40,7 @@ from nanobot.admin.auth import (
     has_permission,
     iso_now,
     normalize_email,
+    normalize_instance_ids,
     normalize_role,
     normalize_username,
     sanitize_user,
@@ -229,6 +230,64 @@ class AdminService:
         self._sync_workspace_identities()
         self._start_mobile_push_worker()
 
+    def _normalize_accessible_instance_ids(
+        self, accessible_instance_ids: set[str] | list[str] | tuple[str, ...] | None
+    ) -> set[str] | None:
+        if accessible_instance_ids is None:
+            return None
+        cleaned = {
+            str(item or "").strip()
+            for item in accessible_instance_ids
+            if str(item or "").strip()
+        }
+        return cleaned
+
+    def _is_target_accessible(
+        self,
+        target: InstanceTarget,
+        accessible_instance_ids: set[str] | list[str] | tuple[str, ...] | None = None,
+    ) -> bool:
+        normalized = self._normalize_accessible_instance_ids(accessible_instance_ids)
+        if normalized is None:
+            return True
+        return target.id in normalized
+
+    def _require_target_access(
+        self,
+        target: InstanceTarget,
+        accessible_instance_ids: set[str] | list[str] | tuple[str, ...] | None = None,
+    ) -> None:
+        if not self._is_target_accessible(target, accessible_instance_ids):
+            raise PermissionError(f"Instance '{target.id}' is not accessible")
+
+    def _instance_scope_for_user(self, user: dict[str, Any] | None) -> set[str] | None:
+        if not user:
+            return None
+        instance_ids = normalize_instance_ids(user.get("instance_ids"))
+        if instance_ids is None:
+            return None
+        return {item for item in instance_ids if item}
+
+    def _validate_instance_selection(
+        self,
+        instance_ids: list[str] | None,
+        *,
+        accessible_instance_ids: set[str] | list[str] | tuple[str, ...] | None = None,
+    ) -> list[str] | None:
+        normalized = normalize_instance_ids(instance_ids)
+        if normalized is None:
+            available = self._normalize_accessible_instance_ids(accessible_instance_ids)
+            if available is not None:
+                return sorted(available)
+            return None
+        available = self._normalize_accessible_instance_ids(accessible_instance_ids)
+        if available is None:
+            available = {target.id for target in self._load_targets()}
+        invalid = [item for item in normalized if item not in available]
+        if invalid:
+            raise ValueError(f"Unknown or inaccessible instance ids: {', '.join(invalid)}")
+        return normalized
+
     def _create_auth_store(self) -> AdminAuthStore:
         if self.registry_path is not None:
             admin_dir = get_softnix_admin_dir(infer_softnix_home_from_registry(self.registry_path))
@@ -253,9 +312,15 @@ class AdminService:
             },
         }
 
-    def get_mobile_pairing_data(self, instance_id: str) -> dict[str, Any]:
+    def get_mobile_pairing_data(
+        self,
+        instance_id: str,
+        *,
+        accessible_instance_ids: set[str] | list[str] | tuple[str, ...] | None = None,
+    ) -> dict[str, Any]:
         """Generate temporary pairing data for mobile app QR scan."""
-        _ = self._get_target(instance_id)  # raises ValueError if not found
+        target = self._get_target(instance_id)
+        self._require_target_access(target, accessible_instance_ids)
 
         pairing_token = f"pair-{new_csrf_token()[:12]}"
         expires_at = (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat()
@@ -365,11 +430,14 @@ class AdminService:
         device: dict[str, Any],
         active_session_id: str | None,
         conversations: dict[str, Any] | None,
+        accessible_instance_ids: set[str] | list[str] | tuple[str, ...] | None = None,
     ) -> dict[str, Any]:
         instance_id = str(device.get("instance_id") or "").strip()
         device_id = str(device.get("device_id") or "").strip()
         if not instance_id or not device_id:
             raise ValueError("device.instance_id and device.device_id are required")
+        target = self._get_target(instance_id)
+        self._require_target_access(target, accessible_instance_ids)
         expires_at = (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat()
         token = f"xfer-{secrets.token_hex(6)}"
         payload = {
@@ -414,9 +482,12 @@ class AdminService:
         device_id: str,
         subscription: dict[str, Any],
         user_agent: str | None = None,
+        accessible_instance_ids: set[str] | list[str] | tuple[str, ...] | None = None,
     ) -> dict[str, Any]:
         if not self._mobile_push_supported():
             raise ValueError("Web push is not available on this server")
+        target = self._get_target(instance_id)
+        self._require_target_access(target, accessible_instance_ids)
         devices = self.auth_store.list_mobile_devices(instance_id)
         if not any(item.get("device_id") == device_id for item in devices):
             raise ValueError("Mobile device not found")
@@ -440,7 +511,15 @@ class AdminService:
         )
         return {"status": "subscribed", "device_id": device_id}
 
-    def unsubscribe_mobile_push(self, *, instance_id: str, device_id: str) -> dict[str, Any]:
+    def unsubscribe_mobile_push(
+        self,
+        *,
+        instance_id: str,
+        device_id: str,
+        accessible_instance_ids: set[str] | list[str] | tuple[str, ...] | None = None,
+    ) -> dict[str, Any]:
+        target = self._get_target(instance_id)
+        self._require_target_access(target, accessible_instance_ids)
         removed = self.auth_store.delete_mobile_push_subscription(instance_id=instance_id, device_id=device_id)
         if removed:
             self.auth_store.append_audit(
@@ -608,11 +687,13 @@ class AdminService:
         reply_to: str | None = None,
         thread_root_id: str | None = None,
         attachments: list[dict[str, Any]] | None = None,
+        accessible_instance_ids: set[str] | list[str] | tuple[str, ...] | None = None,
     ) -> dict[str, Any]:
         """Relay a message from a mobile app to a specific instance via file-based queue."""
         target = next((t for t in self._load_targets() if t.id == instance_id), None)
         if not target:
             raise ValueError(f"Instance '{instance_id}' not found")
+        self._require_target_access(target, accessible_instance_ids)
 
         relay_dir = self._mobile_relay_dir(target)
         inbound_file = relay_dir / "inbound.jsonl"
@@ -646,10 +727,18 @@ class AdminService:
             "attachment_count": len(attachment_meta),
         }
 
-    def get_mobile_replies(self, instance_id: str, sender_id: str) -> list[dict[str, Any]]:
+    def get_mobile_replies(
+        self,
+        instance_id: str,
+        sender_id: str,
+        *,
+        accessible_instance_ids: set[str] | list[str] | tuple[str, ...] | None = None,
+    ) -> list[dict[str, Any]]:
         """Fetch agent replies for a mobile user from the outbound queue."""
         target = next((t for t in self._load_targets() if t.id == instance_id), None)
         if not target:
+            return []
+        if not self._is_target_accessible(target, accessible_instance_ids):
             return []
 
         outbound_file = target.workspace_path / "mobile_relay" / "outbound.jsonl"
@@ -688,7 +777,14 @@ class AdminService:
             
         return all_replies
 
-    def get_mobile_media_file(self, instance_id: str, sender_id: str, file_name: str) -> tuple[Path, str]:
+    def get_mobile_media_file(
+        self,
+        instance_id: str,
+        sender_id: str,
+        file_name: str,
+        *,
+        accessible_instance_ids: set[str] | list[str] | tuple[str, ...] | None = None,
+    ) -> tuple[Path, str]:
         """Resolve one mobile relay media file for safe download."""
         target = next(
             (
@@ -700,6 +796,7 @@ class AdminService:
         )
         if target is None:
             raise ValueError("Instance not found")
+        self._require_target_access(target, accessible_instance_ids)
         safe_sender = self._safe_filename(sender_id)
         safe_name = self._safe_filename(file_name)
         roots = [
@@ -716,7 +813,15 @@ class AdminService:
                 return candidate, mimetypes.guess_type(candidate.name)[0] or "application/octet-stream"
         raise ValueError("Media file not found")
 
-    def register_mobile_client(self, instance_id: str, device_id: str, pairing_token: str | None = None, label: str = "") -> dict[str, Any]:
+    def register_mobile_client(
+        self,
+        instance_id: str,
+        device_id: str,
+        pairing_token: str | None = None,
+        label: str = "",
+        *,
+        accessible_instance_ids: set[str] | list[str] | tuple[str, ...] | None = None,
+    ) -> dict[str, Any]:
         """Register a scanned mobile device as a pending access request."""
         if not pairing_token:
             raise PermissionError("Pairing token is required")
@@ -726,6 +831,7 @@ class AdminService:
         target = next((t for t in self._load_targets() if t.id == instance_id), None)
         if not target:
             raise ValueError(f"Instance '{instance_id}' not found")
+        self._require_target_access(target, accessible_instance_ids)
         config = self._load_target_config(target)
         device_token = f"mobtok-{secrets.token_urlsafe(24)}"
 
@@ -841,8 +947,15 @@ class AdminService:
 
     # ── end ngrok ────────────────────────────────────────────────────────
 
-    def list_mobile_devices(self, instance_id: str) -> list[dict[str, Any]]:
+    def list_mobile_devices(
+        self,
+        instance_id: str,
+        *,
+        accessible_instance_ids: set[str] | list[str] | tuple[str, ...] | None = None,
+    ) -> list[dict[str, Any]]:
         """List registered mobile devices for an instance."""
+        target = self._get_target(instance_id)
+        self._require_target_access(target, accessible_instance_ids)
         return self.auth_store.list_mobile_devices(instance_id)
 
     def _sync_relay_allow_from(self, target: InstanceTarget, config: Config) -> None:
@@ -862,20 +975,26 @@ class AdminService:
         except Exception as exc:
             logger.warning(f"Failed to sync relay allow_from for instance '{target.id}': {exc}")
 
-    def delete_mobile_device(self, instance_id: str, device_id: str) -> dict[str, Any]:
+    def delete_mobile_device(
+        self,
+        instance_id: str,
+        device_id: str,
+        *,
+        accessible_instance_ids: set[str] | list[str] | tuple[str, ...] | None = None,
+    ) -> dict[str, Any]:
         """Remove a mobile device from auth store and config allow_from."""
+        target = self._get_target(instance_id)
+        self._require_target_access(target, accessible_instance_ids)
         self.auth_store.delete_mobile_device(instance_id, device_id)
         restart_result: dict[str, Any] | None = None
-        target = next((t for t in self._load_targets() if t.id == instance_id), None)
-        if target:
-            config = self._load_target_config(target)
-            if device_id in config.channels.softnix_app.allow_from:
-                config.channels.softnix_app.allow_from.remove(device_id)
-                save_config(config, target.config_path)
-            # Sync relay allow_from file so the running channel stops accepting deleted device
-            self._sync_relay_allow_from(target, config)
-            if target.source == "registry" and target.lifecycle and self._lifecycle_command(target, "restart"):
-                restart_result = self.execute_instance_action(instance_id=instance_id, action="restart")
+        config = self._load_target_config(target)
+        if device_id in config.channels.softnix_app.allow_from:
+            config.channels.softnix_app.allow_from.remove(device_id)
+            save_config(config, target.config_path)
+        # Sync relay allow_from file so the running channel stops accepting deleted device
+        self._sync_relay_allow_from(target, config)
+        if target.source == "registry" and target.lifecycle and self._lifecycle_command(target, "restart"):
+            restart_result = self.execute_instance_action(instance_id=instance_id, action="restart", accessible_instance_ids=accessible_instance_ids)
         self.auth_store.append_audit(
             event_type="channel.mobile_device_deleted",
             category="configuration",
@@ -946,6 +1065,70 @@ class AdminService:
         with path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(record, ensure_ascii=False) + "\n")
 
+    def _audit_event_instance_ids(self, record: dict[str, Any]) -> set[str]:
+        ids: set[str] = set()
+
+        def add_value(value: Any) -> None:
+            if value is None:
+                return
+            if isinstance(value, (list, tuple, set)):
+                for item in value:
+                    add_value(item)
+                return
+            text = str(value or "").strip()
+            if text:
+                ids.add(text)
+
+        def walk(value: Any) -> None:
+            if isinstance(value, dict):
+                resource_type = str(value.get("type") or "").strip().lower()
+                if resource_type == "instance":
+                    add_value(value.get("id"))
+                    add_value(value.get("instance_id"))
+                for key, child in value.items():
+                    if key in {
+                        "instance_id",
+                        "instance_ids",
+                        "target_instance_id",
+                        "target_instance_ids",
+                        "source_instance_id",
+                        "source_instance_ids",
+                    }:
+                        add_value(child)
+                    if isinstance(child, (dict, list, tuple, set)):
+                        walk(child)
+            elif isinstance(value, (list, tuple, set)):
+                for item in value:
+                    walk(item)
+
+        walk(record)
+        return ids
+
+    def _is_auth_audit_record_visible(
+        self,
+        record: dict[str, Any],
+        *,
+        current_user_id: str | None,
+        accessible_instance_ids: set[str] | None,
+        scope: str,
+    ) -> bool:
+        normalized_scope = str(scope or "accessible").strip().lower() or "accessible"
+        if normalized_scope == "all" and accessible_instance_ids is None:
+            return True
+        actor = record.get("actor") if isinstance(record.get("actor"), dict) else {}
+        instance_ids = self._audit_event_instance_ids(record)
+        if normalized_scope == "mine":
+            return bool(current_user_id and str(actor.get("user_id") or "").strip() == current_user_id)
+        if normalized_scope == "instances":
+            if accessible_instance_ids is None:
+                return bool(instance_ids)
+            return bool(instance_ids.intersection(accessible_instance_ids))
+        if accessible_instance_ids is None:
+            return True
+        if current_user_id and str(actor.get("user_id") or "").strip() == current_user_id:
+            return True
+        return bool(instance_ids.intersection(accessible_instance_ids))
+
     def has_admin_users(self) -> bool:
         return self.auth_store.has_users()
 
@@ -957,8 +1140,13 @@ class AdminService:
         category: str = "all",
         outcome: str = "all",
         search: str = "",
+        scope: str = "accessible",
+        current_user_id: str | None = None,
+        accessible_instance_ids: set[str] | list[str] | tuple[str, ...] | None = None,
     ) -> dict[str, Any]:
         """Read and filter the auth audit log for the Security Audit viewer."""
+        normalized_scope = self._normalize_accessible_instance_ids(accessible_instance_ids)
+        normalized_current_user_id = str(current_user_id or "").strip() or None
         audit_path = self.auth_store.audit_path
         events: list[dict[str, Any]] = []
         if audit_path.exists():
@@ -978,6 +1166,13 @@ class AdminService:
         events.extend(self._collect_policy_security_audit_events())
         filtered_events: list[dict[str, Any]] = []
         for record in events:
+            if not self._is_auth_audit_record_visible(
+                record,
+                current_user_id=normalized_current_user_id,
+                accessible_instance_ids=normalized_scope,
+                scope=scope,
+            ):
+                continue
             ev_category = str(record.get("category") or "")
             ev_outcome = str(record.get("outcome") or "")
             if category != "all" and ev_category != category:
@@ -1066,6 +1261,7 @@ class AdminService:
                 "created_at": now,
                 "updated_at": now,
                 "last_login_at": None,
+                "instance_ids": None,
             }
         )
         self.auth_store.append_audit(
@@ -1175,8 +1371,19 @@ class AdminService:
             )
         return {"ok": True}
 
-    def list_admin_users(self) -> dict[str, Any]:
-        users = [sanitize_user(user) for user in self.auth_store.list_users(include_disabled=True)]
+    def list_admin_users(
+        self,
+        *,
+        accessible_instance_ids: set[str] | list[str] | tuple[str, ...] | None = None,
+    ) -> dict[str, Any]:
+        scope = self._normalize_accessible_instance_ids(accessible_instance_ids)
+        users = []
+        for user in self.auth_store.list_users(include_disabled=True):
+            user_scope = self._instance_scope_for_user(user)
+            if scope is not None:
+                if not user_scope or not user_scope.intersection(scope):
+                    continue
+            users.append(sanitize_user(user))
         return {"users": users, "count": len(users)}
 
     def create_admin_user(
@@ -1188,6 +1395,8 @@ class AdminService:
         email: str | None = None,
         role: str = "viewer",
         status: str = "active",
+        instance_ids: list[str] | None = None,
+        allowed_instance_ids: set[str] | list[str] | tuple[str, ...] | None = None,
     ) -> dict[str, Any]:
         normalized_username = normalize_username(username)
         if not normalized_username:
@@ -1197,6 +1406,7 @@ class AdminService:
         normalized_email = normalize_email(email)
         if normalized_email and self.auth_store.get_user_by_email(normalized_email) is not None:
             raise ValueError(f"Email '{normalized_email}' already exists")
+        normalized_instance_ids = self._validate_instance_selection(instance_ids, accessible_instance_ids=allowed_instance_ids)
         now = iso_now()
         user = self.auth_store.upsert_user(
             {
@@ -1210,6 +1420,7 @@ class AdminService:
                 "created_at": now,
                 "updated_at": now,
                 "last_login_at": None,
+                "instance_ids": normalized_instance_ids,
             }
         )
         self.auth_store.append_audit(
@@ -1229,6 +1440,8 @@ class AdminService:
         email: str | None = None,
         role: str | None = None,
         status: str | None = None,
+        instance_ids: Any = ...,
+        allowed_instance_ids: set[str] | list[str] | tuple[str, ...] | None = None,
     ) -> dict[str, Any]:
         user = self.auth_store.get_user_by_id(user_id)
         if user is None:
@@ -1244,6 +1457,12 @@ class AdminService:
             updated["email"] = normalized_email
         if role is not None:
             updated["role"] = normalize_role(role)
+        if instance_ids is not ...:
+            normalized_instance_ids = self._validate_instance_selection(instance_ids, accessible_instance_ids=allowed_instance_ids)
+            if normalized_instance_ids is None:
+                updated.pop("instance_ids", None)
+            else:
+                updated["instance_ids"] = normalized_instance_ids
         if status is not None:
             next_status = str(status or "").strip().lower() or "active"
             if next_status == "disabled" and self._is_last_owner(user_id=user_id):
@@ -1313,8 +1532,12 @@ class AdminService:
         ]
         return len(owners) == 1 and str(owners[0].get("id") or "") == str(user_id)
 
-    def get_overview(self) -> dict[str, Any]:
-        instances = self.list_instances()
+    def get_overview(
+        self,
+        *,
+        accessible_instance_ids: set[str] | list[str] | tuple[str, ...] | None = None,
+    ) -> dict[str, Any]:
+        instances = self.list_instances(accessible_instance_ids=accessible_instance_ids)
         enabled_channels = sorted(
             {channel["name"] for item in instances for channel in item["channels"] if channel["enabled"]}
         )
@@ -1331,18 +1554,36 @@ class AdminService:
             },
         }
 
-    def list_instances(self) -> list[dict[str, Any]]:
-        return [self._collect_instance(target) for target in self._load_targets()]
+    def list_instances(
+        self,
+        *,
+        accessible_instance_ids: set[str] | list[str] | tuple[str, ...] | None = None,
+    ) -> list[dict[str, Any]]:
+        scope = self._normalize_accessible_instance_ids(accessible_instance_ids)
+        targets = self._load_targets()
+        if scope is not None:
+            targets = [target for target in targets if target.id in scope]
+        return [self._collect_instance(target) for target in targets]
 
-    def get_instance(self, instance_id: str) -> dict[str, Any] | None:
+    def get_instance(
+        self,
+        instance_id: str,
+        *,
+        accessible_instance_ids: set[str] | list[str] | tuple[str, ...] | None = None,
+    ) -> dict[str, Any] | None:
         for target in self._load_targets():
             if target.id == instance_id:
+                self._require_target_access(target, accessible_instance_ids)
                 return self._collect_instance(target)
         return None
 
-    def list_channels(self) -> list[dict[str, Any]]:
+    def list_channels(
+        self,
+        *,
+        accessible_instance_ids: set[str] | list[str] | tuple[str, ...] | None = None,
+    ) -> list[dict[str, Any]]:
         rows: list[dict[str, Any]] = []
-        for instance in self.list_instances():
+        for instance in self.list_instances(accessible_instance_ids=accessible_instance_ids):
             for channel in instance["channels"]:
                 rows.append(
                     {
@@ -1353,9 +1594,16 @@ class AdminService:
                 )
         return rows
 
-    def list_access_requests(self) -> dict[str, Any]:
+    def list_access_requests(
+        self,
+        *,
+        accessible_instance_ids: set[str] | list[str] | tuple[str, ...] | None = None,
+    ) -> dict[str, Any]:
         requests: list[dict[str, Any]] = []
+        scope = self._normalize_accessible_instance_ids(accessible_instance_ids)
         for target in self._load_targets():
+            if scope is not None and target.id not in scope:
+                continue
             store = AccessRequestStore(target.workspace_path)
             for item in store.list_pending():
                 requests.append(
@@ -1371,8 +1619,12 @@ class AdminService:
             "count": len(requests),
         }
 
-    def list_providers(self) -> dict[str, Any]:
-        instances = self.list_instances()
+    def list_providers(
+        self,
+        *,
+        accessible_instance_ids: set[str] | list[str] | tuple[str, ...] | None = None,
+    ) -> dict[str, Any]:
+        instances = self.list_instances(accessible_instance_ids=accessible_instance_ids)
         return {
             "instances": [
                 {
@@ -1386,8 +1638,12 @@ class AdminService:
             ]
         }
 
-    def list_mcp_servers(self) -> dict[str, Any]:
-        instances = self.list_instances()
+    def list_mcp_servers(
+        self,
+        *,
+        accessible_instance_ids: set[str] | list[str] | tuple[str, ...] | None = None,
+    ) -> dict[str, Any]:
+        instances = self.list_instances(accessible_instance_ids=accessible_instance_ids)
         return {
             "instances": [
                 {
@@ -1399,8 +1655,12 @@ class AdminService:
             ]
         }
 
-    def get_security(self) -> dict[str, Any]:
-        instances = self.list_instances()
+    def get_security(
+        self,
+        *,
+        accessible_instance_ids: set[str] | list[str] | tuple[str, ...] | None = None,
+    ) -> dict[str, Any]:
+        instances = self.list_instances(accessible_instance_ids=accessible_instance_ids)
         findings = []
         for item in instances:
             for finding in item["security"]["findings"]:
@@ -1422,8 +1682,8 @@ class AdminService:
             ],
             "findings": findings,
             "global_policy": self.get_global_policy_summary(),
-            "recent_policy_hits": self.get_global_policy_hits(limit=20)["events"],
-            "detections_by_instance": self.get_global_policy_detections_by_instance()["instances"],
+            "recent_policy_hits": self.get_global_policy_hits(limit=20, accessible_instance_ids=accessible_instance_ids)["events"],
+            "detections_by_instance": self.get_global_policy_detections_by_instance(accessible_instance_ids=accessible_instance_ids)["instances"],
         }
 
     def get_global_policy(self) -> dict[str, Any]:
@@ -1534,8 +1794,16 @@ class AdminService:
             "catalog": get_policy_catalog(),
         }
 
-    def get_global_policy_hits(self, *, limit: int = 100) -> dict[str, Any]:
+    def get_global_policy_hits(
+        self,
+        *,
+        limit: int = 100,
+        accessible_instance_ids: set[str] | list[str] | tuple[str, ...] | None = None,
+    ) -> dict[str, Any]:
         events = self._collect_policy_runtime_events()
+        scope = self._normalize_accessible_instance_ids(accessible_instance_ids)
+        if scope is not None:
+            events = [event for event in events if str(event.get("instance_id") or "") in scope]
         events.sort(key=lambda item: _ts_sort_key(item.get("ts")), reverse=True)
         page = events[: max(1, min(limit, 500))]
         return {
@@ -1544,8 +1812,15 @@ class AdminService:
             "total": len(events),
         }
 
-    def get_global_policy_detections_by_instance(self) -> dict[str, Any]:
+    def get_global_policy_detections_by_instance(
+        self,
+        *,
+        accessible_instance_ids: set[str] | list[str] | tuple[str, ...] | None = None,
+    ) -> dict[str, Any]:
         events = self._collect_policy_runtime_events()
+        scope = self._normalize_accessible_instance_ids(accessible_instance_ids)
+        if scope is not None:
+            events = [event for event in events if str(event.get("instance_id") or "") in scope]
         grouped: dict[str, dict[str, Any]] = {}
         for event in events:
             key = str(event.get("instance_id") or "default")
@@ -1593,9 +1868,11 @@ class AdminService:
         status: str | None = None,
         operation: str | None = None,
         search: str | None = None,
+        accessible_instance_ids: set[str] | list[str] | tuple[str, ...] | None = None,
     ) -> dict[str, Any]:
         """Return paginated runtime-audit events for one instance."""
         target = self._get_target(instance_id)
+        self._require_target_access(target, accessible_instance_ids)
         all_events = self._read_runtime_audit_events(
             workspace_path=target.workspace_path,
             instance_id=target.id,
@@ -1646,10 +1923,15 @@ class AdminService:
             "next_cursor": next_cursor if next_cursor < len(filtered) else None,
         }
 
-    def get_activity(self, *, limit: int = 50) -> dict[str, Any]:
+    def get_activity(
+        self,
+        *,
+        limit: int = 50,
+        accessible_instance_ids: set[str] | list[str] | tuple[str, ...] | None = None,
+    ) -> dict[str, Any]:
         """Collect recent activity across configured instances."""
         events: list[dict[str, Any]] = []
-        instances = self.list_instances()
+        instances = self.list_instances(accessible_instance_ids=accessible_instance_ids)
         for item in instances:
             events.extend(self._collect_session_events(item, limit=limit))
             events.extend(self._collect_cron_events(item))
@@ -1664,10 +1946,15 @@ class AdminService:
             "count": min(len(events), limit),
         }
 
-    def get_activity_debug(self, *, limit: int = 50) -> dict[str, Any]:
+    def get_activity_debug(
+        self,
+        *,
+        limit: int = 50,
+        accessible_instance_ids: set[str] | list[str] | tuple[str, ...] | None = None,
+    ) -> dict[str, Any]:
         """Collect recent activity with parser diagnostics per instance."""
         events: list[dict[str, Any]] = []
-        instances = self.list_instances()
+        instances = self.list_instances(accessible_instance_ids=accessible_instance_ids)
         diagnostics: list[dict[str, Any]] = []
 
         for item in instances:
@@ -1713,11 +2000,16 @@ class AdminService:
         instance_id: str | None = None,
         period: str = "week",
         days: int = 30,
+        accessible_instance_ids: set[str] | list[str] | tuple[str, ...] | None = None,
     ) -> dict[str, Any]:
         """Generate activity heatmap data for visualization."""
-        instances = self.list_instances()
+        instances = self.list_instances(accessible_instance_ids=accessible_instance_ids)
         if instance_id:
-            instances = [inst for inst in instances if inst["id"] == instance_id]
+            scope = self._normalize_accessible_instance_ids(accessible_instance_ids)
+            if scope is not None and instance_id not in scope:
+                instances = []
+            else:
+                instances = [inst for inst in instances if inst["id"] == instance_id]
 
         # Collect all events with timestamps
         all_events: list[dict[str, Any]] = []
@@ -1796,10 +2088,17 @@ class AdminService:
             "instance_count": len(instances),
         }
 
-    def list_schedules(self) -> dict[str, Any]:
+    def list_schedules(
+        self,
+        *,
+        accessible_instance_ids: set[str] | list[str] | tuple[str, ...] | None = None,
+    ) -> dict[str, Any]:
         """List schedules across instances."""
         instances = []
+        scope = self._normalize_accessible_instance_ids(accessible_instance_ids)
         for target in self._load_targets():
+            if scope is not None and target.id not in scope:
+                continue
             cron = self._cron_service_for_target(target)
             jobs = cron.list_jobs(include_disabled=True)
             instances.append(
@@ -1811,9 +2110,15 @@ class AdminService:
             )
         return {"instances": instances}
 
-    def get_instance_memory_files(self, *, instance_id: str) -> dict[str, Any]:
+    def get_instance_memory_files(
+        self,
+        *,
+        instance_id: str,
+        accessible_instance_ids: set[str] | list[str] | tuple[str, ...] | None = None,
+    ) -> dict[str, Any]:
         """Read editable memory/prompt markdown files from instance workspace."""
         target = self._get_target(instance_id)
+        self._require_target_access(target, accessible_instance_ids)
         workspace = target.workspace_path
         files: list[dict[str, Any]] = []
         for relative_path in INSTANCE_MEMORY_FILES:
@@ -1838,9 +2143,17 @@ class AdminService:
             "files": files,
         }
 
-    def update_instance_memory_file(self, *, instance_id: str, relative_path: str, content: str) -> dict[str, Any]:
+    def update_instance_memory_file(
+        self,
+        *,
+        instance_id: str,
+        relative_path: str,
+        content: str,
+        accessible_instance_ids: set[str] | list[str] | tuple[str, ...] | None = None,
+    ) -> dict[str, Any]:
         """Update one allowed memory/prompt markdown file."""
         target = self._get_target(instance_id)
+        self._require_target_access(target, accessible_instance_ids)
         normalized = (relative_path or "").strip().replace("\\", "/").lstrip("/")
         if normalized not in INSTANCE_MEMORY_FILES:
             allowed = ", ".join(INSTANCE_MEMORY_FILES)
@@ -1871,9 +2184,15 @@ class AdminService:
             "content": content,
         }
 
-    def list_instance_skills(self, *, instance_id: str) -> dict[str, Any]:
+    def list_instance_skills(
+        self,
+        *,
+        instance_id: str,
+        accessible_instance_ids: set[str] | list[str] | tuple[str, ...] | None = None,
+    ) -> dict[str, Any]:
         """List skills in workspace/skills/, parsing SKILL.md frontmatter."""
         target = self._get_target(instance_id)
+        self._require_target_access(target, accessible_instance_ids)
         skills_dir = target.workspace_path / "skills"
         skills: list[dict[str, Any]] = []
         if not skills_dir.is_dir():
@@ -1906,9 +2225,16 @@ class AdminService:
             })
         return {"instance_id": target.id, "skills": skills}
 
-    def get_instance_skill(self, *, instance_id: str, skill_name: str) -> dict[str, Any]:
+    def get_instance_skill(
+        self,
+        *,
+        instance_id: str,
+        skill_name: str,
+        accessible_instance_ids: set[str] | list[str] | tuple[str, ...] | None = None,
+    ) -> dict[str, Any]:
         """Return all files in workspace/skills/{skill_name}/ with content."""
         target = self._get_target(instance_id)
+        self._require_target_access(target, accessible_instance_ids)
         skill_dir = target.workspace_path / "skills" / _safe_skill_name(skill_name)
         if not skill_dir.is_dir():
             raise ValueError(f"Skill '{skill_name}' not found")
@@ -1931,9 +2257,11 @@ class AdminService:
         skill_name: str,
         relative_path: str,
         content: str,
+        accessible_instance_ids: set[str] | list[str] | tuple[str, ...] | None = None,
     ) -> dict[str, Any]:
         """Update one file within workspace/skills/{skill_name}/."""
         target = self._get_target(instance_id)
+        self._require_target_access(target, accessible_instance_ids)
         safe_name = _safe_skill_name(skill_name)
         skill_dir = target.workspace_path / "skills" / safe_name
         if not skill_dir.is_dir():
@@ -1958,9 +2286,16 @@ class AdminService:
         )
         return {"instance_id": target.id, "skill_name": skill_name, "path": normalized, "content": content}
 
-    def delete_instance_skill(self, *, instance_id: str, skill_name: str) -> dict[str, Any]:
+    def delete_instance_skill(
+        self,
+        *,
+        instance_id: str,
+        skill_name: str,
+        accessible_instance_ids: set[str] | list[str] | tuple[str, ...] | None = None,
+    ) -> dict[str, Any]:
         """Delete an entire skill directory from workspace/skills/."""
         target = self._get_target(instance_id)
+        self._require_target_access(target, accessible_instance_ids)
         safe_name = _safe_skill_name(skill_name)
         skill_dir = target.workspace_path / "skills" / safe_name
         if not skill_dir.is_dir():
@@ -1977,9 +2312,15 @@ class AdminService:
         )
         return {"instance_id": target.id, "skill_name": skill_name, "deleted": True}
 
-    def get_instance_config(self, *, instance_id: str) -> dict[str, Any]:
+    def get_instance_config(
+        self,
+        *,
+        instance_id: str,
+        accessible_instance_ids: set[str] | list[str] | tuple[str, ...] | None = None,
+    ) -> dict[str, Any]:
         """Return one instance config as JSON-ready data."""
         target = self._get_target(instance_id)
+        self._require_target_access(target, accessible_instance_ids)
         config = self._load_target_config(target)
         return {
             "instance_id": target.id,
@@ -1987,9 +2328,16 @@ class AdminService:
             "config": config.model_dump(by_alias=True),
         }
 
-    def update_instance_config(self, *, instance_id: str, config_data: dict[str, Any]) -> dict[str, Any]:
+    def update_instance_config(
+        self,
+        *,
+        instance_id: str,
+        config_data: dict[str, Any],
+        accessible_instance_ids: set[str] | list[str] | tuple[str, ...] | None = None,
+    ) -> dict[str, Any]:
         """Validate and save one instance config from raw JSON data."""
         target = self._get_target(instance_id)
+        self._require_target_access(target, accessible_instance_ids)
         try:
             config = Config.model_validate(config_data)
         except Exception as exc:
@@ -2047,6 +2395,7 @@ class AdminService:
         sandbox_network_policy: str | None = None,
         sandbox_timeout_seconds: int | None = None,
         force: bool = False,
+        accessible_instance_ids: set[str] | list[str] | tuple[str, ...] | None = None,
     ) -> dict[str, Any]:
         """Create one instance in the configured registry."""
         registry_path = self._require_registry_path()
@@ -2114,9 +2463,11 @@ class AdminService:
         sandbox_tmpfs_size_mb: int | None = None,
         sandbox_network_policy: str | None = None,
         sandbox_timeout_seconds: int | None = None,
+        accessible_instance_ids: set[str] | list[str] | tuple[str, ...] | None = None,
     ) -> dict[str, Any]:
         """Update one registry-backed instance."""
         registry_path = self._require_registry_path()
+        self._require_target_access(self._get_target(instance_id), accessible_instance_ids)
         gateway_port = _normalize_optional_int(gateway_port, field_name="gateway_port")
         entry = update_softnix_instance(
             registry_path=registry_path,
@@ -2220,10 +2571,17 @@ class AdminService:
             return False
         return result.returncode == 0
 
-    def delete_instance(self, *, instance_id: str, purge_files: bool = False) -> dict[str, Any]:
+    def delete_instance(
+        self,
+        *,
+        instance_id: str,
+        purge_files: bool = False,
+        accessible_instance_ids: set[str] | list[str] | tuple[str, ...] | None = None,
+    ) -> dict[str, Any]:
         """Delete one instance from the registry."""
         registry_path = self._require_registry_path()
         target = self._get_target(instance_id)
+        self._require_target_access(target, accessible_instance_ids)
         result = delete_softnix_instance(
             registry_path=registry_path,
             instance_id=instance_id,
@@ -2258,9 +2616,11 @@ class AdminService:
         enabled: bool | None = None,
         allow_from: list[str] | None = None,
         settings: dict[str, Any] | None = None,
+        accessible_instance_ids: set[str] | list[str] | tuple[str, ...] | None = None,
     ) -> dict[str, Any]:
         """Update one channel config safely."""
         target = self._get_target(instance_id)
+        self._require_target_access(target, accessible_instance_ids)
         config = self._load_target_config(target)
         if not hasattr(config.channels, channel_name):
             raise ValueError(f"Unknown channel '{channel_name}'")
@@ -2326,9 +2686,11 @@ class AdminService:
         instance_id: str,
         channel_name: str,
         sender_id: str,
+        accessible_instance_ids: set[str] | list[str] | tuple[str, ...] | None = None,
     ) -> dict[str, Any]:
         """Approve one denied sender and add it to allow_from."""
         target = self._get_target(instance_id)
+        self._require_target_access(target, accessible_instance_ids)
         config = self._load_target_config(target)
         if not hasattr(config.channels, channel_name):
             raise ValueError(f"Unknown channel '{channel_name}'")
@@ -2350,7 +2712,11 @@ class AdminService:
             self._sync_relay_allow_from(target, config)
             restart_result = None
             if target.source == "registry" and target.lifecycle and self._lifecycle_command(target, "restart"):
-                restart_result = self.execute_instance_action(instance_id=target.id, action="restart")
+                restart_result = self.execute_instance_action(
+                    instance_id=target.id,
+                    action="restart",
+                    accessible_instance_ids=accessible_instance_ids,
+                )
                 runtime = {
                     "applied": bool(restart_result.get("ok")),
                     "method": "instance-restart",
@@ -2390,9 +2756,11 @@ class AdminService:
         instance_id: str,
         channel_name: str,
         sender_id: str,
+        accessible_instance_ids: set[str] | list[str] | tuple[str, ...] | None = None,
     ) -> dict[str, Any]:
         """Reject one denied sender and remove it from pending list."""
         target = self._get_target(instance_id)
+        self._require_target_access(target, accessible_instance_ids)
         sender = str(sender_id or "").strip()
         if not sender:
             raise ValueError("sender_id must not be empty")
@@ -2415,9 +2783,16 @@ class AdminService:
             "sender_id": sender,
         }
 
-    def update_workspace_restriction(self, *, instance_id: str, restrict_to_workspace: bool) -> dict[str, Any]:
+    def update_workspace_restriction(
+        self,
+        *,
+        instance_id: str,
+        restrict_to_workspace: bool,
+        accessible_instance_ids: set[str] | list[str] | tuple[str, ...] | None = None,
+    ) -> dict[str, Any]:
         """Update workspace restriction for one instance."""
         target = self._get_target(instance_id)
+        self._require_target_access(target, accessible_instance_ids)
         config = self._load_target_config(target)
         config.tools.restrict_to_workspace = bool(restrict_to_workspace)
         save_config(config, target.config_path)
@@ -2435,9 +2810,11 @@ class AdminService:
         instance_id: str,
         model: str | None = None,
         provider: str | None = None,
+        accessible_instance_ids: set[str] | list[str] | tuple[str, ...] | None = None,
     ) -> dict[str, Any]:
         """Update default model/provider selection."""
         target = self._get_target(instance_id)
+        self._require_target_access(target, accessible_instance_ids)
         config = self._load_target_config(target)
         if model is not None:
             model = model.strip()
@@ -2472,9 +2849,11 @@ class AdminService:
         api_key: str | None = None,
         api_base: str | None = None,
         extra_headers: dict[str, str] | None = None,
+        accessible_instance_ids: set[str] | list[str] | tuple[str, ...] | None = None,
     ) -> dict[str, Any]:
         """Update one provider configuration."""
         target = self._get_target(instance_id)
+        self._require_target_access(target, accessible_instance_ids)
         config = self._load_target_config(target)
         provider_name = provider_name.replace("-", "_")
         if not hasattr(config.providers, provider_name):
@@ -2506,9 +2885,11 @@ class AdminService:
         instance_id: str,
         server_name: str,
         server_data: dict[str, Any],
+        accessible_instance_ids: set[str] | list[str] | tuple[str, ...] | None = None,
     ) -> dict[str, Any]:
         """Create or update one MCP server definition."""
         target = self._get_target(instance_id)
+        self._require_target_access(target, accessible_instance_ids)
         config = self._load_target_config(target)
         name = server_name.strip()
         if not name:
@@ -2527,9 +2908,16 @@ class AdminService:
         )
         return self._collect_instance(target)
 
-    def delete_mcp_server(self, *, instance_id: str, server_name: str) -> dict[str, Any]:
+    def delete_mcp_server(
+        self,
+        *,
+        instance_id: str,
+        server_name: str,
+        accessible_instance_ids: set[str] | list[str] | tuple[str, ...] | None = None,
+    ) -> dict[str, Any]:
         """Delete one MCP server definition."""
         target = self._get_target(instance_id)
+        self._require_target_access(target, accessible_instance_ids)
         config = self._load_target_config(target)
         if server_name not in config.tools.mcp_servers:
             raise ValueError(f"Unknown MCP server '{server_name}'")
@@ -2544,9 +2932,16 @@ class AdminService:
         )
         return self._collect_instance(target)
 
-    def validate_provider(self, *, instance_id: str, provider_name: str) -> dict[str, Any]:
+    def validate_provider(
+        self,
+        *,
+        instance_id: str,
+        provider_name: str,
+        accessible_instance_ids: set[str] | list[str] | tuple[str, ...] | None = None,
+    ) -> dict[str, Any]:
         """Validate provider configuration and, when possible, verify the upstream endpoint live."""
         target = self._get_target(instance_id)
+        self._require_target_access(target, accessible_instance_ids)
         restart_result = self._restart_instance_if_supported(target)
         config = self._load_target_config(target)
         provider_name = provider_name.replace("-", "_")
@@ -2940,9 +3335,16 @@ class AdminService:
             **(restart_result or {}),
         }
 
-    def validate_mcp_server(self, *, instance_id: str, server_name: str) -> dict[str, Any]:
+    def validate_mcp_server(
+        self,
+        *,
+        instance_id: str,
+        server_name: str,
+        accessible_instance_ids: set[str] | list[str] | tuple[str, ...] | None = None,
+    ) -> dict[str, Any]:
         """Validate MCP server configuration without connecting to it."""
         target = self._get_target(instance_id)
+        self._require_target_access(target, accessible_instance_ids)
         config = self._load_target_config(target)
         server = config.tools.mcp_servers.get(server_name)
         if server is None:
@@ -3019,11 +3421,18 @@ class AdminService:
             "findings": findings,
         }
 
-    def execute_instance_action(self, *, instance_id: str, action: str) -> dict[str, Any]:
+    def execute_instance_action(
+        self,
+        *,
+        instance_id: str,
+        action: str,
+        accessible_instance_ids: set[str] | list[str] | tuple[str, ...] | None = None,
+    ) -> dict[str, Any]:
         """Run one lifecycle action for an instance through its configured supervisor command."""
         if action not in {"start", "stop", "restart"}:
             raise ValueError(f"Unsupported action '{action}'")
         target = self._get_target(instance_id)
+        self._require_target_access(target, accessible_instance_ids)
         if action == "start":
             port = self._read_instance_gateway_port(target)
             if port is not None:
@@ -3186,9 +3595,11 @@ class AdminService:
         channel: str | None = None,
         to: str | None = None,
         delete_after_run: bool = False,
+        accessible_instance_ids: set[str] | list[str] | tuple[str, ...] | None = None,
     ) -> dict[str, Any]:
         """Create one cron job in the target workspace."""
         target = self._get_target(instance_id)
+        self._require_target_access(target, accessible_instance_ids)
         cron = self._cron_service_for_target(target)
         schedule = CronSchedule(
             kind=schedule_data.get("kind", "every"),
@@ -3218,9 +3629,17 @@ class AdminService:
             "job": self._serialize_cron_job(job),
         }
 
-    def set_schedule_enabled(self, *, instance_id: str, job_id: str, enabled: bool) -> dict[str, Any]:
+    def set_schedule_enabled(
+        self,
+        *,
+        instance_id: str,
+        job_id: str,
+        enabled: bool,
+        accessible_instance_ids: set[str] | list[str] | tuple[str, ...] | None = None,
+    ) -> dict[str, Any]:
         """Enable or disable a cron job."""
         target = self._get_target(instance_id)
+        self._require_target_access(target, accessible_instance_ids)
         cron = self._cron_service_for_target(target)
         job = cron.enable_job(job_id, enabled=enabled)
         if job is None:
@@ -3237,9 +3656,17 @@ class AdminService:
             "job": self._serialize_cron_job(job),
         }
 
-    def run_schedule(self, *, instance_id: str, job_id: str, force: bool = True) -> dict[str, Any]:
+    def run_schedule(
+        self,
+        *,
+        instance_id: str,
+        job_id: str,
+        force: bool = True,
+        accessible_instance_ids: set[str] | list[str] | tuple[str, ...] | None = None,
+    ) -> dict[str, Any]:
         """Run a cron job immediately."""
         target = self._get_target(instance_id)
+        self._require_target_access(target, accessible_instance_ids)
         cron = self._cron_service_for_target(target)
         ok = asyncio.run(cron.run_job(job_id, force=force))
         if not ok:
@@ -3260,9 +3687,16 @@ class AdminService:
             "ok": True,
         }
 
-    def delete_schedule(self, *, instance_id: str, job_id: str) -> dict[str, Any]:
+    def delete_schedule(
+        self,
+        *,
+        instance_id: str,
+        job_id: str,
+        accessible_instance_ids: set[str] | list[str] | tuple[str, ...] | None = None,
+    ) -> dict[str, Any]:
         """Delete one cron job."""
         target = self._get_target(instance_id)
+        self._require_target_access(target, accessible_instance_ids)
         cron = self._cron_service_for_target(target)
         if not cron.remove_job(job_id):
             raise ValueError(f"Unknown schedule '{job_id}'")

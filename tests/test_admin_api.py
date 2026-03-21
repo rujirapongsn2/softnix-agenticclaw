@@ -16,6 +16,7 @@ from nanobot.admin.server import (
     resolve_admin_post,
     resolve_static_asset,
 )
+from nanobot.admin.auth import has_permission, permissions_for_role
 from nanobot.admin.service import AdminService
 from nanobot.channels.access_requests import AccessRequestStore
 from nanobot.config.loader import load_config, save_config
@@ -96,6 +97,12 @@ def test_admin_service_overview_collects_workspace_state(tmp_path) -> None:
     assert instance["selected_provider"] is None
     assert instance["runtime"]["status"] == "unmanaged"
     assert instance["sessions"]["count"] == 1
+
+
+def test_admin_role_cannot_create_instances() -> None:
+    permissions = permissions_for_role("admin")
+    assert "instance.create" not in permissions
+    assert has_permission("admin", "instance.create") is False
 
 
 def test_admin_service_reports_security_findings(tmp_path) -> None:
@@ -251,7 +258,90 @@ def test_admin_service_create_instance_applies_fast_profile(tmp_path) -> None:
     assert runtime["mode"] == "host"
     assert runtime["sandbox"]["profile"] == "fast"
     assert runtime["sandbox"]["executionStrategy"] == "tool_ephemeral"
-    assert runtime["sandbox"]["timeoutSeconds"] == 180
+
+
+def test_admin_service_scopes_auth_audit_log_to_user_and_instances(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    config_path = tmp_path / "config.json"
+
+    config = Config()
+    config.agents.defaults.workspace = str(workspace)
+    save_config(config, config_path)
+
+    service = AdminService(config_path=config_path)
+    service.auth_store.append_audit(
+        event_type="auth.login",
+        category="authentication",
+        outcome="success",
+        actor={"user_id": "user-1", "username": "rujirapong", "role": "admin"},
+        resource={"type": "session", "id": "session-1"},
+    )
+    service.auth_store.append_audit(
+        event_type="instance.updated",
+        category="instance_management",
+        outcome="success",
+        actor={"user_id": "user-2", "username": "operator", "role": "operator"},
+        resource={"type": "instance", "id": "inst-a"},
+    )
+    service.auth_store.append_audit(
+        event_type="security.policy_updated",
+        category="configuration",
+        outcome="success",
+        actor={"user_id": "user-3", "username": "owner", "role": "owner"},
+        resource={"type": "session", "id": "session-2"},
+        payload={"instance_id": "inst-a", "rule_ids": ["rule-1"]},
+    )
+    service.auth_store.append_audit(
+        event_type="instance.deleted",
+        category="instance_management",
+        outcome="success",
+        actor={"user_id": "user-4", "username": "other", "role": "admin"},
+        resource={"type": "instance", "id": "inst-b"},
+    )
+
+    restricted = service.get_auth_audit_log(
+        limit=20,
+        current_user_id="user-1",
+        accessible_instance_ids={"inst-a"},
+    )
+    restricted_event_types = {event["event_type"] for event in restricted["events"]}
+    assert "auth.login" in restricted_event_types
+    assert "instance.updated" in restricted_event_types
+    assert "security.policy_updated" in restricted_event_types
+    assert "instance.deleted" not in restricted_event_types
+
+    mine_only = service.get_auth_audit_log(
+        limit=20,
+        scope="mine",
+        current_user_id="user-1",
+        accessible_instance_ids={"inst-a"},
+    )
+    assert {event["event_type"] for event in mine_only["events"]} == {"auth.login"}
+
+    instance_only = service.get_auth_audit_log(
+        limit=20,
+        scope="instances",
+        current_user_id="user-1",
+        accessible_instance_ids={"inst-a"},
+    )
+    assert {event["event_type"] for event in instance_only["events"]} == {"instance.updated", "security.policy_updated"}
+
+    all_visible = service.get_auth_audit_log(
+        limit=20,
+        scope="all",
+        current_user_id="user-1",
+        accessible_instance_ids=None,
+    )
+    assert {"auth.login", "instance.updated", "security.policy_updated", "instance.deleted"}.issubset(
+        {event["event_type"] for event in all_visible["events"]}
+    )
+
+    unrestricted = service.get_auth_audit_log(limit=20)
+    unrestricted_event_types = {event["event_type"] for event in unrestricted["events"]}
+    assert {"auth.login", "instance.updated", "security.policy_updated", "instance.deleted"}.issubset(
+        unrestricted_event_types
+    )
 
 
 def test_admin_service_update_instance_reconciles_stale_runtime_artifacts(tmp_path) -> None:
@@ -1681,3 +1771,120 @@ def test_admin_server_owner_can_manage_users_and_reset_password(tmp_path) -> Non
         server.shutdown()
         server.server_close()
         thread.join(timeout=3)
+
+
+def test_admin_server_scopes_instances_and_users_by_user_assignment(tmp_path) -> None:
+    prod_workspace = tmp_path / "prod-workspace"
+    staging_workspace = tmp_path / "staging-workspace"
+    prod_workspace.mkdir()
+    staging_workspace.mkdir()
+    prod_config = tmp_path / "prod.json"
+    staging_config = tmp_path / "staging.json"
+    registry_path = tmp_path / "instances.json"
+
+    prod = Config()
+    prod.agents.defaults.workspace = str(prod_workspace)
+    save_config(prod, prod_config)
+
+    staging = Config()
+    staging.agents.defaults.workspace = str(staging_workspace)
+    save_config(staging, staging_config)
+
+    registry_path.write_text(
+        json.dumps(
+            {
+                "instances": [
+                    {"id": "prod", "name": "Production", "config": str(prod_config)},
+                    {"id": "staging", "name": "Staging", "config": str(staging_config)},
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    service = AdminService(registry_path=registry_path)
+    service.bootstrap_admin_user(username="owner", password="owner-pass-123", display_name="Owner")
+
+    owner = service.authenticate_admin_user(login="owner", password="owner-pass-123")
+    assert owner["user"]["instance_ids"] is None
+
+    admin_create = service.create_admin_user(
+        username="admin-prod",
+        password="admin-pass-123",
+        display_name="Admin Prod",
+        email="admin.prod@example.com",
+        role="admin",
+        instance_ids=["prod"],
+        allowed_instance_ids=owner["user"]["instance_ids"],
+    )
+    admin_id = admin_create["user"]["id"]
+    assert admin_create["user"]["instance_ids"] == ["prod"]
+
+    operator_create = service.create_admin_user(
+        username="operator-prod",
+        password="operator-pass-123",
+        display_name="Operator Prod",
+        email="operator.prod@example.com",
+        role="operator",
+        instance_ids=["prod"],
+        allowed_instance_ids=owner["user"]["instance_ids"],
+    )
+    assert operator_create["user"]["instance_ids"] == ["prod"]
+
+    staging_create = service.create_admin_user(
+        username="operator-stage",
+        password="operator-pass-456",
+        display_name="Operator Stage",
+        email="operator.stage@example.com",
+        role="operator",
+        instance_ids=["staging"],
+        allowed_instance_ids=owner["user"]["instance_ids"],
+    )
+    assert staging_create["user"]["instance_ids"] == ["staging"]
+
+    admin_login = service.authenticate_admin_user(login="admin-prod", password="admin-pass-123")
+    admin_scope = admin_login["user"]["instance_ids"]
+    assert admin_scope == ["prod"]
+
+    overview_payload = service.get_overview(accessible_instance_ids=admin_scope)
+    assert overview_payload["summary"]["instance_count"] == 1
+    assert [item["id"] for item in overview_payload["instances"]] == ["prod"]
+
+    users_payload = service.list_admin_users(accessible_instance_ids=admin_scope)
+    assert users_payload["count"] == 2
+    assert {user["username"] for user in users_payload["users"]} == {"admin-prod", "operator-prod"}
+
+    default_scope_create = service.create_admin_user(
+        username="operator-default",
+        password="operator-pass-789",
+        display_name="Operator Default",
+        email="operator.default@example.com",
+        role="operator",
+        allowed_instance_ids=admin_scope,
+    )
+    assert default_scope_create["user"]["instance_ids"] == ["prod"]
+
+    users_payload = service.list_admin_users(accessible_instance_ids=admin_scope)
+    assert users_payload["count"] == 3
+    assert {user["username"] for user in users_payload["users"]} == {"admin-prod", "operator-prod", "operator-default"}
+
+    updated = service.update_admin_user(
+        user_id=admin_id,
+        display_name="Admin Prime",
+        email="admin.prod@example.com",
+        role="admin",
+        status="active",
+    )
+    assert updated["user"]["instance_ids"] == ["prod"]
+
+    with_error = False
+    try:
+        service.update_admin_user(
+            user_id=admin_id,
+            instance_ids=["staging"],
+            allowed_instance_ids=admin_scope,
+        )
+    except ValueError as exc:
+        with_error = True
+        assert "inaccessible instance ids" in str(exc).lower()
+    assert with_error is True

@@ -243,10 +243,11 @@
                   <p class="eyebrow">ISO 27001 A.8.15</p>
                   <h3>Security Audit Log</h3>
                 </div>
-                <button class="btn" id="audit-log-refresh-btn" onclick="refreshAuditLog()">Refresh</button>
+                <button class="btn" id="audit-log-refresh-btn" type="button">Refresh</button>
               </div>
               <div class="audit-log-toolbar">
-                <select id="audit-log-category" onchange="onAuditLogFilterChange()">
+                <div id="audit-log-scope-slot" class="audit-log-scope-slot"></div>
+                <select id="audit-log-category">
                   <option value="all">All Categories</option>
                   <option value="authentication">Authentication</option>
                   <option value="authorization">Authorization</option>
@@ -256,13 +257,13 @@
                   <option value="policy_admin">Policy Admin</option>
                   <option value="policy_runtime">Policy Runtime</option>
                 </select>
-                <select id="audit-log-outcome" onchange="onAuditLogFilterChange()">
+                <select id="audit-log-outcome">
                   <option value="all">All Outcomes</option>
                   <option value="success">Success</option>
                   <option value="failure">Failure</option>
                   <option value="denied">Denied</option>
                 </select>
-                <input type="search" id="audit-log-search" placeholder="Search event, actor, resource…" oninput="onAuditLogSearchInput()" />
+                <input type="search" id="audit-log-search" placeholder="Search event, actor, resource…" />
               </div>
               <div id="audit-log-table" class="audit-log-table-container"></div>
               <div id="audit-log-footer"></div>
