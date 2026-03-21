@@ -169,10 +169,10 @@ Manage the Admin UI service (whether running via Systemd or background process):
 ```
 
 **Access the dashboard:**
-- Local: [http://127.0.0.1:18881](http://127.0.0.1:18881)
-- Remote: `http://<your-server-ip>:18881`
+- Local: [http://127.0.0.1:18880](http://127.0.0.1:18880)
+- Remote: `http://<your-server-ip>:18880`
 
-> **Note:** Default port is **18881** (18880 if already in use)
+> **Note:** Default port is **18880**
 
 #### **C. Project Update**
 Keep your installation up-to-date with a single command:
