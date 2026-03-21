@@ -1210,6 +1210,17 @@ button {
   font: inherit;
 }
 
+.field-inline-action {
+  display: flex;
+  align-items: stretch;
+  gap: 10px;
+}
+
+.field-inline-action input {
+  flex: 1;
+  min-width: 0;
+}
+
 .field input:not([type="checkbox"]):not([type="radio"]):disabled,
 .field textarea:disabled,
 .field select:disabled {

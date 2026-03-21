@@ -1152,7 +1152,11 @@ function renderUserModal() {
       </div>` : `
       <div class="field">
         <label for="modal-user-password">Temporary password <span style="color:var(--status-danger)">*</span></label>
-        <input id="modal-user-password" type="password" placeholder="At least 8 characters" autocomplete="new-password">
+        <div class="field-inline-action">
+          <input id="modal-user-password" type="password" placeholder="At least 8 characters" autocomplete="new-password">
+          <button type="button" class="secondary-button is-small" id="modal-generate-pw-btn">Generate</button>
+        </div>
+        <p class="meta">Generated passwords use secure random characters and meet the minimum length requirement.</p>
       </div>`}
       <div class="modal-footer-actions">
         ${isEdit ? `<button class="secondary-button is-small" id="modal-reset-pw-btn">Reset Password</button>` : ""}
@@ -1168,6 +1172,19 @@ function renderUserModal() {
   });
   document.getElementById("modal-reset-pw-btn")?.addEventListener("click", () => {
     void handleResetUserPassword(userId);
+  });
+  document.getElementById("modal-generate-pw-btn")?.addEventListener("click", async () => {
+    const input = document.getElementById("modal-user-password");
+    if (!(input instanceof HTMLInputElement)) return;
+    const password = generateSecurePassword();
+    input.value = password;
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    try {
+      await navigator.clipboard.writeText(password);
+      setBanner("Generated password copied to clipboard.", "warning");
+    } catch {
+      setBanner("Generated password inserted into the field.", "warning");
+    }
   });
   const scopeRadios = Array.from(body.querySelectorAll('input[name="modal-user-instance-scope"]'));
   const instanceChecks = Array.from(body.querySelectorAll("[data-user-instance-id]"));
@@ -1193,6 +1210,60 @@ function collectUserInstanceIdsFromModal() {
     .map((input) => input.dataset.userInstanceId || "")
     .map((value) => value.trim())
     .filter(Boolean);
+}
+
+const PASSWORD_CHARSETS = {
+  lower: "abcdefghijkmnpqrstuvwxyz",
+  upper: "ABCDEFGHJKLMNPQRSTUVWXYZ",
+  digits: "23456789",
+  symbols: "!@#$%^&*-_=+?",
+};
+
+function randomInt(maxExclusive) {
+  if (!Number.isInteger(maxExclusive) || maxExclusive <= 0) {
+    throw new Error("Invalid random range");
+  }
+  const cryptoApi = globalThis.crypto;
+  if (!cryptoApi?.getRandomValues) {
+    return Math.floor(Math.random() * maxExclusive);
+  }
+  const max = 0xffffffff;
+  const limit = max - (max % maxExclusive);
+  const buffer = new Uint32Array(1);
+  let value = 0;
+  do {
+    cryptoApi.getRandomValues(buffer);
+    value = buffer[0];
+  } while (value >= limit);
+  return value % maxExclusive;
+}
+
+function pickRandomCharacter(charset) {
+  return charset.charAt(randomInt(charset.length));
+}
+
+function shuffleCharacters(chars) {
+  for (let i = chars.length - 1; i > 0; i -= 1) {
+    const j = randomInt(i + 1);
+    [chars[i], chars[j]] = [chars[j], chars[i]];
+  }
+  return chars;
+}
+
+function generateSecurePassword(length = 20) {
+  const targetLength = Number.isFinite(length) ? Math.max(12, Math.floor(length)) : 20;
+  const requiredSets = [
+    PASSWORD_CHARSETS.lower,
+    PASSWORD_CHARSETS.upper,
+    PASSWORD_CHARSETS.digits,
+    PASSWORD_CHARSETS.symbols,
+  ];
+  const allChars = requiredSets.join("");
+  const chars = requiredSets.map((charset) => pickRandomCharacter(charset));
+  while (chars.length < targetLength) {
+    chars.push(pickRandomCharacter(allChars));
+  }
+  return shuffleCharacters(chars).join("");
 }
 
 function getModalUserRoleValue() {
@@ -1354,7 +1425,11 @@ async function handleResetUserPassword(userId) {
       <p class="meta">Set a new temporary password. The user should change it after their next login.</p>
       <div class="field">
         <label for="modal-reset-new-pw">New temporary password</label>
-        <input id="modal-reset-new-pw" type="password" placeholder="At least 8 characters" autocomplete="new-password">
+        <div class="field-inline-action">
+          <input id="modal-reset-new-pw" type="password" placeholder="At least 8 characters" autocomplete="new-password">
+          <button type="button" class="secondary-button is-small" id="modal-reset-generate-pw-btn">Generate</button>
+        </div>
+        <p class="meta">Generated passwords use secure random characters and meet the minimum length requirement.</p>
       </div>
       <div class="modal-footer-actions">
         <button class="secondary-button is-small" id="modal-reset-back-btn">← Back</button>
@@ -1366,6 +1441,19 @@ async function handleResetUserPassword(userId) {
   `;
   document.getElementById("modal-reset-back-btn")?.addEventListener("click", renderUserModal);
   document.getElementById("modal-reset-cancel-btn")?.addEventListener("click", closeUserModal);
+  document.getElementById("modal-reset-generate-pw-btn")?.addEventListener("click", async () => {
+    const input = document.getElementById("modal-reset-new-pw");
+    if (!(input instanceof HTMLInputElement)) return;
+    const password = generateSecurePassword();
+    input.value = password;
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    try {
+      await navigator.clipboard.writeText(password);
+      setBanner("Generated password copied to clipboard.", "warning");
+    } catch {
+      setBanner("Generated password inserted into the field.", "warning");
+    }
+  });
   document.getElementById("modal-reset-confirm-btn")?.addEventListener("click", async () => {
     const newPw = document.getElementById("modal-reset-new-pw")?.value || "";
     if (!newPw) return;
