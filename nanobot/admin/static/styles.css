@@ -1221,6 +1221,11 @@ button {
   min-width: 0;
 }
 
+.field-inline-action .secondary-button.is-small {
+  flex: 0 0 auto;
+  min-width: 88px;
+}
+
 .field input:not([type="checkbox"]):not([type="radio"]):disabled,
 .field textarea:disabled,
 .field select:disabled {

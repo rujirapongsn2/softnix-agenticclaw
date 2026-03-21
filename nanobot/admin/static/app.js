@@ -1154,6 +1154,7 @@ function renderUserModal() {
         <label for="modal-user-password">Temporary password <span style="color:var(--status-danger)">*</span></label>
         <div class="field-inline-action">
           <input id="modal-user-password" type="password" placeholder="At least 8 characters" autocomplete="new-password">
+          <button type="button" class="secondary-button is-small" id="modal-toggle-pw-btn" aria-pressed="false">Show</button>
           <button type="button" class="secondary-button is-small" id="modal-generate-pw-btn">Generate</button>
         </div>
         <p class="meta">Generated passwords use secure random characters and meet the minimum length requirement.</p>
@@ -1173,11 +1174,20 @@ function renderUserModal() {
   document.getElementById("modal-reset-pw-btn")?.addEventListener("click", () => {
     void handleResetUserPassword(userId);
   });
+  document.getElementById("modal-toggle-pw-btn")?.addEventListener("click", () => {
+    togglePasswordFieldVisibility("modal-user-password", "modal-toggle-pw-btn");
+  });
   document.getElementById("modal-generate-pw-btn")?.addEventListener("click", async () => {
     const input = document.getElementById("modal-user-password");
     if (!(input instanceof HTMLInputElement)) return;
     const password = generateSecurePassword();
     input.value = password;
+    input.type = "text";
+    document.getElementById("modal-toggle-pw-btn")?.setAttribute("aria-pressed", "true");
+    const toggleButton = document.getElementById("modal-toggle-pw-btn");
+    if (toggleButton instanceof HTMLButtonElement) {
+      toggleButton.textContent = "Hide";
+    }
     input.dispatchEvent(new Event("input", { bubbles: true }));
     try {
       await navigator.clipboard.writeText(password);
@@ -1264,6 +1274,18 @@ function generateSecurePassword(length = 20) {
     chars.push(pickRandomCharacter(allChars));
   }
   return shuffleCharacters(chars).join("");
+}
+
+function togglePasswordFieldVisibility(inputId, buttonId) {
+  const input = document.getElementById(inputId);
+  const button = document.getElementById(buttonId);
+  if (!(input instanceof HTMLInputElement) || !(button instanceof HTMLButtonElement)) {
+    return;
+  }
+  const nextType = input.type === "password" ? "text" : "password";
+  input.type = nextType;
+  button.textContent = nextType === "password" ? "Show" : "Hide";
+  button.setAttribute("aria-pressed", nextType === "text" ? "true" : "false");
 }
 
 function getModalUserRoleValue() {
@@ -1427,6 +1449,7 @@ async function handleResetUserPassword(userId) {
         <label for="modal-reset-new-pw">New temporary password</label>
         <div class="field-inline-action">
           <input id="modal-reset-new-pw" type="password" placeholder="At least 8 characters" autocomplete="new-password">
+          <button type="button" class="secondary-button is-small" id="modal-reset-toggle-pw-btn" aria-pressed="false">Show</button>
           <button type="button" class="secondary-button is-small" id="modal-reset-generate-pw-btn">Generate</button>
         </div>
         <p class="meta">Generated passwords use secure random characters and meet the minimum length requirement.</p>
@@ -1441,11 +1464,20 @@ async function handleResetUserPassword(userId) {
   `;
   document.getElementById("modal-reset-back-btn")?.addEventListener("click", renderUserModal);
   document.getElementById("modal-reset-cancel-btn")?.addEventListener("click", closeUserModal);
+  document.getElementById("modal-reset-toggle-pw-btn")?.addEventListener("click", () => {
+    togglePasswordFieldVisibility("modal-reset-new-pw", "modal-reset-toggle-pw-btn");
+  });
   document.getElementById("modal-reset-generate-pw-btn")?.addEventListener("click", async () => {
     const input = document.getElementById("modal-reset-new-pw");
     if (!(input instanceof HTMLInputElement)) return;
     const password = generateSecurePassword();
     input.value = password;
+    input.type = "text";
+    const toggleButton = document.getElementById("modal-reset-toggle-pw-btn");
+    if (toggleButton instanceof HTMLButtonElement) {
+      toggleButton.textContent = "Hide";
+      toggleButton.setAttribute("aria-pressed", "true");
+    }
     input.dispatchEvent(new Event("input", { bubbles: true }));
     try {
       await navigator.clipboard.writeText(password);
