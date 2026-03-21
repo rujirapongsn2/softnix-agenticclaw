@@ -718,9 +718,10 @@ class AdminService:
 
     def register_mobile_client(self, instance_id: str, device_id: str, pairing_token: str | None = None, label: str = "") -> dict[str, Any]:
         """Register a scanned mobile device as a pending access request."""
-        if pairing_token:
-            if not self.auth_store.validate_and_consume_pairing_token(instance_id, pairing_token):
-                raise PermissionError("Invalid or expired pairing token")
+        if not pairing_token:
+            raise PermissionError("Pairing token is required")
+        if not self.auth_store.validate_and_consume_pairing_token(instance_id, pairing_token):
+            raise PermissionError("Invalid or expired pairing token")
 
         target = next((t for t in self._load_targets() if t.id == instance_id), None)
         if not target:
