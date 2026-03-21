@@ -17,6 +17,30 @@ STATIC_DIR = Path(__file__).with_name("static")
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 SOFTNIX_WHITE_LOGO = PROJECT_ROOT / "softnix-logo-white.png"
 SOFTNIX_LOGIN_LOGO = STATIC_DIR / "Logo_Softnix.png"
+PUBLIC_HTTPS_REDIRECT_HOSTS = {"softnixclaw.softnix.ai"}
+
+
+def _normalize_host_name(value: str | None) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    candidate = raw.split(",", 1)[0].strip()
+    hostname = urlparse(f"//{candidate}").hostname
+    return (hostname or candidate).strip().lower()
+
+
+def _public_https_redirect_location(host_header: str | None, forwarded_proto: str | None, raw_path: str) -> str | None:
+    host = _normalize_host_name(host_header)
+    if host not in PUBLIC_HTTPS_REDIRECT_HOSTS:
+        return None
+    proto_header = str(forwarded_proto or "").strip().lower()
+    if "proto=https" in proto_header:
+        return None
+    proto = proto_header.split(",", 1)[0].strip()
+    if proto == "https":
+        return None
+    path = raw_path if raw_path.startswith("/") else f"/{raw_path}"
+    return f"https://{host}{path}"
 
 
 def resolve_admin_get(service: AdminService, raw_path: str) -> tuple[HTTPStatus, Any]:
@@ -803,6 +827,8 @@ def create_admin_server(host: str, port: int, service: AdminService) -> Threadin
 
         def do_GET(self) -> None:  # noqa: N802
             try:
+                if self._redirect_public_http():
+                    return
                 asset_path, content_type = resolve_static_asset(self.path)
                 if asset_path is not None:
                     return self._send_file(asset_path, content_type)
@@ -822,12 +848,16 @@ def create_admin_server(host: str, port: int, service: AdminService) -> Threadin
                 clear_request_audit_context()
 
         def do_OPTIONS(self) -> None:  # noqa: N802
+            if self._redirect_public_http():
+                return
             self.send_response(HTTPStatus.NO_CONTENT)
             self._write_headers("application/json")
             self.end_headers()
 
         def do_PATCH(self) -> None:  # noqa: N802
             try:
+                if self._redirect_public_http():
+                    return
                 payload = self._read_json_body()
                 if payload is None:
                     return self._send_json({"error": "Invalid JSON body"}, status=HTTPStatus.BAD_REQUEST)
@@ -846,6 +876,8 @@ def create_admin_server(host: str, port: int, service: AdminService) -> Threadin
 
         def do_DELETE(self) -> None:  # noqa: N802
             try:
+                if self._redirect_public_http():
+                    return
                 payload = self._read_json_body()
                 if payload is None:
                     return self._send_json({"error": "Invalid JSON body"}, status=HTTPStatus.BAD_REQUEST)
@@ -860,6 +892,8 @@ def create_admin_server(host: str, port: int, service: AdminService) -> Threadin
 
         def do_POST(self) -> None:  # noqa: N802
             try:
+                if self._redirect_public_http():
+                    return
                 payload = self._read_json_body()
                 if payload is None:
                     return self._send_json({"error": "Invalid JSON body"}, status=HTTPStatus.BAD_REQUEST)
@@ -1204,6 +1238,21 @@ def create_admin_server(host: str, port: int, service: AdminService) -> Threadin
 
         def _clear_session_cookie(self) -> str:
             return f"{ADMIN_SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0"
+
+        def _redirect_public_http(self) -> bool:
+            location = _public_https_redirect_location(
+                self.headers.get("X-Forwarded-Host") or self.headers.get("Host"),
+                self.headers.get("X-Forwarded-Proto") or self.headers.get("Forwarded"),
+                self.path,
+            )
+            if not location:
+                return False
+            self.send_response(HTTPStatus.PERMANENT_REDIRECT)
+            self.send_header("Location", location)
+            self.send_header("Content-Length", "0")
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            return True
 
         def _send_json(
             self,
