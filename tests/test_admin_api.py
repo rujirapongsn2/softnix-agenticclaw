@@ -10,6 +10,7 @@ from http import HTTPStatus
 
 from nanobot.admin.server import (
     create_admin_server,
+    _read_file_response,
     resolve_admin_delete,
     resolve_admin_get,
     resolve_admin_patch,
@@ -47,6 +48,24 @@ def _request_json(
     response_headers = {key: value for key, value in response.getheaders()}
     connection.close()
     return response.status, data, response_headers
+
+
+def _request_raw(
+    port: int,
+    method: str,
+    path: str,
+    *,
+    headers: dict[str, str] | None = None,
+) -> tuple[int, bytes, dict[str, str]]:
+    connection = HTTPConnection("127.0.0.1", port, timeout=5)
+    request_headers = dict(headers or {})
+    connection.request(method, path, headers=request_headers)
+    response = connection.getresponse()
+    body = response.read()
+    response_headers = {key: value for key, value in response.getheaders()}
+    status = response.status
+    connection.close()
+    return status, body, response_headers
 
 
 def _start_admin_server(service: AdminService) -> tuple[object, threading.Thread, int]:
@@ -103,6 +122,18 @@ def test_admin_role_cannot_create_instances() -> None:
     permissions = permissions_for_role("admin")
     assert "instance.create" not in permissions
     assert has_permission("admin", "instance.create") is False
+
+
+def test_admin_server_supports_http_range_requests_for_static_files() -> None:
+    path, _ = resolve_static_asset("/favicon.ico")
+    assert path is not None
+
+    status, body, headers = _read_file_response(path, "bytes=0-3")
+
+    assert status == HTTPStatus.PARTIAL_CONTENT
+    assert headers["Content-Range"].startswith("bytes 0-3/")
+    assert headers["Accept-Ranges"] == "bytes"
+    assert len(body) == 4
 
 
 def test_admin_service_reports_security_findings(tmp_path) -> None:

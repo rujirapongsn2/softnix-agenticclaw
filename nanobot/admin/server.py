@@ -773,6 +773,27 @@ def resolve_static_asset(raw_path: str) -> tuple[Path | None, str]:
     return None, ""
 
 
+def _read_file_response(path: Path, range_header: str | None = None) -> tuple[HTTPStatus, bytes, dict[str, str]]:
+    if not path.exists():
+        raise FileNotFoundError(path)
+    body = path.read_bytes()
+    headers: dict[str, str] = {"Accept-Ranges": "bytes"}
+    range_value = str(range_header or "").strip()
+    if range_value.startswith("bytes="):
+        start_text, end_text = range_value[len("bytes="):].split("-", 1)
+        file_size = len(body)
+        start = int(start_text) if start_text else 0
+        end = int(end_text) if end_text else file_size - 1
+        if start < 0 or end < start or start >= file_size:
+            headers["Content-Range"] = f"bytes */{file_size}"
+            return HTTPStatus.REQUESTED_RANGE_NOT_SATISFIABLE, b"", headers
+        end = min(end, file_size - 1)
+        partial_body = body[start : end + 1]
+        headers["Content-Range"] = f"bytes {start}-{end}/{file_size}"
+        return HTTPStatus.PARTIAL_CONTENT, partial_body, headers
+    return HTTPStatus.OK, body, headers
+
+
 def _match_permission(method: str, path: str) -> str | None:
     if not path.startswith("/admin/"):
         return None
@@ -1342,11 +1363,14 @@ def create_admin_server(host: str, port: int, service: AdminService) -> Threadin
             self.wfile.write(body)
 
         def _send_file(self, path: Path, content_type: str) -> None:
-            if not path.exists():
+            try:
+                status, body, extra_headers = _read_file_response(path, self.headers.get("Range"))
+            except FileNotFoundError:
                 return self._send_json({"error": "Not found"}, status=HTTPStatus.NOT_FOUND)
-            body = path.read_bytes()
-            self.send_response(HTTPStatus.OK)
+            self.send_response(status)
             self._write_headers(content_type, len(body))
+            for key, value in extra_headers.items():
+                self.send_header(key, value)
             self._write_no_cache_headers()
             self.end_headers()
             self.wfile.write(body)
