@@ -726,11 +726,12 @@ class AdminService:
         if not target:
             raise ValueError(f"Instance '{instance_id}' not found")
         config = self._load_target_config(target)
+        device_token = f"mobtok-{secrets.token_urlsafe(24)}"
 
         if not config.channels.softnix_app.enabled:
             config.channels.softnix_app.enabled = True
 
-        self.auth_store.upsert_mobile_device(instance_id, device_id, label or device_id)
+        self.auth_store.upsert_mobile_device(instance_id, device_id, label or device_id, device_token=device_token)
         store = AccessRequestStore(target.workspace_path)
         pending = store.record(
             channel="softnix_app",
@@ -757,6 +758,7 @@ class AdminService:
             "new": not already_allowed,
             "pending_request": pending,
             "already_allowed": already_allowed,
+            "device_token": device_token,
         }
 
     # ── ngrok tunnel management ──────────────────────────────────────────

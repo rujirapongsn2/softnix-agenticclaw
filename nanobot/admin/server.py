@@ -758,6 +758,8 @@ def _match_permission(method: str, path: str) -> str | None:
     if method == "POST":
         if path == "/admin/mobile/ngrok/start":
             return "config.update"
+        if path == "/admin/mobile/pair":
+            return "config.update"
         if path == "/admin/users":
             return "user.create"
         if path.startswith("/admin/users/") and path.endswith("/reset-password"):
@@ -785,6 +787,11 @@ def _match_permission(method: str, path: str) -> str | None:
             return "schedule.update"
         if path.startswith("/admin/mcp/servers/"):
             return "mcp.update"
+        if path.startswith("/admin/mobile/devices/"):
+            return "config.update"
+    if method == "GET":
+        if path in {"/admin/mobile/devices", "/admin/mobile/ngrok/status", "/admin/mobile/network-info"}:
+            return "config.read"
     return None
 
 
@@ -803,6 +810,8 @@ def create_admin_server(host: str, port: int, service: AdminService) -> Threadin
                     return
                 context = self._require_access("GET")
                 if context is None:
+                    return
+                if not self._authorize_mobile_request():
                     return
                 self._set_audit_context(context)
                 status, payload = resolve_admin_get(service, self.path)
@@ -858,6 +867,8 @@ def create_admin_server(host: str, port: int, service: AdminService) -> Threadin
                     return
                 context = self._require_access("POST", payload=payload)
                 if context is None:
+                    return
+                if not self._authorize_mobile_request(payload):
                     return
                 self._set_audit_context(context)
                 _mobile_unauthenticated = self.path.startswith("/admin/mobile/") and not self.path.rstrip("/").endswith("/pair")
@@ -947,6 +958,83 @@ def create_admin_server(host: str, port: int, service: AdminService) -> Threadin
                 )
                 return True
             return False
+
+        def _authorize_mobile_request(self, payload: dict[str, Any] | None = None) -> bool:
+            parsed = urlparse(self.path)
+            path = parsed.path.rstrip("/") or "/"
+            if not path.startswith("/admin/mobile/"):
+                return True
+            if self._auth_context() is not None:
+                return True
+            if path == "/admin/mobile/register":
+                return True
+            if path == "/admin/mobile/push/config":
+                return True
+
+            token = self._mobile_token(payload)
+            if not token:
+                self._send_json({"error": "Mobile device token required"}, status=HTTPStatus.UNAUTHORIZED)
+                return False
+
+            device = self._mobile_device_for_request(path=path, payload=payload, token=token)
+            if device is None:
+                self._send_json({"error": "Invalid mobile device token"}, status=HTTPStatus.FORBIDDEN)
+                return False
+            return True
+
+        def _mobile_token(self, payload: dict[str, Any] | None = None) -> str:
+            parsed = urlparse(self.path)
+            query = parse_qs(parsed.query)
+            header_token = str(self.headers.get("X-Mobile-Token") or "").strip()
+            payload_token = ""
+            if isinstance(payload, dict):
+                payload_token = str(
+                    payload.get("mobile_token")
+                    or payload.get("device_token")
+                    or payload.get("token")
+                    or ""
+                ).strip()
+            query_token = str((query.get("mobile_token") or [None])[0] or "").strip()
+            return header_token or payload_token or query_token
+
+        def _mobile_device_for_request(self, *, path: str, payload: dict[str, Any] | None, token: str) -> dict[str, Any] | None:
+            parsed = urlparse(self.path)
+            query = parse_qs(parsed.query)
+            instance_id = ""
+            sender_id = ""
+            device_id = ""
+            if isinstance(payload, dict):
+                instance_id = str(payload.get("instance_id") or "").strip()
+                sender_id = str(payload.get("sender_id") or "").strip()
+                device_id = str(payload.get("device_id") or "").strip()
+                if path == "/admin/mobile/transfer-session/create":
+                    device = payload.get("device")
+                    if isinstance(device, dict):
+                        instance_id = instance_id or str(device.get("instance_id") or "").strip()
+                        device_id = str(device.get("device_id") or "").strip()
+            if not instance_id:
+                instance_id = str((query.get("instance_id") or [None])[0] or "").strip()
+            if not sender_id:
+                sender_id = str((query.get("sender_id") or [None])[0] or "").strip()
+            if not device_id:
+                device_id = str((query.get("device_id") or [None])[0] or "").strip()
+
+            device = service.auth_store.get_mobile_device_by_token(token, instance_id=instance_id or None)
+            if device is None:
+                return None
+
+            token_device_id = str(device.get("device_id") or "").strip()
+            if path in {
+                "/admin/mobile/message",
+                "/admin/mobile/media",
+                "/admin/mobile/push/subscribe",
+                "/admin/mobile/push/unsubscribe",
+                "/admin/mobile/transfer-session/create",
+            }:
+                expected_id = device_id or sender_id
+                if expected_id and expected_id != token_device_id:
+                    return None
+            return device
 
         def _handle_change_password(self, payload: dict[str, Any]) -> bool:
             parsed = urlparse(self.path)

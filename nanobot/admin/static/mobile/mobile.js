@@ -93,8 +93,8 @@ async function registerDevice(instanceId, token) {
       }),
     });
 
+    const data = await response.json().catch(() => ({}));
     if (!response.ok) {
-      const data = await response.json().catch(() => ({}));
       throw new Error(data.error || `Registration failed (${response.status})`);
     }
 
@@ -103,6 +103,7 @@ async function registerDevice(instanceId, token) {
       instance_id: instanceId,
       label,
       registered_at: new Date().toISOString(),
+      device_token: data.device_token || data.mobile_token || "",
     };
     saveDevice(device);
     window.history.replaceState({}, "", "/mobile");
@@ -307,11 +308,13 @@ function normalizeAttachments(items) {
     .map((item) => {
       const mimeType = item.mime_type || item.mimeType || "application/octet-stream";
       const fileName = item.file_name || item.fileName || item.name || "attachment";
-      const url =
-        item.url
-        || (device
-          ? `/admin/mobile/media?instance_id=${encodeURIComponent(device.instance_id)}&sender_id=${encodeURIComponent(device.device_id)}&file=${encodeURIComponent(fileName)}`
-          : "");
+      let url = item.url || "";
+      if (device && url.startsWith("/admin/mobile/media") && device.device_token && !url.includes("mobile_token=")) {
+        url += `${url.includes("?") ? "&" : "?"}mobile_token=${encodeURIComponent(device.device_token)}`;
+      }
+      if (!url && device) {
+        url = `/admin/mobile/media?instance_id=${encodeURIComponent(device.instance_id)}&sender_id=${encodeURIComponent(device.device_id)}&file=${encodeURIComponent(fileName)}${device.device_token ? `&mobile_token=${encodeURIComponent(device.device_token)}` : ""}`;
+      }
       return {
         name: item.name || fileName,
         fileName,
@@ -1490,9 +1493,16 @@ function sanitizeMessageForStorage(message) {
 }
 
 function apiFetch(url, options = {}) {
+  const headers = {
+    "Content-Type": "application/json",
+    ...(options.headers || {}),
+  };
+  if (device?.device_token) {
+    headers["X-Mobile-Token"] = device.device_token;
+  }
   return fetch(url, {
-    headers: { "Content-Type": "application/json" },
     ...options,
+    headers,
   });
 }
 

@@ -47,3 +47,17 @@ def test_mobile_transfer_token_round_trip(tmp_path: Path) -> None:
     assert payload["device"]["device_id"] == "mob-1"
     assert payload["activeSessionId"] == "mobile-mob-1"
     assert store.consume_mobile_transfer_token("xfer-123456") is None
+
+
+def test_mobile_device_token_round_trip(tmp_path: Path) -> None:
+    store = AdminAuthStore(tmp_path)
+    store.upsert_mobile_device("demo", "mob-1", "Tester", device_token="mobtok-abc123")
+
+    devices = store.list_mobile_devices("demo")
+    assert len(devices) == 1
+    assert "device_token" not in devices[0]
+    assert devices[0]["device_id"] == "mob-1"
+
+    matched = store.get_mobile_device_by_token("mobtok-abc123", instance_id="demo")
+    assert matched is not None
+    assert matched["device_id"] == "mob-1"

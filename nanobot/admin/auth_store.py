@@ -309,23 +309,60 @@ class AdminAuthStore:
 
     def list_mobile_devices(self, instance_id: str) -> list[dict[str, Any]]:
         payload = self._load_json(self.mobile_devices_path, {"devices": []})
-        return [d for d in payload["devices"] if d.get("instance_id") == instance_id]
+        devices: list[dict[str, Any]] = []
+        for item in payload.get("devices", []):
+            if not isinstance(item, dict) or item.get("instance_id") != instance_id:
+                continue
+            device = dict(item)
+            device.pop("device_token", None)
+            devices.append(device)
+        return devices
 
-    def upsert_mobile_device(self, instance_id: str, device_id: str, label: str) -> None:
+    def get_mobile_device(self, instance_id: str, device_id: str) -> dict[str, Any] | None:
+        payload = self._load_json(self.mobile_devices_path, {"devices": []})
+        for item in payload.get("devices", []):
+            if (
+                isinstance(item, dict)
+                and item.get("instance_id") == instance_id
+                and item.get("device_id") == device_id
+            ):
+                return dict(item)
+        return None
+
+    def get_mobile_device_by_token(self, token: str, *, instance_id: str | None = None) -> dict[str, Any] | None:
+        raw_token = str(token or "").strip()
+        if not raw_token:
+            return None
+        payload = self._load_json(self.mobile_devices_path, {"devices": []})
+        for item in payload.get("devices", []):
+            if not isinstance(item, dict):
+                continue
+            if instance_id is not None and item.get("instance_id") != instance_id:
+                continue
+            if hmac.compare_digest(str(item.get("device_token") or ""), raw_token):
+                return dict(item)
+        return None
+
+    def upsert_mobile_device(self, instance_id: str, device_id: str, label: str, *, device_token: str | None = None) -> None:
         payload = self._load_json(self.mobile_devices_path, {"devices": []})
         for d in payload["devices"]:
             if d.get("device_id") == device_id and d.get("instance_id") == instance_id:
                 d["label"] = label
                 d["last_seen"] = iso_now()
+                if device_token:
+                    d["device_token"] = device_token
                 self._save_json(self.mobile_devices_path, payload)
                 return
-        payload["devices"].append({
+        record = {
             "device_id": device_id,
             "instance_id": instance_id,
             "label": label,
             "registered_at": iso_now(),
             "last_seen": iso_now(),
-        })
+        }
+        if device_token:
+            record["device_token"] = device_token
+        payload["devices"].append(record)
         self._save_json(self.mobile_devices_path, payload)
 
     def delete_mobile_device(self, instance_id: str, device_id: str) -> None:
