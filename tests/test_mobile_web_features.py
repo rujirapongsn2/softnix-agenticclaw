@@ -185,3 +185,17 @@ async def test_softnix_app_channel_processes_threaded_inbound_message(tmp_path: 
     assert inbound.chat_id == "mobile-mob-2#thread:root-2"
     assert inbound.session_key == "mobile-mob-2#thread:root-2"
     assert inbound.metadata["message_id"] == "msg-2"
+
+
+def test_detect_audio_mime_identifies_ogg_and_mp3(tmp_path: Path) -> None:
+    ogg_file = tmp_path / "audio.mp3"
+    ogg_file.write_bytes(b"OggS" + b"\x00" * 32)
+    assert AdminService._detect_audio_mime(ogg_file) == "audio/ogg"
+
+    mp3_file = tmp_path / "real.mp3"
+    mp3_file.write_bytes(b"ID3" + b"\x00" * 33)
+    assert AdminService._detect_audio_mime(mp3_file) == "audio/mpeg"
+
+    wav_file = tmp_path / "audio.wav"
+    wav_file.write_bytes(b"RIFF" + b"\x00\x00\x00\x00" + b"WAVE" + b"\x00" * 24)
+    assert AdminService._detect_audio_mime(wav_file) == "audio/wav"

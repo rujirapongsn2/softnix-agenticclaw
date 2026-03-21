@@ -1393,7 +1393,13 @@ def create_admin_server(host: str, port: int, service: AdminService) -> Threadin
             self._write_headers(content_type, len(body))
             for key, value in extra_headers.items():
                 self.send_header(key, value)
-            self._write_no_cache_headers()
+            # Media files (audio/video) need permissive caching for iOS Safari
+            # playback — no-store prevents the browser media buffer from working.
+            media_kind = content_type.split("/", 1)[0] if content_type else ""
+            if media_kind in {"audio", "video"}:
+                self.send_header("Cache-Control", "private, max-age=3600, immutable")
+            else:
+                self._write_no_cache_headers()
             self.end_headers()
             self.wfile.write(body)
 

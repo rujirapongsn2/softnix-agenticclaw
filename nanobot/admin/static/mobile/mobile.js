@@ -607,12 +607,43 @@ function createAudioAttachmentPlayer(attachment) {
     return card;
   }
 
-  if (src) {
-    audio.src = src;
-  }
-  if (attachment.mimeType) {
-    audio.setAttribute("type", attachment.mimeType);
-  }
+  // Track blob loading state — we fetch audio as a blob to avoid
+  // iOS Safari issues when the page is served through ngrok/proxies.
+  let blobLoaded = false;
+  let blobLoading = false;
+  let blobUrl = "";
+
+  const loadAudioBlob = async () => {
+    if (blobLoaded || blobLoading || !src) return true;
+    blobLoading = true;
+    timeLabel.textContent = "Loading…";
+    try {
+      const response = await fetch(src);
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const blob = await response.blob();
+      blobUrl = URL.createObjectURL(blob);
+      audio.src = blobUrl;
+      blobLoaded = true;
+      // Wait for the audio element to process the blob
+      await new Promise((resolve, reject) => {
+        const onReady = () => { cleanup(); resolve(); };
+        const onError = () => { cleanup(); reject(audio.error); };
+        const cleanup = () => {
+          audio.removeEventListener("canplay", onReady);
+          audio.removeEventListener("loadedmetadata", onReady);
+          audio.removeEventListener("error", onError);
+        };
+        audio.addEventListener("canplay", onReady, { once: true });
+        audio.addEventListener("loadedmetadata", onReady, { once: true });
+        audio.addEventListener("error", onError, { once: true });
+        audio.load();
+      });
+      return true;
+    } catch (err) {
+      blobLoading = false;
+      return false;
+    }
+  };
 
   const controller = {
     audio,
@@ -652,6 +683,12 @@ function createAudioAttachmentPlayer(attachment) {
     }
     activeAudioPlayer = controller;
     try {
+      const loaded = await loadAudioBlob();
+      if (!loaded) {
+        timeLabel.textContent = "Unable to load audio";
+        card.classList.add("is-error");
+        return;
+      }
       await audio.play();
     } catch (error) {
       setBanner(`Unable to play audio: ${error.message || "Playback failed"}`, "error");
@@ -691,9 +728,15 @@ function createAudioAttachmentPlayer(attachment) {
     }
   });
   audio.addEventListener("error", () => {
+    if (!blobLoaded && !blobLoading) {
+      // Don't show error for initial state — error will show after blob load attempt
+      return;
+    }
     playButton.disabled = true;
     stopButton.disabled = true;
-    timeLabel.textContent = "Unable to load audio";
+    const code = audio.error ? audio.error.code : 0;
+    const reasons = { 1: "aborted", 2: "network error", 3: "decode error", 4: "format not supported" };
+    timeLabel.textContent = `Unable to load audio${reasons[code] ? ` (${reasons[code]})` : ""}`;
     card.classList.add("is-error");
     if (activeAudioPlayer === controller) {
       activeAudioPlayer = null;

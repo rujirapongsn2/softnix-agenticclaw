@@ -777,6 +777,66 @@ class AdminService:
             
         return all_replies
 
+    @staticmethod
+    def _detect_audio_mime(path: Path) -> str | None:
+        """Detect actual audio MIME type from file magic bytes."""
+        try:
+            header = path.read_bytes()[:36]
+        except Exception:
+            return None
+        if len(header) < 4:
+            return None
+        # OGG container (Vorbis / Opus) — iOS Safari cannot play these
+        if header[:4] == b"OggS":
+            return "audio/ogg"
+        # RIFF/WAV
+        if header[:4] == b"RIFF" and header[8:12] == b"WAVE":
+            return "audio/wav"
+        # FLAC
+        if header[:4] == b"fLaC":
+            return "audio/flac"
+        # MP3: sync word 0xFFE0..0xFFFF or ID3 tag
+        if header[:3] == b"ID3" or (header[0] == 0xFF and (header[1] & 0xE0) == 0xE0):
+            return "audio/mpeg"
+        # AAC ADTS
+        if header[0] == 0xFF and (header[1] & 0xF0) == 0xF0:
+            return "audio/aac"
+        # MP4/M4A container
+        if len(header) >= 8 and header[4:8] == b"ftyp":
+            return "audio/mp4"
+        return None
+
+    @staticmethod
+    def _transcode_to_mp3(source: Path) -> Path | None:
+        """Transcode an unsupported audio file to MP3 via pydub/ffmpeg."""
+        mp3_path = source.with_suffix(".transcoded.mp3")
+        if mp3_path.exists() and mp3_path.stat().st_mtime >= source.stat().st_mtime:
+            return mp3_path
+        # Try pydub first (wraps ffmpeg with better path discovery)
+        try:
+            from pydub import AudioSegment
+            audio = AudioSegment.from_file(str(source))
+            audio.export(str(mp3_path), format="mp3")
+            if mp3_path.exists():
+                return mp3_path
+        except Exception:
+            pass
+        # Fall back to direct ffmpeg subprocess
+        try:
+            import subprocess
+            result = subprocess.run(
+                ["ffmpeg", "-y", "-i", str(source), "-codec:a", "libmp3lame", "-q:a", "2", str(mp3_path)],
+                capture_output=True, timeout=30,
+            )
+            if result.returncode == 0 and mp3_path.exists():
+                return mp3_path
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            pass
+        return None
+
+    # MIME types that iOS Safari can play natively
+    _IOS_PLAYABLE_AUDIO = {"audio/mpeg", "audio/mp4", "audio/aac", "audio/wav", "audio/flac", "audio/x-m4a"}
+
     def get_mobile_media_file(
         self,
         instance_id: str,
@@ -810,7 +870,16 @@ class AdminService:
             except ValueError:
                 continue
             if candidate.exists() and candidate.is_file():
-                return candidate, mimetypes.guess_type(candidate.name)[0] or "application/octet-stream"
+                # Detect actual format from file content, not just extension
+                detected = self._detect_audio_mime(candidate)
+                guessed = mimetypes.guess_type(candidate.name)[0] or "application/octet-stream"
+                content_type = detected or guessed
+                # If the format isn't playable on iOS Safari, try transcoding
+                if detected and detected not in self._IOS_PLAYABLE_AUDIO:
+                    transcoded = self._transcode_to_mp3(candidate)
+                    if transcoded is not None:
+                        return transcoded, "audio/mpeg"
+                return candidate, content_type
         raise ValueError("Media file not found")
 
     def register_mobile_client(
