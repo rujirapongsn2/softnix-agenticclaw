@@ -1007,6 +1007,8 @@ def create_admin_server(host: str, port: int, service: AdminService) -> Threadin
                 return True
             if path == "/admin/mobile/push/config":
                 return True
+            if path == "/admin/mobile/transfer-session/consume":
+                return True
 
             token = self._mobile_token(payload)
             if not token:
