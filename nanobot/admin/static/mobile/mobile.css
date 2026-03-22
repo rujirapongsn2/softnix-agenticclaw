@@ -695,6 +695,64 @@ body {
   box-shadow: var(--shadow-sm);
 }
 
+.msg--assistant {
+  max-width: 100%;
+  padding: 0;
+  background: transparent;
+  color: var(--fg);
+  box-shadow: none;
+  border-radius: 0;
+}
+
+.assistant-turn {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 4px 0 2px;
+}
+
+.assistant-turn__meta,
+.assistant-turn__footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.assistant-turn__label {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--fg-secondary);
+}
+
+.assistant-turn__copy {
+  border: none;
+  background: transparent;
+  color: var(--fg-secondary);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 4px 2px;
+}
+
+.assistant-turn__copy:active {
+  opacity: 0.72;
+}
+
+.assistant-turn__content {
+  width: 100%;
+}
+
+.assistant-turn__content .msg-heading:first-child,
+.assistant-turn__content .msg-paragraph:first-child {
+  margin-top: 0;
+}
+
+.assistant-turn__footer {
+  margin-top: 2px;
+}
+
 .msg-time {
   font-size: 12px;
   opacity: 0.5;
@@ -1236,7 +1294,8 @@ body {
 /* ── Agent Message Group (Collapsible Tools) ── */
 .agent-group {
   align-self: flex-start;
-  max-width: 88%;
+  width: 100%;
+  max-width: 100%;
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -1245,6 +1304,14 @@ body {
 
 .agent-group .msg--agent {
   max-width: 100%;
+}
+
+.agent-group-answer {
+  width: 100%;
+}
+
+.tools-panel {
+  max-width: 88%;
 }
 
 /* Tools Panel */
@@ -1396,16 +1463,58 @@ body {
   color: var(--fg-secondary);
 }
 
+.msg-codeblock {
+  margin: 12px 0;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  overflow: hidden;
+  background: var(--bg-card);
+}
+
+.msg-codeblock-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 16px 10px;
+  background: var(--bg-card);
+}
+
+.msg-codeblock-language {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--fg-secondary);
+  text-transform: lowercase;
+}
+
+.msg-codeblock-copy {
+  border: none;
+  background: transparent;
+  color: var(--fg-secondary);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 4px 0;
+}
+
+.msg-codeblock-copy:active {
+  opacity: 0.72;
+}
+
 .msg-code {
-  margin: 10px 0;
-  padding: 12px;
+  margin: 0;
+  padding: 14px 16px;
   overflow-x: auto;
-  border-radius: 14px;
-  background: #111827;
-  color: #f9fafb;
+  border-radius: 0 0 16px 16px;
+  background: var(--bg-subtle);
+  color: var(--fg);
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 14px;
   line-height: 1.55;
+}
+
+.msg-codeblock .msg-code {
+  border-top: 1px solid var(--border-light);
 }
 
 .msg-code code {
@@ -1433,6 +1542,26 @@ body {
 
 .msg--agent .msg-attachment {
   background: var(--bg-subtle);
+}
+
+.msg--assistant .msg-attachments {
+  margin-top: 0;
+}
+
+.msg--assistant .msg-attachment {
+  background: var(--bg-subtle);
+}
+
+.msg--assistant .msg-audio-button {
+  background: var(--bg-card);
+}
+
+.msg--assistant .msg-audio-button--play {
+  background: linear-gradient(135deg, rgba(var(--accent-soft-rgb), 0.22), rgba(var(--accent-soft-rgb), 0.12));
+}
+
+.msg--assistant .msg-audio-icon {
+  background: var(--bg-card);
 }
 
 .msg-audio-card {
@@ -1493,10 +1622,6 @@ body {
   line-height: 1;
   cursor: pointer;
   transition: transform 0.15s ease, background 0.15s ease, border-color 0.15s ease;
-}
-
-.msg--agent .msg-audio-button {
-  background: var(--bg-card);
 }
 
 .msg-audio-button--play {
@@ -1572,11 +1697,11 @@ body {
   color: var(--fg);
 }
 
-.msg--agent .msg-attachment-icon {
+.msg--assistant .msg-attachment-icon {
   background: var(--bg-card);
 }
 
-.msg--agent .msg-attachment-icon--audio {
+.msg--assistant .msg-attachment-icon--audio {
   background: linear-gradient(135deg, rgba(var(--accent-soft-rgb), 0.2), rgba(255, 255, 255, 0.92));
 }
 
@@ -1643,6 +1768,19 @@ body {
 
 .msg-table tbody tr:nth-child(even) {
   background: var(--bg-subtle);
+}
+
+.msg--assistant .msg-content {
+  font-size: 16px;
+  line-height: 1.75;
+}
+
+.msg--assistant .msg-content .msg-quote {
+  margin: 10px 0;
+}
+
+.msg--assistant .msg-content .msg-table-wrap {
+  margin: 10px 0;
 }
 
 @media (prefers-color-scheme: dark) {

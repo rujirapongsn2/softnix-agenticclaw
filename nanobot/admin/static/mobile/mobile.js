@@ -184,13 +184,14 @@ async function handleSend() {
     role: "user",
     text,
     sessionId,
+    senderId: device.device_id,
     threadRootId,
     replyTo: replyToMessageId,
     attachments: selectedAttachments.map((item) => ({
       name: item.file.name,
       mimeType: item.file.type || "application/octet-stream",
       size: item.file.size,
-      kind: attachmentKind(item.file.type),
+      kind: attachmentKind(item.file.type, item.file.name),
       previewUrl: item.previewUrl,
       local: true,
     })),
@@ -216,15 +217,17 @@ async function handleSend() {
         attachments: attachmentsPayload,
       }),
     });
+    const responseData = await response.json().catch(() => ({}));
     if (!response.ok) {
-      const data = await response.json().catch(() => ({}));
       appendMessage({
         role: "agent",
-        text: "Failed to send: " + (data.error || response.status),
+        text: "Failed to send: " + (responseData.error || response.status),
         msgType: "answer",
         messageId: "moberr-" + crypto.randomUUID(),
         sessionId,
       });
+    } else if (Array.isArray(responseData.attachments) && responseData.attachments.length > 0) {
+      syncMessageAttachments(messageId, responseData.attachments);
     }
   } catch (error) {
     appendMessage({
@@ -237,6 +240,35 @@ async function handleSend() {
   } finally {
     isSending = false;
     updateSendButton();
+  }
+}
+
+function syncMessageAttachments(messageId, attachments) {
+  const message = messageStore.get(messageId);
+  if (!message) return;
+  const normalizedAttachments = normalizeAttachments(attachments);
+  if (!normalizedAttachments.length) return;
+
+  const updatedMessage = {
+    ...message,
+    attachments: normalizedAttachments,
+  };
+  messageStore.set(messageId, updatedMessage);
+  persistMessage(updatedMessage);
+
+  const element = document.querySelector(`[data-message-id="${CSS.escape(messageId)}"]`);
+  if (!element) return;
+  const attachmentList = element.querySelector(".msg-attachments");
+  const nextList = createAttachmentList(normalizedAttachments);
+  if (attachmentList) {
+    attachmentList.replaceWith(nextList);
+  } else {
+    const footer = element.querySelector(".msg-footer");
+    if (footer) {
+      element.insertBefore(nextList, footer);
+    } else {
+      element.appendChild(nextList);
+    }
   }
 }
 
@@ -288,13 +320,15 @@ async function pollReplies() {
 }
 
 function normalizeReplyMessage(reply) {
-  const attachments = normalizeAttachments(reply.attachments);
+  const senderId = reply.sender_id || reply.senderId || null;
+  const attachments = normalizeAttachments(reply.attachments, senderId);
   return {
     role: "agent",
     text: reply.text || reply.content || "(empty reply)",
     msgType: reply.type || "answer",
     messageId: reply.message_id || "moba-" + crypto.randomUUID(),
     sessionId: reply.session_id || `mobile-${device?.device_id || "unknown"}`,
+    senderId,
     replyTo: reply.reply_to || null,
     threadRootId: reply.thread_root_id || reply.reply_to || null,
     attachments,
@@ -302,26 +336,29 @@ function normalizeReplyMessage(reply) {
   };
 }
 
-function normalizeAttachments(items) {
+function normalizeAttachments(items, senderId = null) {
   if (!Array.isArray(items)) return [];
   return items
     .filter((item) => item && typeof item === "object")
     .map((item) => {
       const mimeType = item.mime_type || item.mimeType || "application/octet-stream";
       const fileName = item.file_name || item.fileName || item.name || "attachment";
+      const mediaSenderId = item.sender_id || item.senderId || senderId || device?.device_id || "";
       let url = item.url || "";
       if (device && url.startsWith("/admin/mobile/media") && device.device_token && !url.includes("mobile_token=")) {
         url += `${url.includes("?") ? "&" : "?"}mobile_token=${encodeURIComponent(device.device_token)}`;
       }
-      if (!url && device) {
-        url = `/admin/mobile/media?instance_id=${encodeURIComponent(device.instance_id)}&sender_id=${encodeURIComponent(device.device_id)}&file=${encodeURIComponent(fileName)}${device.device_token ? `&mobile_token=${encodeURIComponent(device.device_token)}` : ""}`;
+      const looksLikeLocalPath = typeof url === "string" && url && !/^(https?:|blob:|data:|\/admin\/mobile\/media)/i.test(url);
+      if ((looksLikeLocalPath || !url) && device) {
+        const querySenderId = mediaSenderId || device.device_id;
+        url = `/admin/mobile/media?instance_id=${encodeURIComponent(device.instance_id)}&sender_id=${encodeURIComponent(querySenderId)}&file=${encodeURIComponent(fileName)}${device.device_token ? `&mobile_token=${encodeURIComponent(device.device_token)}` : ""}`;
       }
       return {
         name: item.name || fileName,
         fileName,
         mimeType,
         size: Number(item.size || 0),
-        kind: item.kind || attachmentKind(mimeType),
+        kind: item.kind || attachmentKind(mimeType, fileName),
         url,
         previewUrl: item.previewUrl || url,
         duration: Number(item.duration || item.audio_duration || 0) || 0,
@@ -333,7 +370,7 @@ function hydrateMessageAttachments(message) {
   const items = Array.isArray(message?.attachments) ? message.attachments : [];
   if (!items.length) return [];
   if (message?.role === "agent") {
-    return normalizeAttachments(items);
+    return normalizeAttachments(items, message?.senderId || message?.sender_id || null);
   }
   return items.map((item) => ({
     ...item,
@@ -341,7 +378,7 @@ function hydrateMessageAttachments(message) {
     fileName: item?.fileName || item?.name || "attachment",
     mimeType: item?.mimeType || item?.mime_type || "application/octet-stream",
     size: Number(item?.size || 0),
-    kind: item?.kind || attachmentKind(item?.mimeType || item?.mime_type || ""),
+    kind: item?.kind || attachmentKind(item?.mimeType || item?.mime_type || "", item?.fileName || item?.name || ""),
     url: item?.url || "",
     previewUrl: item?.previewUrl || item?.url || "",
     duration: Number(item?.duration || item?.audio_duration || 0) || 0,
@@ -359,6 +396,7 @@ function appendMessageInternal(message, options = {}) {
     msgType: message.msgType || "answer",
     messageId: message.messageId || "msg-" + crypto.randomUUID(),
     sessionId: message.sessionId || `mobile-${device?.device_id || "unknown"}`,
+    senderId: message.senderId || null,
     replyTo: message.replyTo || null,
     threadRootId: message.threadRootId || null,
     attachments: hydrateMessageAttachments(message),
@@ -483,11 +521,16 @@ function finalizeAgentGroup() {
 
 function createMessageElement(message) {
   const element = document.createElement("div");
-  element.className = `msg ${message.role === "user" ? "msg--user" : "msg--agent"}`;
+  element.className = `msg ${message.role === "user" ? "msg--user" : "msg--agent msg--assistant"}`;
   element.dataset.messageId = message.messageId;
   element.dataset.sessionId = message.sessionId;
   if (message.replyTo) element.dataset.replyTo = message.replyTo;
   if (message.threadRootId) element.dataset.threadRootId = message.threadRootId;
+
+  if (message.role !== "user") {
+    element.appendChild(createAssistantTurnElement(message));
+    return element;
+  }
 
   const replyPreview = buildReplyPreview(message.replyTo);
   if (replyPreview) {
@@ -532,6 +575,53 @@ function createMessageElement(message) {
   return element;
 }
 
+function createAssistantTurnElement(message) {
+  const turn = document.createElement("div");
+  turn.className = "assistant-turn";
+  turn.dataset.messageId = message.messageId;
+
+  const meta = document.createElement("div");
+  meta.className = "assistant-turn__meta";
+
+  const label = document.createElement("span");
+  label.className = "assistant-turn__label";
+  label.textContent = "Assistant";
+  meta.appendChild(label);
+
+  if (message.text) {
+    const copyButton = document.createElement("button");
+    copyButton.type = "button";
+    copyButton.className = "assistant-turn__copy";
+    copyButton.textContent = "Copy";
+    copyButton.dataset.copyMessageId = message.messageId;
+    meta.appendChild(copyButton);
+  }
+
+  turn.appendChild(meta);
+
+  if (message.text) {
+    const content = document.createElement("div");
+    content.className = "assistant-turn__content msg-content";
+    content.innerHTML = renderMarkdown(message.text);
+    turn.appendChild(content);
+  }
+
+  if (message.attachments.length > 0) {
+    turn.appendChild(createAttachmentList(message.attachments));
+  }
+
+  const footer = document.createElement("div");
+  footer.className = "assistant-turn__footer";
+
+  const time = document.createElement("span");
+  time.className = "msg-time";
+  time.textContent = formatMessageTime(message.timestamp);
+  footer.appendChild(time);
+
+  turn.appendChild(footer);
+  return turn;
+}
+
 function buildReplyPreview(messageId) {
   if (!messageId) return null;
   const message = messageStore.get(messageId);
@@ -555,7 +645,7 @@ function createAttachmentList(attachments) {
   const wrapper = document.createElement("div");
   wrapper.className = "msg-attachments";
   attachments.forEach((attachment) => {
-    const kind = attachment.kind || attachmentKind(attachment.mimeType || attachment.mime_type || "");
+    const kind = attachment.kind || attachmentKind(attachment.mimeType || attachment.mime_type || "", attachment.fileName || attachment.name || "");
     if (kind === "audio") {
       wrapper.appendChild(createAudioAttachmentPlayer(attachment));
       return;
@@ -888,7 +978,7 @@ async function handleAttachmentInput(event) {
     selectedAttachments.push({
       id: "att-" + crypto.randomUUID(),
       file,
-      previewUrl: file.type.startsWith("image/") ? URL.createObjectURL(file) : "",
+      previewUrl: isImageLike(file.type, file.name) ? URL.createObjectURL(file) : "",
     });
   }
   input.value = "";
@@ -902,6 +992,13 @@ function handleComposeInput() {
 }
 
 function handleMessageActions(event) {
+  const copyButton = event.target.closest("[data-copy-text], [data-copy-message-id]");
+  if (copyButton) {
+    const text = copyButton.dataset.copyText || messageStore.get(copyButton.dataset.copyMessageId || "")?.text || "";
+    void copyTextToClipboard(text, copyButton);
+    return;
+  }
+
   const replyButton = event.target.closest("[data-reply-message-id]");
   if (replyButton) {
     const messageId = replyButton.dataset.replyMessageId || "";
@@ -981,7 +1078,7 @@ function renderComposerMeta() {
         const chip = document.createElement("div");
         chip.className = "compose-attachment-chip";
         chip.innerHTML = `
-          ${item.previewUrl ? `<img src="${item.previewUrl}" alt="${escapeHtml(item.file.name)}">` : `<span class="compose-attachment-kind">${escapeHtml(attachmentKind(item.file.type))}</span>`}
+          ${item.previewUrl ? `<img src="${item.previewUrl}" alt="${escapeHtml(item.file.name)}">` : `<span class="compose-attachment-kind">${escapeHtml(attachmentKind(item.file.type, item.file.name))}</span>`}
           <div class="compose-attachment-copy">
             <strong>${escapeHtml(item.file.name)}</strong>
             <span>${escapeHtml(formatBytes(item.file.size))}</span>
@@ -1091,7 +1188,7 @@ function normalizeContextText(text) {
 }
 
 function describeAttachment(attachment) {
-  const kind = attachment?.kind || attachmentKind(attachment?.mimeType || attachment?.mime_type || "");
+  const kind = attachment?.kind || attachmentKind(attachment?.mimeType || attachment?.mime_type || "", attachment?.fileName || attachment?.name || attachment?.file_name || "");
   const name = attachment?.name || attachment?.fileName || attachment?.file_name || "attachment";
   return `${kind}: ${name}`;
 }
@@ -1169,14 +1266,13 @@ function showDisconnectMenu() {
   overlay.classList.add("is-visible");
 }
 
-async function copyTextToClipboard(text) {
+async function copyTextToClipboard(text, button = null, successLabel = "Copied") {
   if (!text) return;
   try {
     await navigator.clipboard.writeText(text);
-    const button = $("btn-copy-device-id");
     if (button) {
       const original = button.textContent || "Copy";
-      button.textContent = "Copied";
+      button.textContent = successLabel;
       window.setTimeout(() => {
         button.textContent = original;
       }, 1200);
@@ -1740,6 +1836,7 @@ function sanitizeMessageForStorage(message) {
     msgType: message.msgType,
     messageId: message.messageId,
     sessionId: message.sessionId,
+    senderId: message.senderId || null,
     replyTo: message.replyTo,
     threadRootId: message.threadRootId,
     timestamp: message.timestamp,
@@ -1783,6 +1880,7 @@ function tokenizeMarkdown(text) {
   let quoteLines = [];
   let codeLines = [];
   let codeFence = false;
+  let codeFenceLanguage = "";
   let tableLines = [];
 
   const flushParagraph = () => {
@@ -1819,11 +1917,13 @@ function tokenizeMarkdown(text) {
       flushQuote();
       flushTable();
       if (codeFence) {
-        blocks.push({ type: "code", text: codeLines.join("\n") });
+        blocks.push({ type: "code", text: codeLines.join("\n"), language: codeFenceLanguage });
         codeLines = [];
         codeFence = false;
+        codeFenceLanguage = "";
       } else {
         codeFence = true;
+        codeFenceLanguage = trimmed.slice(3).trim();
       }
       continue;
     }
@@ -1881,7 +1981,7 @@ function tokenizeMarkdown(text) {
   flushList();
   flushQuote();
   flushTable();
-  if (codeLines.length) blocks.push({ type: "code", text: codeLines.join("\n") });
+  if (codeLines.length) blocks.push({ type: "code", text: codeLines.join("\n"), language: codeFenceLanguage });
   return blocks;
 }
 
@@ -1896,7 +1996,16 @@ function renderMarkdownBlock(block) {
     return `<ul class="msg-list">${block.items.map((item) => `<li>${renderInlineMarkdown(item)}</li>`).join("")}</ul>`;
   }
   if (block.type === "code") {
-    return `<pre class="msg-code"><code>${escapeHtml(block.text)}</code></pre>`;
+    const language = escapeHtml(block.language || "code");
+    const code = escapeHtml(block.text);
+    return `
+      <div class="msg-codeblock">
+        <div class="msg-codeblock-header">
+          <span class="msg-codeblock-language">${language}</span>
+          <button type="button" class="msg-codeblock-copy" data-copy-text="${escapeHtml(block.text)}">Copy</button>
+        </div>
+        <pre class="msg-code"><code>${code}</code></pre>
+      </div>`;
   }
   if (block.type === "table") {
     return buildHtmlTable(block.lines);
@@ -1986,12 +2095,33 @@ function formatMessageTime(value) {
   return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
-function attachmentKind(mimeType) {
+function attachmentKind(mimeType, fileName = "") {
   const value = String(mimeType || "").toLowerCase();
   if (value.startsWith("image/")) return "image";
   if (value.startsWith("audio/")) return "audio";
   if (value.startsWith("video/")) return "video";
+  if (isImageLike(value, fileName)) return "image";
+  if (isAudioLike(value, fileName)) return "audio";
+  if (isVideoLike(value, fileName)) return "video";
   return "file";
+}
+
+function isImageLike(mimeType, fileName) {
+  const value = String(mimeType || "").toLowerCase();
+  if (value.startsWith("image/")) return true;
+  return /\.(png|jpe?g|gif|webp|bmp|avif|svg)$/i.test(String(fileName || ""));
+}
+
+function isAudioLike(mimeType, fileName) {
+  const value = String(mimeType || "").toLowerCase();
+  if (value.startsWith("audio/")) return true;
+  return /\.(mp3|wav|m4a|ogg|aac|flac|webm)$/i.test(String(fileName || ""));
+}
+
+function isVideoLike(mimeType, fileName) {
+  const value = String(mimeType || "").toLowerCase();
+  if (value.startsWith("video/")) return true;
+  return /\.(mp4|mov|m4v|webm)$/i.test(String(fileName || ""));
 }
 
 function formatBytes(bytes) {
