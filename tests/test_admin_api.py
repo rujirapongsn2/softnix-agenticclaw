@@ -1931,6 +1931,58 @@ def test_admin_server_owner_can_manage_users_and_reset_password(tmp_path) -> Non
         thread.join(timeout=3)
 
 
+def test_admin_server_unauthenticated_unknown_patch_returns_401(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    config_path = tmp_path / "config.json"
+
+    config = Config()
+    config.agents.defaults.workspace = str(workspace)
+    save_config(config, config_path)
+
+    service = AdminService(config_path=config_path)
+    server, thread, port = _start_admin_server(service)
+    try:
+        status, payload, _ = _request_json(
+            port,
+            "PATCH",
+            "/admin/unknown",
+            payload={"hello": "world"},
+        )
+        assert status == HTTPStatus.UNAUTHORIZED
+        assert payload["error"] == "Authentication required"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=3)
+
+
+def test_admin_server_unauthenticated_unknown_post_returns_401(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    config_path = tmp_path / "config.json"
+
+    config = Config()
+    config.agents.defaults.workspace = str(workspace)
+    save_config(config, config_path)
+
+    service = AdminService(config_path=config_path)
+    server, thread, port = _start_admin_server(service)
+    try:
+        status, payload, _ = _request_json(
+            port,
+            "POST",
+            "/admin/unknown",
+            payload={"hello": "world"},
+        )
+        assert status == HTTPStatus.UNAUTHORIZED
+        assert payload["error"] == "Authentication required"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=3)
+
+
 def test_admin_server_scopes_instances_and_users_by_user_assignment(tmp_path) -> None:
     prod_workspace = tmp_path / "prod-workspace"
     staging_workspace = tmp_path / "staging-workspace"

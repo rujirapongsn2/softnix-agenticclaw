@@ -888,6 +888,7 @@ class AdminService:
             self._mobile_outbound_media_dir(target, safe_sender),
             self._mobile_upload_dir(target, safe_sender),
         ]
+        searched_roots = [str(root) for root in roots]
         for root in roots:
             candidate = (root / safe_name).resolve()
             try:
@@ -903,8 +904,39 @@ class AdminService:
                 if detected and detected not in self._IOS_PLAYABLE_AUDIO:
                     transcoded = self._transcode_to_mp3(candidate)
                     if transcoded is not None:
+                        logger.info(
+                            "mobile.media.lookup {}",
+                            {
+                                "instance_id": instance_id,
+                                "sender_id": sender_id,
+                                "file": file_name,
+                                "resolved_path": str(transcoded),
+                                "content_type": "audio/mpeg",
+                                "transcoded": True,
+                            },
+                        )
                         return transcoded, "audio/mpeg"
+                logger.info(
+                    "mobile.media.lookup {}",
+                    {
+                        "instance_id": instance_id,
+                        "sender_id": sender_id,
+                        "file": file_name,
+                        "resolved_path": str(candidate),
+                        "content_type": content_type,
+                        "transcoded": False,
+                    },
+                )
                 return candidate, content_type
+        logger.warning(
+            "mobile.media.lookup.miss {}",
+            {
+                "instance_id": instance_id,
+                "sender_id": sender_id,
+                "file": file_name,
+                "searched_roots": searched_roots,
+            },
+        )
         raise ValueError("Media file not found")
 
     def register_mobile_client(

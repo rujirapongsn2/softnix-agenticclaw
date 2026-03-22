@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
+from loguru import logger
+
 from nanobot.admin.auth import ADMIN_SESSION_COOKIE, clear_request_audit_context, has_permission, normalize_role, set_request_audit_context
 from nanobot.admin.service import AdminService
 
@@ -54,6 +56,32 @@ def _accessible_instance_ids(context: dict[str, Any] | None) -> set[str] | None:
         return set()
     cleaned = {str(item or "").strip() for item in raw_ids if str(item or "").strip()}
     return cleaned
+
+
+def _mask_token(value: str | None, keep: int = 4) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    if len(raw) <= keep:
+        return "*" * len(raw)
+    return f"{'*' * max(len(raw) - keep, 3)}{raw[-keep:]}"
+
+
+def _allows_unauthenticated_admin_access(method: str, path: str) -> bool:
+    if path in {"/admin/auth/me", "/admin/auth/login", "/admin/auth/logout", "/admin/auth/bootstrap", "/admin/auth/bootstrap-status"}:
+        return True
+    if method == "GET":
+        return path in {"/admin/mobile/poll", "/admin/mobile/push/config", "/admin/mobile/media"}
+    if method == "POST":
+        return path in {
+            "/admin/mobile/register",
+            "/admin/mobile/message",
+            "/admin/mobile/transfer-session/create",
+            "/admin/mobile/transfer-session/consume",
+            "/admin/mobile/push/subscribe",
+            "/admin/mobile/push/unsubscribe",
+        }
+    return False
 
 
 def resolve_admin_get(
@@ -983,6 +1011,11 @@ def create_admin_server(host: str, port: int, service: AdminService) -> Threadin
                     accessible_instance_ids=accessible_ids,
                 )
                 if isinstance(payload, dict) and "_file_path" in payload:
+                    self._log_mobile_media_response(
+                        status=HTTPStatus(status),
+                        file_path=str(payload["_file_path"]),
+                        content_type=str(payload.get("_content_type") or "application/octet-stream"),
+                    )
                     return self._send_file(
                         Path(str(payload["_file_path"])),
                         str(payload.get("_content_type") or "application/octet-stream"),
@@ -990,8 +1023,10 @@ def create_admin_server(host: str, port: int, service: AdminService) -> Threadin
                     )
                 self._send_json(payload, status=status)
             except PermissionError as exc:
+                self._log_mobile_media_response(status=HTTPStatus.FORBIDDEN, error=str(exc))
                 return self._send_json({"error": str(exc)}, status=HTTPStatus.FORBIDDEN)
             except ValueError as exc:
+                self._log_mobile_media_response(status=HTTPStatus.BAD_REQUEST, error=str(exc))
                 return self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
             finally:
                 clear_request_audit_context()
@@ -1161,11 +1196,20 @@ def create_admin_server(host: str, port: int, service: AdminService) -> Threadin
 
             token = self._mobile_token(payload)
             if not token:
+                self._log_mobile_media_response(
+                    status=HTTPStatus.UNAUTHORIZED,
+                    error="Mobile device token required",
+                )
                 self._send_json({"error": "Mobile device token required"}, status=HTTPStatus.UNAUTHORIZED)
                 return False
 
             device = self._mobile_device_for_request(path=path, payload=payload, token=token)
             if device is None:
+                self._log_mobile_media_response(
+                    status=HTTPStatus.FORBIDDEN,
+                    error="Invalid mobile device token",
+                    token=token,
+                )
                 self._send_json({"error": "Invalid mobile device token"}, status=HTTPStatus.FORBIDDEN)
                 return False
             return True
@@ -1235,6 +1279,47 @@ def create_admin_server(host: str, port: int, service: AdminService) -> Threadin
                     return None
             return device
 
+        def _mobile_media_query(self) -> dict[str, str]:
+            parsed = urlparse(self.path)
+            query = parse_qs(parsed.query)
+            return {
+                "instance_id": str((query.get("instance_id") or [None])[0] or "").strip(),
+                "sender_id": str((query.get("sender_id") or [None])[0] or "").strip(),
+                "file": str((query.get("file") or [None])[0] or "").strip(),
+            }
+
+        def _log_mobile_media_response(
+            self,
+            *,
+            status: HTTPStatus,
+            file_path: str | None = None,
+            content_type: str | None = None,
+            error: str | None = None,
+            token: str | None = None,
+        ) -> None:
+            parsed = urlparse(self.path)
+            path = parsed.path.rstrip("/") or "/"
+            if path != "/admin/mobile/media":
+                return
+            query = self._mobile_media_query()
+            resolved_token = token if token is not None else self._mobile_token()
+            payload = {
+                "status": int(status),
+                "instance_id": query["instance_id"],
+                "sender_id": query["sender_id"],
+                "file": query["file"],
+                "token": _mask_token(resolved_token),
+                "ip": self.client_address[0] if self.client_address else "",
+                "user_agent": str(self.headers.get("User-Agent") or "").strip(),
+            }
+            if file_path:
+                payload["file_path"] = file_path
+            if content_type:
+                payload["content_type"] = content_type
+            if error:
+                payload["error"] = error
+            logger.info("mobile.media.request {}", payload)
+
         def _handle_change_password(self, payload: dict[str, Any]) -> bool:
             parsed = urlparse(self.path)
             path = parsed.path.rstrip("/") or "/"
@@ -1269,7 +1354,11 @@ def create_admin_server(host: str, port: int, service: AdminService) -> Threadin
         ) -> bool:
             parsed = urlparse(path)
             normalized_path = parsed.path.rstrip("/") or "/"
-            current_role = normalize_role(str(context["user"].get("role") or "viewer"))
+            user = context.get("user")
+            if not isinstance(user, dict):
+                self._send_json({"error": "Authentication required"}, status=HTTPStatus.UNAUTHORIZED)
+                return False
+            current_role = normalize_role(str(user.get("role") or "viewer"))
             if normalized_path == "/admin/users":
                 target_role = normalize_role(str(payload.get("role") or "viewer"))
                 if target_role == "owner" and current_role != "owner":
@@ -1316,7 +1405,23 @@ def create_admin_server(host: str, port: int, service: AdminService) -> Threadin
                 return {}
             context = self._auth_context()
             if required_permission is None:
-                return context or {}
+                if context is not None:
+                    return context
+                if _allows_unauthenticated_admin_access(method, path):
+                    return {}
+                if path.startswith("/admin/"):
+                    ip = self.client_address[0] if self.client_address else None
+                    user_agent = self.headers.get("User-Agent")
+                    service.auth_store.append_audit(
+                        event_type="auth.unauthorized",
+                        outcome="denied",
+                        category="authentication",
+                        actor={"ip": ip, "user_agent": (user_agent or "")[:300] or None},
+                        payload={"method": method, "path": path},
+                    )
+                    self._send_json({"error": "Authentication required"}, status=HTTPStatus.UNAUTHORIZED)
+                    return None
+                return {}
             ip = self.client_address[0] if self.client_address else None
             user_agent = self.headers.get("User-Agent")
             if context is None:
