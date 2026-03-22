@@ -76,6 +76,7 @@ def _allows_unauthenticated_admin_access(method: str, path: str) -> bool:
         return path in {
             "/admin/mobile/register",
             "/admin/mobile/message",
+            "/admin/mobile/transcribe",
             "/admin/mobile/transfer-session/create",
             "/admin/mobile/transfer-session/consume",
             "/admin/mobile/push/subscribe",
@@ -646,6 +647,20 @@ def resolve_admin_post(
                 reply_to=payload.get("reply_to"),
                 thread_root_id=payload.get("thread_root_id"),
                 attachments=attachments,
+                accessible_instance_ids=accessible_instance_ids,
+            )
+        if path == "/admin/mobile/transcribe":
+            instance_id = payload.get("instance_id")
+            sender_id = payload.get("sender_id")
+            audio = payload.get("audio")
+            if not instance_id or not sender_id:
+                return HTTPStatus.BAD_REQUEST, {"error": "instance_id and sender_id are required"}
+            if not isinstance(audio, dict):
+                return HTTPStatus.BAD_REQUEST, {"error": "audio is required"}
+            return HTTPStatus.OK, service.transcribe_mobile_audio(
+                instance_id=instance_id,
+                sender_id=sender_id,
+                audio=audio,
                 accessible_instance_ids=accessible_instance_ids,
             )
 

@@ -7,7 +7,7 @@ import threading
 import zipfile
 from http.client import HTTPConnection
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from http import HTTPStatus
 
@@ -151,6 +151,60 @@ def test_admin_server_returns_forbidden_for_inaccessible_mobile_media() -> None:
 
     assert status == HTTPStatus.FORBIDDEN
     assert payload["error"] == "Instance 'bigbike2-prod' is not accessible"
+
+
+def test_admin_service_transcribes_mobile_audio(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    config_path = tmp_path / "config.json"
+
+    config = Config()
+    config.agents.defaults.workspace = str(workspace)
+    config.providers.groq.api_key = "groq-test-key"
+    save_config(config, config_path)
+
+    service = AdminService(config_path=config_path)
+    audio = {
+        "name": "voice.webm",
+        "type": "audio/webm",
+        "data_base64": base64.b64encode(b"fake-audio-bytes").decode("ascii"),
+    }
+
+    with patch("nanobot.providers.transcription.GroqTranscriptionProvider.transcribe", new=AsyncMock(return_value="Hello mobile STT")):
+        result = service.transcribe_mobile_audio(
+            instance_id=service.list_instances()[0]["id"],
+            sender_id="mob-1",
+            audio=audio,
+        )
+
+    assert result["transcript"] == "Hello mobile STT"
+    assert result["mime_type"] == "audio/webm"
+    assert result["name"] == "voice.webm"
+
+
+def test_admin_server_resolves_mobile_transcribe_route(tmp_path) -> None:
+    class DummyService:
+        def transcribe_mobile_audio(self, **kwargs):  # noqa: ANN003
+            return {
+                "transcript": "hello",
+                "name": kwargs["audio"]["name"],
+                "mime_type": kwargs["audio"]["type"],
+                "size": 123,
+            }
+
+    status, payload = resolve_admin_post(
+        DummyService(),
+        "/admin/mobile/transcribe",
+        {
+            "instance_id": "bigbike2-prod",
+            "sender_id": "mob-1",
+            "audio": {"name": "voice.webm", "type": "audio/webm", "data_base64": "ZmFrZQ=="},
+        },
+        accessible_instance_ids={"bigbike2-prod"},
+    )
+
+    assert status == HTTPStatus.OK
+    assert payload["transcript"] == "hello"
 
 
 def test_admin_service_exports_skill_archive_as_zip(tmp_path) -> None:

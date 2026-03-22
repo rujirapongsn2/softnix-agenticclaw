@@ -690,6 +690,72 @@ class AdminService:
             )
         return saved_paths, saved_meta
 
+    def transcribe_mobile_audio(
+        self,
+        instance_id: str,
+        sender_id: str,
+        audio: dict[str, Any],
+        *,
+        accessible_instance_ids: set[str] | list[str] | tuple[str, ...] | None = None,
+    ) -> dict[str, Any]:
+        target = next((t for t in self._load_targets() if t.id == instance_id), None)
+        if not target:
+            raise ValueError(f"Instance '{instance_id}' not found")
+        self._require_target_access(target, accessible_instance_ids)
+
+        encoded = str(audio.get("data_base64") or "").strip()
+        if not encoded:
+            raise ValueError("audio.data_base64 is required")
+
+        name = self._safe_filename(str(audio.get("name") or "voice-recording"))
+        mime_type = str(audio.get("type") or mimetypes.guess_type(name)[0] or "application/octet-stream")
+        raw_payload = base64.b64decode(encoded, validate=True)
+
+        transcribe_root = self._mobile_relay_dir(target) / "transcriptions" / self._safe_filename(sender_id)
+        transcribe_root.mkdir(parents=True, exist_ok=True)
+        temp_dir = Path(tempfile.mkdtemp(prefix="voice-", dir=transcribe_root))
+        source_suffix = Path(name).suffix or mimetypes.guess_extension(mime_type) or ".bin"
+        source_path = temp_dir / f"source{source_suffix}"
+        source_path.write_bytes(raw_payload)
+
+        transcribe_path = source_path
+        try:
+            detected_mime = self._detect_audio_mime(source_path) or mime_type
+            supported_audio_types = {
+                "audio/mpeg",
+                "audio/mp4",
+                "audio/aac",
+                "audio/wav",
+                "audio/flac",
+                "audio/x-m4a",
+            }
+            if detected_mime not in supported_audio_types:
+                transcoded = self._transcode_to_mp3(source_path)
+                if transcoded is not None:
+                    transcribe_path = transcoded
+
+            config = self._load_target_config(target)
+            groq_cfg = getattr(config.providers, "groq", None)
+            api_key = str(getattr(groq_cfg, "api_key", "") or "").strip()
+            if not api_key:
+                raise ValueError("Groq API key is not configured for transcription")
+
+            from nanobot.providers.transcription import GroqTranscriptionProvider
+
+            async def _run_transcription() -> str:
+                transcriber = GroqTranscriptionProvider(api_key=api_key)
+                return await transcriber.transcribe(transcribe_path)
+
+            transcript = asyncio.run(_run_transcription()).strip()
+            return {
+                "transcript": transcript,
+                "name": name,
+                "mime_type": mime_type,
+                "size": len(raw_payload),
+            }
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
     def relay_mobile_message(
         self,
         instance_id: str,

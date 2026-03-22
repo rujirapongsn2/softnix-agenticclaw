@@ -21,6 +21,12 @@ let pushConfig = null;
 let pushSubscribed = false;
 let activeAudioPlayer = null;
 let systemThemeMediaQuery = null;
+let voiceRecorder = null;
+let voiceStream = null;
+let voiceChunks = [];
+let isVoiceRecording = false;
+let isVoiceTranscribing = false;
+let voiceBannerTimer = null;
 
 const seenMessageIds = new Set();
 const messageStore = new Map();
@@ -57,6 +63,7 @@ function init() {
   $("btn-retry").addEventListener("click", handleRetryAction);
   $("btn-send").addEventListener("click", () => void handleSend());
   $("btn-attach")?.addEventListener("click", handleAttachClick);
+  $("btn-voice")?.addEventListener("click", () => void handleVoiceButton());
   $("attachment-input")?.addEventListener("change", (event) => void handleAttachmentInput(event));
   $("compose-input").addEventListener("input", handleComposeInput);
   $("compose-input").addEventListener("keydown", (event) => {
@@ -68,6 +75,7 @@ function init() {
   $("messages")?.addEventListener("click", handleMessageActions);
   $("btn-disconnect").addEventListener("click", showDisconnectMenu);
   $("btn-chats")?.addEventListener("click", showChatsSheet);
+  syncVoiceButtonState();
   document.querySelectorAll("[data-quick-prompt]").forEach((button) => {
     button.addEventListener("click", () => applyQuickPrompt(button.dataset.quickPrompt || ""));
   });
@@ -990,6 +998,211 @@ async function handleAttachmentInput(event) {
   updateSendButton();
 }
 
+async function handleVoiceButton() {
+  if (isVoiceTranscribing) return;
+  if (isVoiceRecording) {
+    stopVoiceRecording();
+    return;
+  }
+  await startVoiceRecording();
+}
+
+async function startVoiceRecording() {
+  if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
+    setBanner("Voice recording is not supported in this browser.", "error");
+    return;
+  }
+  if (!device) return;
+
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const mimeType = pickVoiceRecorderMimeType();
+    const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
+
+    voiceStream = stream;
+    voiceRecorder = recorder;
+    voiceChunks = [];
+    isVoiceRecording = true;
+    syncVoiceButtonState();
+    updateSendButton();
+
+    recorder.addEventListener("dataavailable", (event) => {
+      if (event.data && event.data.size > 0) {
+        voiceChunks.push(event.data);
+      }
+    });
+
+    recorder.addEventListener("error", () => {
+      stopVoiceRecording(true);
+      setBanner("Recording failed. Please try again.", "error");
+    });
+
+    recorder.addEventListener("stop", () => {
+      const streamToStop = voiceStream;
+      voiceStream = null;
+      voiceRecorder = null;
+      isVoiceRecording = false;
+      syncVoiceButtonState();
+      updateSendButton();
+      if (streamToStop) {
+        streamToStop.getTracks().forEach((track) => track.stop());
+      }
+      const mime = recorder.mimeType || mimeType || "audio/webm";
+      const blob = new Blob(voiceChunks, { type: mime });
+      voiceChunks = [];
+      void transcribeVoiceBlob(blob, mime);
+    }, { once: true });
+
+    recorder.start();
+  } catch (error) {
+    cleanupVoiceRecording();
+    setBanner(`Unable to access microphone: ${error.message || "permission denied"}`, "error");
+  }
+}
+
+function stopVoiceRecording(silent = false) {
+  if (!voiceRecorder) return;
+  try {
+    if (voiceRecorder.state !== "inactive") {
+      voiceRecorder.stop();
+    }
+  } catch (_) {
+    cleanupVoiceRecording();
+    if (!silent) {
+      setBanner("Recording stopped unexpectedly.", "error");
+    }
+  }
+}
+
+function cleanupVoiceRecording() {
+  isVoiceRecording = false;
+  voiceChunks = [];
+  if (voiceStream) {
+    voiceStream.getTracks().forEach((track) => track.stop());
+  }
+  voiceStream = null;
+  voiceRecorder = null;
+  syncVoiceButtonState();
+  updateSendButton();
+}
+
+async function transcribeVoiceBlob(blob, mimeType) {
+  if (!device || !blob || blob.size === 0) {
+    return;
+  }
+  isVoiceTranscribing = true;
+  syncVoiceButtonState();
+  updateSendButton();
+  try {
+    const fileName = `voice-${Date.now()}${extensionForMimeType(mimeType)}`;
+    const audio = {
+      name: fileName,
+      type: mimeType || blob.type || "audio/webm",
+      size: blob.size,
+      data_base64: await blobToBase64(blob),
+    };
+    const response = await apiFetch("/admin/mobile/transcribe", {
+      method: "POST",
+      body: JSON.stringify({
+        instance_id: device.instance_id,
+        sender_id: device.device_id,
+        audio,
+      }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(payload.error || `Transcription failed (${response.status})`);
+    }
+    const transcript = String(payload.transcript || "").trim();
+    if (!transcript) {
+      setBanner("No speech detected.", "error");
+      return;
+    }
+    const input = $("compose-input");
+    if (input) {
+      const current = input.value.trim();
+      input.value = current ? `${current}${current.endsWith(" ") ? "" : " "}${transcript}` : transcript;
+      autoResizeInput(input);
+      updateSendButton();
+      input.focus();
+    }
+  } catch (error) {
+    setBanner(`Unable to transcribe audio: ${error.message || "Unknown error"}`, "error");
+  } finally {
+    isVoiceTranscribing = false;
+    syncVoiceButtonState();
+    updateSendButton();
+  }
+}
+
+function syncVoiceButtonState() {
+  const button = $("btn-voice");
+  if (!button) return;
+  button.disabled = isVoiceTranscribing;
+  button.classList.toggle("is-recording", isVoiceRecording);
+  button.classList.toggle("is-transcribing", isVoiceTranscribing);
+  button.setAttribute("aria-pressed", String(isVoiceRecording));
+  button.setAttribute("aria-busy", String(isVoiceTranscribing));
+  button.title = isVoiceTranscribing
+    ? "Transcribing audio"
+    : isVoiceRecording
+      ? "Stop recording"
+      : "Record voice";
+  button.innerHTML = isVoiceRecording
+    ? `
+      <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+        <rect x="7" y="7" width="10" height="10" rx="2"></rect>
+      </svg>
+    `
+    : `
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+        <rect x="9" y="3" width="6" height="11" rx="3"></rect>
+        <path d="M5 11a7 7 0 0 0 14 0"></path>
+        <path d="M12 18v3"></path>
+        <path d="M8 21h8"></path>
+      </svg>
+    `;
+}
+
+function pickVoiceRecorderMimeType() {
+  const candidates = [
+    "audio/mp4",
+    "audio/mp4;codecs=mp4a.40.2",
+    "audio/webm;codecs=opus",
+    "audio/webm",
+    "audio/ogg;codecs=opus",
+  ];
+  for (const candidate of candidates) {
+    if (window.MediaRecorder?.isTypeSupported?.(candidate)) {
+      return candidate;
+    }
+  }
+  return "";
+}
+
+function extensionForMimeType(mimeType) {
+  const normalized = String(mimeType || "").toLowerCase();
+  if (normalized.includes("mp4") || normalized.includes("m4a")) return ".m4a";
+  if (normalized.includes("webm")) return ".webm";
+  if (normalized.includes("ogg")) return ".ogg";
+  if (normalized.includes("wav")) return ".wav";
+  if (normalized.includes("mpeg") || normalized.includes("mp3")) return ".mp3";
+  return ".audio";
+}
+
+function blobToBase64(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = String(reader.result || "");
+      const marker = result.indexOf(",");
+      resolve(marker >= 0 ? result.slice(marker + 1) : result);
+    };
+    reader.onerror = () => reject(reader.error || new Error("Failed to read audio"));
+    reader.readAsDataURL(blob);
+  });
+}
+
 function handleComposeInput() {
   autoResizeInput($("compose-input"));
   updateSendButton();
@@ -1028,7 +1241,8 @@ function autoResizeInput(textarea) {
 
 function updateSendButton() {
   const hasText = $("compose-input").value.trim().length > 0;
-  $("btn-send").disabled = !(hasText || selectedAttachments.length > 0) || isSending;
+  $("btn-send").disabled = !(hasText || selectedAttachments.length > 0) || isSending || isVoiceRecording || isVoiceTranscribing;
+  syncVoiceButtonState();
 }
 
 function setReplyTarget(message) {
@@ -1396,6 +1610,21 @@ async function copyTextToClipboard(text, button = null, successLabel = "Copied")
       document.body.removeChild(textarea);
     }
   }
+}
+
+function setBanner(message, kind = "info", timeoutMs = 3000) {
+  const banner = $("app-banner");
+  if (!banner) return;
+  if (voiceBannerTimer) {
+    window.clearTimeout(voiceBannerTimer);
+    voiceBannerTimer = null;
+  }
+  banner.textContent = message;
+  banner.dataset.kind = kind;
+  banner.classList.add("is-visible");
+  voiceBannerTimer = window.setTimeout(() => {
+    banner.classList.remove("is-visible");
+  }, timeoutMs);
 }
 
 async function showTransferSessionSheet() {
