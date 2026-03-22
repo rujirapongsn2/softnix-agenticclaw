@@ -133,8 +133,8 @@ class SoftnixAppChannel(BaseChannel):
         return raw
 
     def _relay_media_ref(self, sender_id: str, media_path: str) -> dict[str, Any] | None:
-        source = Path(str(media_path or "")).expanduser()
-        if not source.exists() or not source.is_file():
+        source = self._resolve_local_media_path(media_path)
+        if source is None:
             logger.warning("Softnix mobile outbound media not found: {}", media_path)
             return None
 
@@ -161,7 +161,37 @@ class SoftnixAppChannel(BaseChannel):
                 f"/admin/mobile/media?instance_id={self.workspace_path.name}"
                 f"&sender_id={sender_id}&file={relay_name}"
             ),
+            "source_path": str(source),
         }
+
+    def _resolve_local_media_path(self, media_ref: str) -> Path | None:
+        raw = str(media_ref or "").strip()
+        if not raw:
+            return None
+
+        candidate = Path(raw).expanduser()
+        candidates: list[Path] = [candidate]
+        if not candidate.is_absolute():
+            candidates.extend(
+                [
+                    (self.workspace_path / candidate).expanduser(),
+                    (self.workspace_path / "skills" / candidate).expanduser(),
+                    (self.workspace_path / "artifacts" / candidate).expanduser(),
+                ]
+            )
+            parts = candidate.parts
+            if parts and parts[0] == "workspace" and len(parts) > 1:
+                candidates.append((self.workspace_path / Path(*parts[1:])).expanduser())
+                candidates.append((self.workspace_path / "skills" / Path(*parts[1:])).expanduser())
+
+        for path_candidate in candidates:
+            try:
+                resolved = path_candidate.resolve(strict=False)
+            except Exception:
+                continue
+            if resolved.exists() and resolved.is_file():
+                return resolved
+        return None
 
     _INLINE_MEDIA_PATH_PATTERN = re.compile(
         r"(?P<path>(?:https?://[^\s`\"'<>|)]+|(?:[A-Za-z]:[\\/]|/|\.{1,2}[\\/]|workspace[\\/])?[^\s`\"'<>|]+\.(?:png|jpg|jpeg|gif|webp|svg|bmp|avif|mp3|wav|m4a|ogg|aac|flac|webm|mp4|mov|m4v)))",

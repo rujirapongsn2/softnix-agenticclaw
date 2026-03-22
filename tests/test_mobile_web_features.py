@@ -56,6 +56,7 @@ def test_relay_mobile_message_persists_thread_and_attachments(tmp_path: Path) ->
     )
 
     assert result["message_id"] == "msg-1"
+    assert result["attachments"][0]["url"].startswith("/admin/mobile/media?instance_id=prod")
     inbound_path = workspace / "mobile_relay" / "inbound.jsonl"
     payload = json.loads(inbound_path.read_text(encoding="utf-8").splitlines()[0])
     assert payload["session_id"] == "mobile-mob-1#thread:root-1"
@@ -160,6 +161,35 @@ async def test_softnix_app_channel_extracts_inline_image_path_from_content(tmp_p
     assert payload["attachments"][0]["mime_type"] == "image/png"
     copied_name = payload["attachments"][0]["file_name"]
     assert (workspace / "mobile_relay" / "outbound_media" / "mob-11" / copied_name).exists()
+
+
+async def test_softnix_app_channel_resolves_workspace_relative_skill_media_path(tmp_path: Path) -> None:
+    class _Config:
+        allow_from = ["*"]
+
+    workspace = tmp_path / "workspace"
+    image_source = workspace / "skills" / "image-create-banana"
+    image_source.mkdir(parents=True, exist_ok=True)
+    image_file = image_source / "tmp_fal_image.png"
+    image_file.write_bytes(b"\x89PNG\r\n\x1a\n")
+    channel = SoftnixAppChannel(_Config(), MessageBus(), workspace)
+
+    await channel.send(
+        OutboundMessage(
+            channel="softnix_app",
+            chat_id="mobile-mob-13",
+            content="สร้างรูปเสร็จแล้ว",
+            metadata={"sender_id": "mob-13"},
+            media=["skills/image-create-banana/tmp_fal_image.png"],
+        )
+    )
+
+    outbound_path = workspace / "mobile_relay" / "outbound.jsonl"
+    payload = json.loads(outbound_path.read_text(encoding="utf-8").splitlines()[0])
+    assert payload["attachments"][0]["kind"] == "image"
+    assert payload["attachments"][0]["mime_type"] == "image/png"
+    copied_name = payload["attachments"][0]["file_name"]
+    assert (workspace / "mobile_relay" / "outbound_media" / "mob-13" / copied_name).exists()
 
 
 async def test_softnix_app_channel_supports_remote_image_urls(tmp_path: Path) -> None:

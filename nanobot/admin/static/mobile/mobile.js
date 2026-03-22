@@ -1972,7 +1972,7 @@ function sanitizeMessageForStorage(message) {
       fileName: attachment.fileName || attachment.name || "attachment",
       mimeType: attachment.mimeType || "application/octet-stream",
       size: Number(attachment.size || 0),
-      kind: attachment.kind || "file",
+      kind: attachment.kind || attachmentKind(attachment.mimeType || attachment.mime_type || "", attachment.fileName || attachment.name || ""),
       url: attachment.url || "",
       previewUrl: attachment.url || attachment.previewUrl || "",
       duration: Number(attachment.duration || 0) || 0,
