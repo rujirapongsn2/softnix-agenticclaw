@@ -1111,7 +1111,9 @@ async function transcribeVoiceBlob(blob, mimeType) {
     });
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) {
-      throw new Error(payload.error || `Transcription failed (${response.status})`);
+      const err = new Error(payload.error || `Transcription failed (${response.status})`);
+      err.code = payload.error_code || "";
+      throw err;
     }
     const transcript = String(payload.transcript || "").trim();
     if (!transcript) {
@@ -1127,7 +1129,12 @@ async function transcribeVoiceBlob(blob, mimeType) {
       input.focus();
     }
   } catch (error) {
-    setBanner(`Unable to transcribe audio: ${error.message || "Unknown error"}`, "error");
+    const errorText = String(error?.message || "Unknown error");
+    if (error?.code === "groq_key_missing" || /Groq API key is not configured for transcription/i.test(errorText)) {
+      setBanner("Voice transcription is not configured for this instance. Ask an admin to set the Groq API key in Providers.", "error", 5000);
+    } else {
+      setBanner(`Unable to transcribe audio: ${errorText}`, "error");
+    }
   } finally {
     isVoiceTranscribing = false;
     syncVoiceButtonState();

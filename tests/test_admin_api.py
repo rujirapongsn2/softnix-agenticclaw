@@ -207,6 +207,26 @@ def test_admin_server_resolves_mobile_transcribe_route(tmp_path) -> None:
     assert payload["transcript"] == "hello"
 
 
+def test_admin_server_marks_missing_groq_key_on_mobile_transcribe() -> None:
+    class DummyService:
+        def transcribe_mobile_audio(self, **kwargs):  # noqa: ANN003
+            raise ValueError("Groq API key is not configured for transcription")
+
+    status, payload = resolve_admin_post(
+        DummyService(),
+        "/admin/mobile/transcribe",
+        {
+            "instance_id": "bigbike2-prod",
+            "sender_id": "mob-1",
+            "audio": {"name": "voice.webm", "type": "audio/webm", "data_base64": "ZmFrZQ=="},
+        },
+        accessible_instance_ids={"bigbike2-prod"},
+    )
+
+    assert status == HTTPStatus.BAD_REQUEST
+    assert payload["error_code"] == "groq_key_missing"
+
+
 def test_admin_service_exports_skill_archive_as_zip(tmp_path) -> None:
     workspace = tmp_path / "workspace"
     skill_dir = workspace / "skills" / "crm-notion"

@@ -657,12 +657,19 @@ def resolve_admin_post(
                 return HTTPStatus.BAD_REQUEST, {"error": "instance_id and sender_id are required"}
             if not isinstance(audio, dict):
                 return HTTPStatus.BAD_REQUEST, {"error": "audio is required"}
-            return HTTPStatus.OK, service.transcribe_mobile_audio(
-                instance_id=instance_id,
-                sender_id=sender_id,
-                audio=audio,
-                accessible_instance_ids=accessible_instance_ids,
-            )
+            try:
+                return HTTPStatus.OK, service.transcribe_mobile_audio(
+                    instance_id=instance_id,
+                    sender_id=sender_id,
+                    audio=audio,
+                    accessible_instance_ids=accessible_instance_ids,
+                )
+            except ValueError as exc:
+                message = str(exc)
+                payload = {"error": message}
+                if "Groq API key is not configured for transcription" in message:
+                    payload["error_code"] = "groq_key_missing"
+                return HTTPStatus.BAD_REQUEST, payload
 
         if path == "/admin/mobile/transfer-session/create":
             device = payload.get("device")
