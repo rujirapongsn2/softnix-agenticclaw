@@ -123,9 +123,17 @@ async function registerDevice(instanceId, token) {
     showScreen("chat");
     setupChat();
   } catch (error) {
+    const message = error.message || "Registration failed.";
+    if (/invalid or expired pairing token/i.test(message)) {
+      window.history.replaceState({}, "", "/mobile");
+      showPairingTokenExpiredState();
+      return;
+    }
     showScreen("error");
-    $("error-message").textContent = error.message || "Registration failed.";
+    $("error-message").textContent = message;
     $("btn-retry").style.display = "inline-block";
+    $("btn-retry").textContent = "Try Again";
+    $("btn-retry").dataset.action = "reload";
   }
 }
 
@@ -158,11 +166,27 @@ function configureDisconnectedState() {
   }
 }
 
+function showPairingTokenExpiredState() {
+  showScreen("error");
+  $("error-message").textContent = "This QR code is no longer valid. Scan a new QR code from the admin console.";
+  const retryButton = $("btn-retry");
+  if (!retryButton) return;
+  retryButton.style.display = "inline-block";
+  retryButton.textContent = "Scan New QR Code";
+  retryButton.dataset.action = "clear-token";
+}
+
 function handleRetryAction(event) {
   const action = event.currentTarget?.dataset?.action || "reload";
   if (action === "import-session") {
     event.preventDefault();
     void promptForTransferToken();
+    return;
+  }
+  if (action === "clear-token") {
+    event.preventDefault();
+    window.history.replaceState({}, "", "/mobile");
+    configureDisconnectedState();
     return;
   }
   window.location.reload();
@@ -2221,7 +2245,11 @@ function apiFetch(url, options = {}) {
     "Content-Type": "application/json",
     ...(options.headers || {}),
   };
-  if (device?.device_token) {
+  const authFreeMobileRoute = typeof url === "string" && (
+    url === "/admin/mobile/pair"
+    || url === "/admin/mobile/register"
+  );
+  if (device?.device_token && !authFreeMobileRoute) {
     headers["X-Mobile-Token"] = device.device_token;
   }
   return fetch(url, {
