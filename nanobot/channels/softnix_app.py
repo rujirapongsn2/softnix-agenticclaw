@@ -10,6 +10,7 @@ import secrets
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
+from urllib.parse import urlparse
 
 from loguru import logger
 
@@ -162,18 +163,66 @@ class SoftnixAppChannel(BaseChannel):
             ),
         }
 
-    _INLINE_AUDIO_PATH_PATTERN = re.compile(
-        r"(?P<path>(?:[A-Za-z]:[\\/]|/|\.{1,2}[\\/]|workspace[\\/])?[^\s`\"'<>|]+\.(?:mp3|wav|m4a|ogg|aac|flac|webm))",
+    _INLINE_MEDIA_PATH_PATTERN = re.compile(
+        r"(?P<path>(?:https?://[^\s`\"'<>|)]+|(?:[A-Za-z]:[\\/]|/|\.{1,2}[\\/]|workspace[\\/])?[^\s`\"'<>|]+\.(?:png|jpg|jpeg|gif|webp|svg|bmp|avif|mp3|wav|m4a|ogg|aac|flac|webm|mp4|mov|m4v)))",
         re.IGNORECASE,
     )
+    _MARKDOWN_IMAGE_PATTERN = re.compile(r"!\[[^\]]*\]\((?P<url>https?://[^)\s]+)\)", re.IGNORECASE)
+    _SUPPORTED_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp", ".avif"}
+    _SUPPORTED_AUDIO_EXTS = {".mp3", ".wav", ".m4a", ".ogg", ".aac", ".flac", ".webm"}
+    _SUPPORTED_VIDEO_EXTS = {".mp4", ".mov", ".m4v", ".webm"}
 
-    def _extract_inline_media_paths(self, content: str) -> list[str]:
+    @classmethod
+    def _infer_media_kind(cls, ref: str, mime_type: str) -> str:
+        kind = mime_type.split("/", 1)[0] if mime_type else ""
+        if kind in {"image", "audio", "video"}:
+            return kind
+        suffix = Path(urlparse(ref).path).suffix.lower()
+        if suffix in cls._SUPPORTED_IMAGE_EXTS:
+            return "image"
+        if suffix in cls._SUPPORTED_AUDIO_EXTS:
+            return "audio"
+        if suffix in cls._SUPPORTED_VIDEO_EXTS:
+            return "video"
+        return "file"
+
+    def _remote_media_ref(self, media_url: str) -> dict[str, Any] | None:
+        parsed = urlparse(str(media_url or "").strip())
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            return None
+        file_name = Path(parsed.path).name or "attachment"
+        mime_type = mimetypes.guess_type(file_name)[0] or "application/octet-stream"
+        return {
+            "name": file_name,
+            "file_name": file_name,
+            "mime_type": mime_type,
+            "size": 0,
+            "kind": self._infer_media_kind(media_url, mime_type),
+            "url": media_url,
+        }
+
+    def _media_ref(self, sender_id: str, media_ref: str) -> dict[str, Any] | None:
+        parsed = urlparse(str(media_ref or "").strip())
+        if parsed.scheme in {"http", "https"}:
+            return self._remote_media_ref(media_ref)
+        return self._relay_media_ref(sender_id, media_ref)
+
+    def _extract_inline_media_refs(self, content: str) -> list[str]:
         if not content:
             return []
         matches: list[str] = []
-        for raw_match in self._INLINE_AUDIO_PATH_PATTERN.finditer(content):
+        for markdown_match in self._MARKDOWN_IMAGE_PATTERN.finditer(content):
+            media_url = str(markdown_match.group("url") or "").strip()
+            if media_url:
+                matches.append(media_url)
+
+        for raw_match in self._INLINE_MEDIA_PATH_PATTERN.finditer(content):
             raw_path = str(raw_match.group("path") or "").strip().strip(".,;:!?)]}>\"'")
-            if not raw_path.lower().endswith((".mp3", ".wav", ".m4a", ".ogg", ".aac", ".flac", ".webm")):
+            if not raw_path:
+                continue
+            parsed = urlparse(raw_path)
+            if parsed.scheme in {"http", "https"} and parsed.netloc:
+                matches.append(raw_path)
                 continue
             candidate_paths = []
             candidate = Path(raw_path).expanduser()
@@ -212,9 +261,9 @@ class SoftnixAppChannel(BaseChannel):
                 msg_type = "answer"
 
             attachments = []
-            media_paths = list(dict.fromkeys([*(message.media or []), *self._extract_inline_media_paths(message.content)]))
-            for media_path in media_paths:
-                if item := self._relay_media_ref(sender_id, media_path):
+            media_refs = list(dict.fromkeys([*(message.media or []), *self._extract_inline_media_refs(message.content)]))
+            for media_ref in media_refs:
+                if item := self._media_ref(sender_id, media_ref):
                     attachments.append(item)
 
             data = {

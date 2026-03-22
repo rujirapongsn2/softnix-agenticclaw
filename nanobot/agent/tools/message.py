@@ -64,7 +64,7 @@ class MessageTool(Tool):
                 "media": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Optional: list of file paths to attach (images, audio, documents)"
+                    "description": "Optional: list of local file paths or HTTP(S) URLs to attach (images, audio, video, documents)"
                 }
             },
             "required": ["content"]

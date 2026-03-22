@@ -134,6 +134,58 @@ async def test_softnix_app_channel_extracts_inline_audio_path_from_content(tmp_p
     assert (workspace / "mobile_relay" / "outbound_media" / "mob-10" / copied_name).exists()
 
 
+async def test_softnix_app_channel_extracts_inline_image_path_from_content(tmp_path: Path) -> None:
+    class _Config:
+        allow_from = ["*"]
+
+    workspace = tmp_path / "workspace"
+    image_source = workspace / "artifacts"
+    image_source.mkdir(parents=True, exist_ok=True)
+    image_file = image_source / "poster.png"
+    image_file.write_bytes(b"\x89PNG\r\n\x1a\n")
+    channel = SoftnixAppChannel(_Config(), MessageBus(), workspace)
+
+    await channel.send(
+        OutboundMessage(
+            channel="softnix_app",
+            chat_id="mobile-mob-11",
+            content="สร้างรูปเสร็จแล้วที่ workspace/artifacts/poster.png เปิดดูได้เลย",
+            metadata={"sender_id": "mob-11"},
+        )
+    )
+
+    outbound_path = workspace / "mobile_relay" / "outbound.jsonl"
+    payload = json.loads(outbound_path.read_text(encoding="utf-8").splitlines()[0])
+    assert payload["attachments"][0]["kind"] == "image"
+    assert payload["attachments"][0]["mime_type"] == "image/png"
+    copied_name = payload["attachments"][0]["file_name"]
+    assert (workspace / "mobile_relay" / "outbound_media" / "mob-11" / copied_name).exists()
+
+
+async def test_softnix_app_channel_supports_remote_image_urls(tmp_path: Path) -> None:
+    class _Config:
+        allow_from = ["*"]
+
+    workspace = tmp_path / "workspace"
+    channel = SoftnixAppChannel(_Config(), MessageBus(), workspace)
+
+    await channel.send(
+        OutboundMessage(
+            channel="softnix_app",
+            chat_id="mobile-mob-12",
+            content="นี่คือรูปจากอินเทอร์เน็ต https://example.com/images/chart.png",
+            metadata={"sender_id": "mob-12"},
+        )
+    )
+
+    outbound_path = workspace / "mobile_relay" / "outbound.jsonl"
+    payload = json.loads(outbound_path.read_text(encoding="utf-8").splitlines()[0])
+    assert payload["attachments"][0]["kind"] == "image"
+    assert payload["attachments"][0]["mime_type"] == "image/png"
+    assert payload["attachments"][0]["url"] == "https://example.com/images/chart.png"
+    assert not (workspace / "mobile_relay" / "outbound_media" / "mob-12").exists()
+
+
 async def test_softnix_app_channel_extracts_sender_id_from_mobile_session_id(tmp_path: Path) -> None:
     class _Config:
         allow_from = ["*"]

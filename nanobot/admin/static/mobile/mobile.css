@@ -1490,6 +1490,12 @@ body {
   flex-shrink: 0;
 }
 
+.msg-attachment img.msg-attachment-image--logo {
+  object-fit: contain;
+  padding: 8px;
+  background: #1f2937;
+}
+
 .msg-attachment-icon {
   display: inline-flex;
   align-items: center;

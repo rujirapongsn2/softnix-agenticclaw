@@ -329,6 +329,25 @@ function normalizeAttachments(items) {
     });
 }
 
+function hydrateMessageAttachments(message) {
+  const items = Array.isArray(message?.attachments) ? message.attachments : [];
+  if (!items.length) return [];
+  if (message?.role === "agent") {
+    return normalizeAttachments(items);
+  }
+  return items.map((item) => ({
+    ...item,
+    name: item?.name || item?.fileName || "attachment",
+    fileName: item?.fileName || item?.name || "attachment",
+    mimeType: item?.mimeType || item?.mime_type || "application/octet-stream",
+    size: Number(item?.size || 0),
+    kind: item?.kind || attachmentKind(item?.mimeType || item?.mime_type || ""),
+    url: item?.url || "",
+    previewUrl: item?.previewUrl || item?.url || "",
+    duration: Number(item?.duration || item?.audio_duration || 0) || 0,
+  }));
+}
+
 function appendMessage(message) {
   return appendMessageInternal(message, {});
 }
@@ -342,7 +361,7 @@ function appendMessageInternal(message, options = {}) {
     sessionId: message.sessionId || `mobile-${device?.device_id || "unknown"}`,
     replyTo: message.replyTo || null,
     threadRootId: message.threadRootId || null,
-    attachments: Array.isArray(message.attachments) ? message.attachments : [],
+    attachments: hydrateMessageAttachments(message),
     timestamp: message.timestamp || new Date().toISOString(),
   };
 
@@ -553,6 +572,10 @@ function createAttachmentList(attachments) {
       image.src = attachment.previewUrl || attachment.url;
       image.alt = attachment.name || "Attachment";
       image.loading = "lazy";
+      const imageName = String(attachment.name || attachment.fileName || "");
+      if (/logo/i.test(imageName)) {
+        image.classList.add("msg-attachment-image--logo");
+      }
       link.appendChild(image);
     } else {
       const icon = document.createElement("span");

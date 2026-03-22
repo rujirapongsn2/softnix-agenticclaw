@@ -32,7 +32,6 @@ class OutboundMessage:
     chat_id: str
     content: str
     reply_to: str | None = None
-    media: list[str] = field(default_factory=list)
+    media: list[str] = field(default_factory=list)  # Local file paths or remote HTTP(S) URLs
     metadata: dict[str, Any] = field(default_factory=dict)
-
 
