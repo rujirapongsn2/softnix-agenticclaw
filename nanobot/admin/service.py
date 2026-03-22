@@ -725,6 +725,17 @@ class AdminService:
             "message_id": resolved_message_id,
             "session_id": resolved_session_id,
             "attachment_count": len(attachment_meta),
+            "attachments": [
+                {
+                    **item,
+                    "sender_id": sender_id,
+                    "url": (
+                        f"/admin/mobile/media?instance_id={instance_id}"
+                        f"&sender_id={sender_id}&file={item['stored_name']}"
+                    ),
+                }
+                for item in attachment_meta
+            ],
         }
 
     def get_mobile_replies(
@@ -2014,6 +2025,17 @@ class AdminService:
             "events": events[:limit],
             "count": min(len(events), limit),
         }
+
+    @staticmethod
+    def _display_activity_channel(session_key: str | None) -> str:
+        key = str(session_key or "").strip()
+        if not key:
+            return "unknown"
+        if key.startswith("mobile-"):
+            return "softnix_app"
+        if ":" in key:
+            return key.split(":", 1)[0]
+        return "unknown"
 
     def get_activity_debug(
         self,
@@ -4096,8 +4118,8 @@ class AdminService:
                 continue
             recent_lines = [line for line in raw_lines if line.strip()][-80:]
             session_stem = session_path.stem
-            channel = session_stem.split("_", 1)[0] if "_" in session_stem else "unknown"
             session_key = session_stem.replace("_", ":", 1)
+            channel = self._display_activity_channel(session_key)
             for raw in recent_lines:
                 try:
                     data = json.loads(raw)
@@ -4339,7 +4361,7 @@ class AdminService:
                             "type": self._event_type_for_role(role),
                             "severity": "info" if role == "user" else "ok" if role == "assistant" else "warning",
                             "session_key": session_info["key"],
-                            "channel": session_info["key"].split(":", 1)[0] if ":" in session_info["key"] else "unknown",
+                            "channel": self._display_activity_channel(session_info["key"]),
                             "actor": role,
                             "summary": content[:160],
                             "detail": content[:4000],

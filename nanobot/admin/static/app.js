@@ -1722,6 +1722,16 @@ function renderOverviewDashboard() {
     if (!channel || channel === "system") return;
     topChannels.set(channel, (topChannels.get(channel) || 0) + 1);
   });
+  const displayChannelLabel = (channel) => {
+    const value = String(channel || "").trim();
+    if (!value) return "Unknown";
+    if (value === "softnix_app") return "Softnix App";
+    if (value === "telegram") return "Telegram";
+    if (value === "whatsapp") return "WhatsApp";
+    return value === "unknown"
+      ? "Unknown"
+      : value.replace(/_/g, " ").replace(/\b\w/g, (match) => match.toUpperCase());
+  };
   const topBarRows = (counter, emptyLabel) => {
     const rows = [...counter.entries()].sort((left, right) => right[1] - left[1]).slice(0, 5);
     if (!rows.length) return `<p class="meta">${escapeHtml(emptyLabel)}</p>`;
@@ -1732,7 +1742,7 @@ function renderOverviewDashboard() {
           .map(([name, count]) => `
             <div class="overview-hbar-row">
               <div class="overview-hbar-meta">
-                <span class="overview-hbar-name" title="${escapeHtml(name)}">${escapeHtml(name)}</span>
+                <span class="overview-hbar-name" title="${escapeHtml(name)}">${escapeHtml(displayChannelLabel(name))}</span>
                 <span class="overview-hbar-count">${escapeHtml(formatNumber(count))}</span>
               </div>
               <div class="overview-hbar-track">

@@ -1099,6 +1099,26 @@ def test_admin_service_collects_recent_activity(tmp_path) -> None:
     assert any(event.get("detail") == "hello admin" for event in activity["events"])
 
 
+def test_admin_service_labels_mobile_activity_as_softnix_app(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    config_path = tmp_path / "config.json"
+
+    config = Config()
+    config.agents.defaults.workspace = str(workspace)
+    save_config(config, config_path)
+
+    manager = SessionManager(workspace)
+    session = manager.get_or_create("mobile-mob-1")
+    session.add_message("user", "mobile hello")
+    manager.save(session)
+
+    service = AdminService(config_path=config_path)
+    activity = service.get_activity(limit=10)
+
+    assert any(event.get("channel") == "softnix_app" for event in activity["events"])
+
+
 def test_admin_service_activity_falls_back_to_runtime_snapshot(tmp_path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
