@@ -773,6 +773,7 @@ cmd=(
   --tmpfs /tmp:rw,noexec,nosuid,size={sandbox_tmpfs_size_mb}m
   -e "HOME=$SANDBOX_HOME"
   -e "PIP_CACHE_DIR=$SANDBOX_HOME/.cache/pip"
+  -e "PYTHONPATH=/usr/local/lib/python3.12/site-packages${{PYTHONPATH:+:$PYTHONPATH}}"
   -e "PATH=/usr/local/bin:/usr/bin:/bin:$SANDBOX_HOME/.local/bin"
   -v "$INSTANCE_HOME:$INSTANCE_HOME"
   -v "${{ADMIN_HOME}}:${{ADMIN_HOME}}:ro"

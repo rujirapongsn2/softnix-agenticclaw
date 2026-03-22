@@ -42,6 +42,7 @@ def test_bootstrap_softnix_instance_creates_layout(tmp_path) -> None:
     assert 'docker run -d --init' in start_script
     assert '--pids-limit "256"' in start_script
     assert '--tmpfs /tmp:rw,noexec,nosuid,size=128m' in start_script
+    assert '-e "PYTHONPATH=/usr/local/lib/python3.12/site-packages${PYTHONPATH:+:$PYTHONPATH}"' in start_script
     config = json.loads((instance_home / "config.json").read_text(encoding="utf-8"))
     assert config["runtime"]["mode"] == "sandbox"
 

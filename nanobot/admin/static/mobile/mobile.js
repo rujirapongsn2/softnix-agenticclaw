@@ -607,11 +607,29 @@ function createAudioAttachmentPlayer(attachment) {
     return card;
   }
 
-  // Track blob loading state — we fetch audio as a blob to avoid
-  // iOS Safari issues when the page is served through ngrok/proxies.
+  // Prefer direct playback so play() stays in the original click gesture.
+  // If a proxy/WebView still fails to stream directly, fall back to a blob URL.
   let blobLoaded = false;
   let blobLoading = false;
   let blobUrl = "";
+  let directSourceReady = false;
+  let blobFallbackAttempted = false;
+
+  const ensureDirectSource = () => {
+    if (!src) return false;
+    if (!directSourceReady || !audio.src) {
+      audio.src = src;
+      directSourceReady = true;
+    }
+    return true;
+  };
+
+  const resetAudioSource = () => {
+    audio.pause();
+    audio.removeAttribute("src");
+    audio.load();
+    directSourceReady = false;
+  };
 
   const loadAudioBlob = async () => {
     if (blobLoaded || blobLoading || !src) return true;
@@ -642,6 +660,8 @@ function createAudioAttachmentPlayer(attachment) {
     } catch (err) {
       blobLoading = false;
       return false;
+    } finally {
+      blobLoading = false;
     }
   };
 
@@ -683,14 +703,26 @@ function createAudioAttachmentPlayer(attachment) {
     }
     activeAudioPlayer = controller;
     try {
-      const loaded = await loadAudioBlob();
-      if (!loaded) {
+      if (!ensureDirectSource()) {
         timeLabel.textContent = "Unable to load audio";
         card.classList.add("is-error");
         return;
       }
       await audio.play();
     } catch (error) {
+      if (!blobFallbackAttempted && !blobLoaded && src) {
+        blobFallbackAttempted = true;
+        resetAudioSource();
+        const loaded = await loadAudioBlob();
+        if (loaded) {
+          try {
+            await audio.play();
+            return;
+          } catch (blobError) {
+            error = blobError;
+          }
+        }
+      }
       setBanner(`Unable to play audio: ${error.message || "Playback failed"}`, "error");
     }
   };
