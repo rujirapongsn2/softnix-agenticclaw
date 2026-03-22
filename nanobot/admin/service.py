@@ -4055,13 +4055,17 @@ class AdminService:
             provider_cfg = getattr(config.providers, spec.name, None)
             if provider_cfg is None:
                 continue
+            configured_api_base = str(provider_cfg.api_base or "").strip()
+            effective_api_base = configured_api_base or str(spec.default_api_base or "").strip()
             providers.append(
                 {
                     "name": spec.name,
                     "label": spec.label,
                     "configured": bool(spec.is_oauth or provider_cfg.api_key or provider_cfg.api_base),
                     "api_key_masked": "" if spec.is_oauth else _mask_secret(provider_cfg.api_key),
-                    "api_base": provider_cfg.api_base,
+                    "api_base": configured_api_base,
+                    "api_base_effective": effective_api_base,
+                    "api_base_default": str(spec.default_api_base or "").strip(),
                     "extra_headers": provider_cfg.extra_headers or {},
                     "oauth": spec.is_oauth,
                 }

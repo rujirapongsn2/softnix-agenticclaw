@@ -951,6 +951,24 @@ def test_admin_service_updates_provider_defaults_and_config(tmp_path) -> None:
     assert openai["extra_headers"] == {"X-App": "softnix"}
 
 
+def test_admin_service_exposes_effective_api_base_for_providers(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    config_path = tmp_path / "config.json"
+
+    config = Config()
+    config.agents.defaults.workspace = str(workspace)
+    save_config(config, config_path)
+
+    service = AdminService(config_path=config_path)
+    instance = service.list_instances()[0]
+    openrouter = next(item for item in instance["providers"] if item["name"] == "openrouter")
+
+    assert openrouter["api_base"] == ""
+    assert openrouter["api_base_effective"] == "https://openrouter.ai/api/v1"
+    assert openrouter["api_base_default"] == "https://openrouter.ai/api/v1"
+
+
 def test_admin_service_upserts_and_deletes_mcp_server(tmp_path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()

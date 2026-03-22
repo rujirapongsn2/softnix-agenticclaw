@@ -212,6 +212,18 @@ function runtimeImpactSummary(editor) {
   return { internet, toolExecution };
 }
 
+function providerApiBaseInfo(provider) {
+  const configured = String(provider?.api_base || "").trim();
+  const effective = String(provider?.api_base_effective || provider?.api_base || "").trim();
+  const defaultBase = String(provider?.api_base_default || "").trim();
+  return {
+    configured,
+    effective,
+    defaultBase,
+    hasDefaultFallback: !configured && !!effective,
+  };
+}
+
 const views = {
   overview: document.getElementById("overview-view"),
   instances: document.getElementById("instances-view"),
@@ -2428,6 +2440,7 @@ function renderSelectedInstanceProviders(instance) {
     ? (() => {
       const key = `provider:${instance.id}:${selectedProvider.name}`;
       const disabled = state.busyKey === key ? "disabled" : "";
+      const baseInfo = providerApiBaseInfo(selectedProvider);
       return `
         <div class="item-card">
           <div class="row-between">
@@ -2436,7 +2449,14 @@ function renderSelectedInstanceProviders(instance) {
           </div>
           <div class="field">
             <label>API Base</label>
-            <input data-provider-base="${escapeHtml(key)}" value="${escapeHtml(selectedProvider.api_base || "")}" ${disabled}>
+            <input
+              data-provider-base="${escapeHtml(key)}"
+              value="${escapeHtml(baseInfo.configured)}"
+              placeholder="${escapeHtml(baseInfo.effective || "Set API base")}"
+              title="${escapeHtml(baseInfo.effective || "")}"
+              ${disabled}
+            >
+            ${baseInfo.hasDefaultFallback && baseInfo.effective ? `<p class="meta">Default endpoint: ${escapeHtml(baseInfo.effective)}</p>` : ""}
           </div>
           <div class="field">
             <label>API Key</label>
@@ -4689,6 +4709,7 @@ function renderProviders() {
         .map((provider) => {
           const key = `provider:${instance.id}:${provider.name}`;
           const disabled = state.busyKey === key ? "disabled" : "";
+          const baseInfo = providerApiBaseInfo(provider);
           return `
             <div class="item-card">
               <div class="row-between">
@@ -4700,7 +4721,15 @@ function renderProviders() {
               </div>
               <div class="field">
                 <label for="provider-base-${escapeHtml(key)}">API Base</label>
-                <input id="provider-base-${escapeHtml(key)}" data-provider-base="${escapeHtml(key)}" value="${escapeHtml(provider.api_base || "")}" ${disabled}>
+                <input
+                  id="provider-base-${escapeHtml(key)}"
+                  data-provider-base="${escapeHtml(key)}"
+                  value="${escapeHtml(baseInfo.configured)}"
+                  placeholder="${escapeHtml(baseInfo.effective || "Set API base")}"
+                  title="${escapeHtml(baseInfo.effective || "")}"
+                  ${disabled}
+                >
+                ${baseInfo.hasDefaultFallback && baseInfo.effective ? `<p class="meta">Default endpoint: ${escapeHtml(baseInfo.effective)}</p>` : ""}
               </div>
               <div class="field">
                 <label for="provider-key-${escapeHtml(key)}">API Key</label>
