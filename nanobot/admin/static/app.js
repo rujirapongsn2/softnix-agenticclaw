@@ -267,6 +267,7 @@ function defaultSkillState() {
   return {
     loading: false,
     loadingFiles: false,
+    uploading: false,
     skills: [],
     selectedSkill: null,
     files: {},
@@ -4206,6 +4207,7 @@ function renderSelectedInstanceSkills(instance) {
 
   const canUpdate = hasAuthPermission("skills.update");
   const canDelete = hasAuthPermission("skills.delete");
+  const canDownload = hasAuthPermission("skills.read");
 
   const skillCards = skillState.loading && !skillState.skills.length
     ? `<p class="meta">Loading skills…</p>`
@@ -4250,7 +4252,10 @@ function renderSelectedInstanceSkills(instance) {
       return `<div class="item-card">
         <div class="row-between">
           <h4>Edit · ${escapeHtml(selectedFileObj.path)}</h4>
-          <span class="badge ${badgeClass(dirty ? "warning" : "ok")}">${dirty ? "Unsaved" : "Saved"}</span>
+          <div class="inline-actions">
+            ${canDownload ? `<button class="secondary-button is-small" data-skill-download="${escapeHtml(instance.id)}:${escapeHtml(selectedSkillName)}">Download</button>` : ""}
+            <span class="badge ${badgeClass(dirty ? "warning" : "ok")}">${dirty ? "Unsaved" : "Saved"}</span>
+          </div>
         </div>
         <div class="field">
           <label>Content</label>
@@ -4271,7 +4276,10 @@ function renderSelectedInstanceSkills(instance) {
       <div class="memory-nav item-card">
         <div class="row-between">
           <h4>Skills</h4>
-          <button class="secondary-button is-small" data-skills-reload="${escapeHtml(instance.id)}" ${skillState.loading ? "disabled" : ""}>Refresh</button>
+          <div class="inline-actions">
+            ${canUpdate ? `<button class="secondary-button is-small" data-skill-upload="${escapeHtml(instance.id)}" ${skillState.uploading ? "disabled" : ""}>Upload</button>` : ""}
+            <button class="secondary-button is-small" data-skills-reload="${escapeHtml(instance.id)}" ${skillState.loading ? "disabled" : ""}>Refresh</button>
+          </div>
         </div>
         <p class="meta">Skills loaded from workspace/skills/.</p>
         <div class="skill-card-list">${skillCards}</div>
@@ -4281,6 +4289,7 @@ function renderSelectedInstanceSkills(instance) {
         ${editorBody}
       </div>
     </div>
+    <input type="file" accept=".zip,application/zip" data-skill-upload-input="${escapeHtml(instance.id)}" style="display:none">
   `;
 
   target.querySelectorAll("[data-skill-select]").forEach((el) => {
@@ -4324,6 +4333,79 @@ function renderSelectedInstanceSkills(instance) {
   target.querySelectorAll("[data-skills-reload]").forEach((btn) => {
     btn.addEventListener("click", () => void loadInstanceSkills(btn.dataset.skillsReload, { force: true }));
   });
+  target.querySelectorAll("[data-skill-upload]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const instanceId = btn.dataset.skillUpload;
+      const input = Array.from(target.querySelectorAll("[data-skill-upload-input]"))
+        .find((element) => element.dataset.skillUploadInput === instanceId);
+      input?.click();
+    });
+  });
+  target.querySelectorAll("[data-skill-upload-input]").forEach((input) => {
+    input.addEventListener("change", () => {
+      const file = input.files?.[0];
+      if (!file) return;
+      void handleSkillUpload(input.dataset.skillUploadInput, file);
+      input.value = "";
+    });
+  });
+  target.querySelectorAll("[data-skill-download]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const [instanceId, skillName] = btn.dataset.skillDownload.split(":");
+      handleSkillDownload(instanceId, skillName);
+    });
+  });
+}
+
+function readFileAsBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(reader.error || new Error("Unable to read file"));
+    reader.onload = () => {
+      const result = String(reader.result || "");
+      const comma = result.indexOf(",");
+      resolve(comma >= 0 ? result.slice(comma + 1) : result);
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+async function handleSkillUpload(instanceId, file) {
+  if (!instanceId || !file) return;
+  const skillState = getSkillState(instanceId);
+  const busyKey = `skill-upload:${instanceId}`;
+  state.busyKey = busyKey;
+  skillState.uploading = true;
+  renderSelectedInstanceSkills(selectedInstance());
+  try {
+    const archiveBase64 = await readFileAsBase64(file);
+    const result = await postJson(`/admin/instances/${encodeURIComponent(instanceId)}/skills/import`, {
+      archive_name: file.name,
+      archive_base64: archiveBase64,
+    });
+    await loadInstanceSkills(instanceId, { force: true });
+    if (result.skill_name) {
+      handleSkillSelect(instanceId, result.skill_name);
+    }
+    clearBanner();
+  } catch (error) {
+    setBanner(`Unable to import skill archive: ${error.message}`, "error");
+  } finally {
+    skillState.uploading = false;
+    state.busyKey = "";
+    renderSelectedInstanceSkills(selectedInstance());
+  }
+}
+
+function handleSkillDownload(instanceId, skillName) {
+  if (!instanceId || !skillName) return;
+  const url = `/admin/instances/${encodeURIComponent(instanceId)}/skills/${encodeURIComponent(skillName)}/download`;
+  const link = document.createElement("a");
+  link.href = url;
+  link.rel = "noopener";
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
 }
 
 async function loadInstanceSkills(instanceId, { force = false } = {}) {

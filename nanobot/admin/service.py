@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import io
 import json
 import hmac
 import mimetypes
@@ -16,13 +17,16 @@ import os
 import re
 import signal
 import secrets
+import tempfile
 import threading
 import time
 import urllib.request
 import uuid
+import zipfile
 from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
+from pathlib import PurePosixPath
 from typing import Any
 from urllib.parse import urlparse
 
@@ -180,6 +184,16 @@ def _parse_skill_frontmatter(raw: str) -> dict[str, Any]:
         else:
             result[key] = val
     return result
+
+
+def _normalize_zip_entry_path(value: str) -> Path:
+    raw = str(value or "").replace("\\", "/").strip("/")
+    if not raw:
+        raise ValueError("Archive contains an empty path entry")
+    entry = PurePosixPath(raw)
+    if entry.is_absolute() or any(part in {"", ".", ".."} for part in entry.parts):
+        raise ValueError(f"Archive contains unsafe path '{value}'")
+    return Path(*entry.parts)
 
 
 INSTANCE_MEMORY_FILES: tuple[str, ...] = (
@@ -2340,6 +2354,133 @@ class AdminService:
                 content = ""
             files.append({"path": relative, "content": content, "size": file_path.stat().st_size})
         return {"instance_id": target.id, "skill_name": skill_name, "files": files}
+
+    def export_instance_skill_archive(
+        self,
+        *,
+        instance_id: str,
+        skill_name: str,
+        accessible_instance_ids: set[str] | list[str] | tuple[str, ...] | None = None,
+    ) -> dict[str, Any]:
+        """Package workspace/skills/{skill_name} as a zip archive."""
+        target = self._get_target(instance_id)
+        self._require_target_access(target, accessible_instance_ids)
+        safe_name = _safe_skill_name(skill_name)
+        skill_dir = target.workspace_path / "skills" / safe_name
+        if not skill_dir.is_dir():
+            raise ValueError(f"Skill '{skill_name}' not found")
+        export_dir = target.workspace_path / ".nanobot" / "skill-exports"
+        export_dir.mkdir(parents=True, exist_ok=True)
+        export_path = export_dir / f"{safe_name}-{secrets.token_hex(8)}.zip"
+        try:
+            with zipfile.ZipFile(export_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+                for file_path in sorted(skill_dir.rglob("*")):
+                    if not file_path.is_file():
+                        continue
+                    archive.write(file_path, arcname=f"{safe_name}/{file_path.relative_to(skill_dir).as_posix()}")
+        except Exception as exc:
+            raise ValueError(f"Unable to export skill '{skill_name}': {exc}") from exc
+        self._append_audit_event(
+            instance_id=target.id,
+            event_type="instance.skill_exported",
+            payload={"skill_name": skill_name, "file": str(export_path)},
+        )
+        return {
+            "instance_id": target.id,
+            "skill_name": skill_name,
+            "_file_path": str(export_path),
+            "_content_type": "application/zip",
+            "_download_name": f"{safe_name}.zip",
+        }
+
+    def import_instance_skill_archive(
+        self,
+        *,
+        instance_id: str,
+        archive_name: str,
+        archive_base64: str,
+        skill_name: str | None = None,
+        accessible_instance_ids: set[str] | list[str] | tuple[str, ...] | None = None,
+    ) -> dict[str, Any]:
+        """Import a skill package from a zip archive into workspace/skills/."""
+        target = self._get_target(instance_id)
+        self._require_target_access(target, accessible_instance_ids)
+        encoded = str(archive_base64 or "").strip()
+        if not encoded:
+            raise ValueError("archive_base64 is required")
+        try:
+            archive_bytes = base64.b64decode(encoded, validate=True)
+        except (binascii.Error, ValueError) as exc:
+            raise ValueError("archive_base64 is not valid base64") from exc
+
+        with zipfile.ZipFile(io.BytesIO(archive_bytes)) as archive:
+            members = [item for item in archive.infolist() if not item.is_dir()]
+            if not members:
+                raise ValueError("Skill archive is empty")
+            normalized_members: list[tuple[zipfile.ZipInfo, Path]] = []
+            ignored_leaf_names = {".DS_Store", "Thumbs.db", "desktop.ini"}
+            for member in members:
+                relative = _normalize_zip_entry_path(member.filename)
+                if any(part == "__MACOSX" for part in relative.parts):
+                    continue
+                if relative.name in ignored_leaf_names:
+                    continue
+                normalized_members.append((member, relative))
+            if not normalized_members:
+                raise ValueError("Skill archive contains no usable files")
+
+            first_segments = {item[1].parts[0] for item in normalized_members if len(item[1].parts) > 1}
+            root_files = [item for item in normalized_members if len(item[1].parts) == 1]
+            if len(first_segments) > 1 or (first_segments and root_files):
+                raise ValueError("Skill archive must use a single top-level folder or place files at the archive root")
+            archive_skill_name = skill_name or (next(iter(first_segments)) if len(first_segments) == 1 and not root_files else Path(archive_name or "skill.zip").stem)
+            safe_name = _safe_skill_name(archive_skill_name)
+            skill_dir = target.workspace_path / "skills" / safe_name
+            import_root = skill_dir.parent / f".{safe_name}-{secrets.token_hex(8)}.importing"
+            if import_root.exists():
+                shutil.rmtree(import_root, ignore_errors=True)
+            import_root.mkdir(parents=True, exist_ok=True)
+            extracted_skill_dir = import_root / safe_name
+            extracted_skill_dir.mkdir(parents=True, exist_ok=True)
+
+            strip_prefix = None
+            if len(first_segments) == 1 and not root_files:
+                strip_prefix = next(iter(first_segments))
+
+            skill_md_found = False
+            for member, relative in normalized_members:
+                if strip_prefix and relative.parts and relative.parts[0] == strip_prefix:
+                    relative = Path(*relative.parts[1:])
+                if not relative.parts:
+                    continue
+                output_path = (extracted_skill_dir / relative).resolve()
+                if not str(output_path).startswith(str(extracted_skill_dir.resolve())):
+                    raise ValueError(f"Archive entry '{member.filename}' escapes the skill directory")
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+                with archive.open(member) as source, open(output_path, "wb") as destination:
+                    shutil.copyfileobj(source, destination)
+                if relative.as_posix() == "SKILL.md":
+                    skill_md_found = True
+
+            if not skill_md_found:
+                raise ValueError("Skill archive must include SKILL.md")
+            if skill_dir.exists():
+                shutil.rmtree(skill_dir)
+            extracted_skill_dir.rename(skill_dir)
+            shutil.rmtree(import_root, ignore_errors=True)
+
+        file_count = sum(1 for _ in skill_dir.rglob("*") if _.is_file())
+        self._append_audit_event(
+            instance_id=target.id,
+            event_type="instance.skill_imported",
+            payload={"skill_name": safe_name, "file_count": file_count},
+        )
+        return {
+            "instance_id": target.id,
+            "skill_name": safe_name,
+            "file_count": file_count,
+            "imported": True,
+        }
 
     def update_instance_skill_file(
         self,

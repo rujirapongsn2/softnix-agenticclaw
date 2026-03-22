@@ -78,6 +78,8 @@ def resolve_admin_get(
                 "/admin/instances/:id",
                 "/admin/instances/:id/config",
                 "/admin/instances/:id/memory-files",
+                "/admin/instances/:id/skills/import",
+                "/admin/instances/:id/skills/:skill/download",
                 "/admin/instances/:id/start",
                 "/admin/instances/:id/stop",
                 "/admin/instances/:id/restart",
@@ -131,6 +133,24 @@ def resolve_admin_get(
         instance_id = path.split("/")[-2]
         try:
             return HTTPStatus.OK, service.get_instance_memory_files(instance_id=instance_id, accessible_instance_ids=accessible_instance_ids)
+        except ValueError as exc:
+            return HTTPStatus.BAD_REQUEST, {"error": str(exc)}
+    if path.startswith("/admin/instances/") and path.endswith("/download") and "/skills/" in path:
+        parts = path.split("/")
+        try:
+            idx = parts.index("skills")
+            instance_id = parts[idx - 1]
+            skill_name = parts[idx + 1] if idx + 1 < len(parts) else ""
+            if parts[idx + 2] != "download":
+                raise IndexError
+        except (ValueError, IndexError):
+            return HTTPStatus.BAD_REQUEST, {"error": "Invalid skills path"}
+        try:
+            return HTTPStatus.OK, service.export_instance_skill_archive(
+                instance_id=instance_id,
+                skill_name=skill_name,
+                accessible_instance_ids=accessible_instance_ids,
+            )
         except ValueError as exc:
             return HTTPStatus.BAD_REQUEST, {"error": str(exc)}
     if path.startswith("/admin/instances/") and "/skills/" in path:
@@ -542,6 +562,28 @@ def resolve_admin_post(
     parsed = urlparse(raw_path)
     path = parsed.path.rstrip("/") or "/"
     try:
+        if path.startswith("/admin/instances/") and path.endswith("/skills/import"):
+            parts = path.split("/")
+            try:
+                instance_id = parts[3]
+            except IndexError:
+                return HTTPStatus.BAD_REQUEST, {"error": "Invalid skills path"}
+            archive_base64 = payload.get("archive_base64")
+            archive_name = payload.get("archive_name") or "skill.zip"
+            skill_name = payload.get("skill_name")
+            if not archive_base64:
+                return HTTPStatus.BAD_REQUEST, {"error": "archive_base64 is required"}
+            try:
+                return HTTPStatus.OK, service.import_instance_skill_archive(
+                    instance_id=instance_id,
+                    archive_name=str(archive_name),
+                    archive_base64=str(archive_base64),
+                    skill_name=str(skill_name) if skill_name is not None else None,
+                    accessible_instance_ids=accessible_instance_ids,
+                )
+            except ValueError as exc:
+                return HTTPStatus.BAD_REQUEST, {"error": str(exc)}
+
         # Mobile API (No heavy auth check here for initial pairing/registration)
         if path == "/admin/mobile/pair":
             instance_id = payload.get("instance_id")
@@ -836,6 +878,8 @@ def _match_permission(method: str, path: str) -> str | None:
                 return "config.read"
             if path.endswith("/memory-files"):
                 return "memory.read"
+            if path.endswith("/download") and "/skills/" in path:
+                return "skills.read"
             if path.endswith("/skills") or "/skills/" in path:
                 return "skills.read"
             return "instance.read"
@@ -892,6 +936,8 @@ def _match_permission(method: str, path: str) -> str | None:
             return "security.update"
         if path in {"/admin/access-requests/approve", "/admin/access-requests/reject"}:
             return "access_request.review"
+        if path.startswith("/admin/instances/") and path.endswith("/skills/import"):
+            return "skills.update"
     if method == "DELETE":
         if path.startswith("/admin/instances/"):
             return "instance.delete"
@@ -937,7 +983,11 @@ def create_admin_server(host: str, port: int, service: AdminService) -> Threadin
                     accessible_instance_ids=accessible_ids,
                 )
                 if isinstance(payload, dict) and "_file_path" in payload:
-                    return self._send_file(Path(str(payload["_file_path"])), str(payload.get("_content_type") or "application/octet-stream"))
+                    return self._send_file(
+                        Path(str(payload["_file_path"])),
+                        str(payload.get("_content_type") or "application/octet-stream"),
+                        download_name=str(payload.get("_download_name") or "").strip() or None,
+                    )
                 self._send_json(payload, status=status)
             except PermissionError as exc:
                 return self._send_json({"error": str(exc)}, status=HTTPStatus.FORBIDDEN)
@@ -1384,7 +1434,7 @@ def create_admin_server(host: str, port: int, service: AdminService) -> Threadin
             self.end_headers()
             self.wfile.write(body)
 
-        def _send_file(self, path: Path, content_type: str) -> None:
+        def _send_file(self, path: Path, content_type: str, download_name: str | None = None) -> None:
             try:
                 status, body, extra_headers = _read_file_response(path, self.headers.get("Range"))
             except FileNotFoundError:
@@ -1393,6 +1443,9 @@ def create_admin_server(host: str, port: int, service: AdminService) -> Threadin
             self._write_headers(content_type, len(body))
             for key, value in extra_headers.items():
                 self.send_header(key, value)
+            if download_name:
+                safe_name = download_name.replace("\\", "_").replace('"', "_")
+                self.send_header("Content-Disposition", f'attachment; filename="{safe_name}"')
             # Media files (audio/video) need permissive caching for iOS Safari
             # playback — no-store prevents the browser media buffer from working.
             media_kind = content_type.split("/", 1)[0] if content_type else ""

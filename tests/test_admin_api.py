@@ -1,7 +1,10 @@
+import base64
+import io
 import json
 import signal
 import subprocess
 import threading
+import zipfile
 from http.client import HTTPConnection
 from pathlib import Path
 from unittest.mock import patch
@@ -148,6 +151,96 @@ def test_admin_server_returns_forbidden_for_inaccessible_mobile_media() -> None:
 
     assert status == HTTPStatus.FORBIDDEN
     assert payload["error"] == "Instance 'bigbike2-prod' is not accessible"
+
+
+def test_admin_service_exports_skill_archive_as_zip(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    skill_dir = workspace / "skills" / "crm-notion"
+    (skill_dir / "assets").mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text("---\nname: crm-notion\n---\n# CRM\n", encoding="utf-8")
+    (skill_dir / "assets" / "helper.txt").write_text("hello", encoding="utf-8")
+    config_path = tmp_path / "config.json"
+
+    config = Config()
+    config.agents.defaults.workspace = str(workspace)
+    save_config(config, config_path)
+
+    service = AdminService(config_path=config_path)
+    instance_id = service.list_instances()[0]["id"]
+
+    result = service.export_instance_skill_archive(instance_id=instance_id, skill_name="crm-notion")
+    archive_path = Path(result["_file_path"])
+
+    assert result["skill_name"] == "crm-notion"
+    assert result["_download_name"] == "crm-notion.zip"
+    assert archive_path.exists()
+
+    with zipfile.ZipFile(archive_path) as archive:
+        names = sorted(archive.namelist())
+        assert names == ["crm-notion/SKILL.md", "crm-notion/assets/helper.txt"]
+
+
+def test_admin_service_imports_skill_archive_from_zip(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    config_path = tmp_path / "config.json"
+
+    config = Config()
+    config.agents.defaults.workspace = str(workspace)
+    save_config(config, config_path)
+
+    service = AdminService(config_path=config_path)
+    instance_id = service.list_instances()[0]["id"]
+
+    archive_bytes = io.BytesIO()
+    with zipfile.ZipFile(archive_bytes, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("demo/SKILL.md", "---\nname: demo\n---\n# Demo\n")
+        archive.writestr("demo/resources/snippet.txt", "hello")
+
+    result = service.import_instance_skill_archive(
+        instance_id=instance_id,
+        archive_name="demo.zip",
+        archive_base64=base64.b64encode(archive_bytes.getvalue()).decode("ascii"),
+    )
+
+    skill_dir = workspace / "skills" / "demo"
+    assert result["skill_name"] == "demo"
+    assert result["file_count"] == 2
+    assert (skill_dir / "SKILL.md").exists()
+    assert (skill_dir / "resources" / "snippet.txt").read_text(encoding="utf-8") == "hello"
+
+
+def test_admin_server_resolves_skill_download_route(tmp_path) -> None:
+    class DummyService:
+        def export_instance_skill_archive(self, **kwargs):  # noqa: ANN003
+            return {
+                "instance_id": kwargs["instance_id"],
+                "skill_name": kwargs["skill_name"],
+                "_file_path": str(tmp_path / "demo.zip"),
+                "_content_type": "application/zip",
+                "_download_name": "demo.zip",
+            }
+
+    status, payload = resolve_admin_get(DummyService(), "/admin/instances/prod/skills/demo/download")
+
+    assert status == HTTPStatus.OK
+    assert payload["_download_name"] == "demo.zip"
+
+
+def test_admin_server_resolves_skill_import_route(tmp_path) -> None:
+    class DummyService:
+        def import_instance_skill_archive(self, **kwargs):  # noqa: ANN003
+            return kwargs
+
+    status, payload = resolve_admin_post(
+        DummyService(),
+        "/admin/instances/prod/skills/import",
+        {"archive_name": "demo.zip", "archive_base64": base64.b64encode(b"zip").decode("ascii")},
+    )
+
+    assert status == HTTPStatus.OK
+    assert payload["instance_id"] == "prod"
+    assert payload["archive_name"] == "demo.zip"
 
 
 def test_admin_service_reports_security_findings(tmp_path) -> None:
