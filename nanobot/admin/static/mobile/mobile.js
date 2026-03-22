@@ -6,6 +6,7 @@ const POLL_INTERVAL_MS = 2000;
 const MAX_ATTACHMENT_BYTES = 15 * 1024 * 1024;
 const REPLY_CONTEXT_WINDOW = 4;
 const MAX_STORED_MESSAGES = 200;
+const THEME_MODES = ["system", "light", "dark"];
 
 let device = null;
 let appState = null;
@@ -19,6 +20,7 @@ let pushRegistration = null;
 let pushConfig = null;
 let pushSubscribed = false;
 let activeAudioPlayer = null;
+let systemThemeMediaQuery = null;
 
 const seenMessageIds = new Set();
 const messageStore = new Map();
@@ -30,6 +32,8 @@ document.addEventListener("DOMContentLoaded", init);
 function init() {
   appState = loadAppState();
   device = appState.device;
+  applyThemePreference(getThemeMode());
+  watchSystemThemeChanges();
   const params = new URLSearchParams(window.location.search);
   const token = params.get("token");
   const instanceId = params.get("instance_id");
@@ -1234,6 +1238,15 @@ function showDisconnectMenu() {
           </div>
           <p class="settings-note device-id-note">Use this ID to match the device in <code>softnix_app.allow_from</code>.</p>
         </div>
+        <div class="theme-panel">
+          <div class="theme-panel-label">Theme</div>
+          <div class="theme-options" role="radiogroup" aria-label="Theme mode">
+            <button class="theme-option" type="button" data-theme-mode="system">System</button>
+            <button class="theme-option" type="button" data-theme-mode="light">Light</button>
+            <button class="theme-option" type="button" data-theme-mode="dark">Dark</button>
+          </div>
+          <p class="settings-note theme-note" id="theme-settings-note"></p>
+        </div>
         <button class="action-btn" id="btn-new-chat">New Chat</button>
         ${!isStandaloneMode() ? '<button class="action-btn" id="btn-transfer-session">Transfer to Home Screen</button>' : ""}
         <p class="settings-note" id="push-settings-note"></p>
@@ -1250,6 +1263,12 @@ function showDisconnectMenu() {
     $("btn-copy-device-id").addEventListener("click", () => {
       void copyTextToClipboard(device?.device_id || "");
     });
+    overlay.querySelectorAll("[data-theme-mode]").forEach((button) => {
+      button.addEventListener("click", () => {
+        setThemeMode(button.dataset.themeMode || "system");
+        renderThemeSettings();
+      });
+    });
     $("btn-transfer-session")?.addEventListener("click", () => void showTransferSessionSheet());
     $("btn-toggle-push").addEventListener("click", () => void togglePushNotifications());
     $("btn-disconnect-confirm").addEventListener("click", () => {
@@ -1263,9 +1282,78 @@ function showDisconnectMenu() {
       if (event.target === overlay) overlay.classList.remove("is-visible");
     });
   }
+  renderThemeSettings();
   void syncPushStatus();
   renderPushSettings();
   overlay.classList.add("is-visible");
+}
+
+function getThemeMode() {
+  const mode = appState?.settings?.themeMode;
+  return THEME_MODES.includes(mode) ? mode : "system";
+}
+
+function setThemeMode(mode) {
+  if (!THEME_MODES.includes(mode)) return;
+  if (!appState) {
+    appState = loadAppState();
+  }
+  appState.settings = {
+    ...(appState.settings || {}),
+    themeMode: mode,
+  };
+  saveAppState();
+  applyThemePreference(mode);
+}
+
+function getEffectiveTheme(mode = getThemeMode()) {
+  if (mode === "light" || mode === "dark") return mode;
+  return window.matchMedia?.("(prefers-color-scheme: dark)")?.matches ? "dark" : "light";
+}
+
+function applyThemePreference(mode = getThemeMode()) {
+  const effectiveTheme = getEffectiveTheme(mode);
+  document.documentElement.dataset.theme = effectiveTheme;
+  document.documentElement.style.colorScheme = effectiveTheme;
+  const themeColor = effectiveTheme === "dark" ? "#0f1117" : "#2587c8";
+  const meta = document.querySelector('meta[name="theme-color"]');
+  if (meta) meta.setAttribute("content", themeColor);
+  const appleStatusBar = document.querySelector('meta[name="apple-mobile-web-app-status-bar-style"]');
+  if (appleStatusBar) {
+    appleStatusBar.setAttribute("content", effectiveTheme === "dark" ? "black-translucent" : "default");
+  }
+}
+
+function watchSystemThemeChanges() {
+  if (systemThemeMediaQuery || !window.matchMedia) return;
+  systemThemeMediaQuery = window.matchMedia("(prefers-color-scheme: dark)");
+  const handleChange = () => {
+    if (getThemeMode() === "system") {
+      applyThemePreference("system");
+      renderThemeSettings();
+    }
+  };
+  if (typeof systemThemeMediaQuery.addEventListener === "function") {
+    systemThemeMediaQuery.addEventListener("change", handleChange);
+  } else if (typeof systemThemeMediaQuery.addListener === "function") {
+    systemThemeMediaQuery.addListener(handleChange);
+  }
+}
+
+function renderThemeSettings() {
+  const note = $("theme-settings-note");
+  const mode = getThemeMode();
+  const effectiveTheme = getEffectiveTheme(mode);
+  document.querySelectorAll("[data-theme-mode]").forEach((button) => {
+    const isActive = button.dataset.themeMode === mode;
+    button.classList.toggle("is-active", isActive);
+    button.setAttribute("aria-checked", String(isActive));
+  });
+  if (note) {
+    note.textContent = mode === "system"
+      ? `Following your mobile system theme (${effectiveTheme}).`
+      : `Using ${mode} theme.`;
+  }
 }
 
 async function copyTextToClipboard(text, button = null, successLabel = "Copied") {
@@ -1738,22 +1826,26 @@ function loadAppState() {
     const raw = localStorage.getItem(STORAGE_KEY);
     const parsed = raw ? JSON.parse(raw) : null;
     if (!parsed) {
-      return { device: null, activeSessionId: null, conversations: {} };
+      return { device: null, activeSessionId: null, conversations: {}, settings: { themeMode: "system" } };
     }
     if (parsed.device_id) {
       return {
         device: parsed,
         activeSessionId: parsed.current_session_id || `mobile-${parsed.device_id}`,
         conversations: {},
+        settings: { themeMode: "system" },
       };
     }
     return {
       device: parsed.device || null,
       activeSessionId: parsed.activeSessionId || parsed.device?.current_session_id || null,
       conversations: parsed.conversations && typeof parsed.conversations === "object" ? parsed.conversations : {},
+      settings: {
+        themeMode: THEME_MODES.includes(parsed.settings?.themeMode) ? parsed.settings.themeMode : "system",
+      },
     };
   } catch (_) {
-    return { device: null, activeSessionId: null, conversations: {} };
+    return { device: null, activeSessionId: null, conversations: {}, settings: { themeMode: "system" } };
   }
 }
 
@@ -1770,7 +1862,7 @@ function saveDevice(value) {
 
 function saveAppState() {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(appState || { device: null, activeSessionId: null, conversations: {} }));
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(appState || { device: null, activeSessionId: null, conversations: {}, settings: { themeMode: "system" } }));
   } catch (_) {}
 }
 
@@ -1784,9 +1876,14 @@ function clearDevice() {
   messageStore.clear();
   seenMessageIds.clear();
   device = null;
-  appState = { device: null, activeSessionId: null, conversations: {} };
+  appState = {
+    device: null,
+    activeSessionId: null,
+    conversations: {},
+    settings: { themeMode: getThemeMode() },
+  };
   try {
-    localStorage.removeItem(STORAGE_KEY);
+    saveAppState();
   } catch (_) {}
 }
 
