@@ -992,9 +992,11 @@ function handleComposeInput() {
 }
 
 function handleMessageActions(event) {
-  const copyButton = event.target.closest("[data-copy-text], [data-copy-message-id]");
+  const copyButton = event.target.closest("[data-copy-text], [data-copy-message-id], [data-copy-kind]");
   if (copyButton) {
-    const text = copyButton.dataset.copyText || messageStore.get(copyButton.dataset.copyMessageId || "")?.text || "";
+    const text = copyButton.dataset.copyKind === "code"
+      ? (copyButton.closest(".msg-codeblock")?.querySelector(".msg-code code")?.textContent || "")
+      : (copyButton.dataset.copyText || messageStore.get(copyButton.dataset.copyMessageId || "")?.text || "");
     void copyTextToClipboard(text, copyButton);
     return;
   }
@@ -1269,7 +1271,11 @@ function showDisconnectMenu() {
 async function copyTextToClipboard(text, button = null, successLabel = "Copied") {
   if (!text) return;
   try {
-    await navigator.clipboard.writeText(text);
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+    } else {
+      throw new Error("Clipboard API unavailable");
+    }
     if (button) {
       const original = button.textContent || "Copy";
       button.textContent = successLabel;
@@ -1277,7 +1283,31 @@ async function copyTextToClipboard(text, button = null, successLabel = "Copied")
         button.textContent = original;
       }, 1200);
     }
-  } catch (_) {}
+  } catch (_) {
+    const textarea = document.createElement("textarea");
+    textarea.value = text;
+    textarea.setAttribute("readonly", "");
+    textarea.style.position = "fixed";
+    textarea.style.top = "-9999px";
+    textarea.style.opacity = "0";
+    document.body.appendChild(textarea);
+    textarea.focus();
+    textarea.select();
+    try {
+      document.execCommand("copy");
+      if (button) {
+        const original = button.textContent || "Copy";
+        button.textContent = successLabel;
+        window.setTimeout(() => {
+          button.textContent = original;
+        }, 1200);
+      }
+    } catch (_) {
+      // ignore
+    } finally {
+      document.body.removeChild(textarea);
+    }
+  }
 }
 
 async function showTransferSessionSheet() {
@@ -2002,7 +2032,7 @@ function renderMarkdownBlock(block) {
       <div class="msg-codeblock">
         <div class="msg-codeblock-header">
           <span class="msg-codeblock-language">${language}</span>
-          <button type="button" class="msg-codeblock-copy" data-copy-text="${escapeHtml(block.text)}">Copy</button>
+          <button type="button" class="msg-codeblock-copy" data-copy-kind="code">Copy</button>
         </div>
         <pre class="msg-code"><code>${code}</code></pre>
       </div>`;
