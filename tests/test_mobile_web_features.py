@@ -192,6 +192,35 @@ async def test_softnix_app_channel_resolves_workspace_relative_skill_media_path(
     assert (workspace / "mobile_relay" / "outbound_media" / "mob-13" / copied_name).exists()
 
 
+async def test_softnix_app_channel_uses_parent_instance_id_for_workspace_media_urls(tmp_path: Path) -> None:
+    class _Config:
+        allow_from = ["*"]
+
+    instance_root = tmp_path / "bigbike01-prod"
+    workspace = instance_root / "workspace"
+    workspace.mkdir(parents=True, exist_ok=True)
+    (instance_root / "config.json").write_text("{}", encoding="utf-8")
+    image_source = workspace / "skills" / "image-create-banana"
+    image_source.mkdir(parents=True, exist_ok=True)
+    image_file = image_source / "tmp_fal_image.png"
+    image_file.write_bytes(b"\x89PNG\r\n\x1a\n")
+    channel = SoftnixAppChannel(_Config(), MessageBus(), workspace)
+
+    await channel.send(
+        OutboundMessage(
+            channel="softnix_app",
+            chat_id="mobile-mob-14",
+            content="สร้างรูปเสร็จแล้ว",
+            metadata={"sender_id": "mob-14"},
+            media=["skills/image-create-banana/tmp_fal_image.png"],
+        )
+    )
+
+    outbound_path = workspace / "mobile_relay" / "outbound.jsonl"
+    payload = json.loads(outbound_path.read_text(encoding="utf-8").splitlines()[0])
+    assert payload["attachments"][0]["url"].startswith("/admin/mobile/media?instance_id=bigbike01-prod")
+
+
 async def test_softnix_app_channel_supports_remote_image_urls(tmp_path: Path) -> None:
     class _Config:
         allow_from = ["*"]

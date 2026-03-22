@@ -32,6 +32,7 @@ class SoftnixAppChannel(BaseChannel):
     def __init__(self, config: Any, bus: MessageBus, workspace_path: Path):
         super().__init__(config, bus)
         self.workspace_path = workspace_path
+        self.instance_id = self._resolve_instance_id()
         self.relay_dir = workspace_path / "mobile_relay"
         self.inbound_file = self.relay_dir / "inbound.jsonl"
         self.outbound_file = self.relay_dir / "outbound.jsonl"
@@ -39,6 +40,17 @@ class SoftnixAppChannel(BaseChannel):
         
         # Ensure relay directory exists
         self.relay_dir.mkdir(parents=True, exist_ok=True)
+
+    def _resolve_instance_id(self) -> str:
+        configured = str(getattr(self.config, "instance_id", "") or "").strip()
+        if configured:
+            return configured
+        if self.workspace_path.name != "workspace":
+            return self.workspace_path.name
+        parent = self.workspace_path.parent
+        if (parent / "instance.json").exists() or (parent / "config.json").exists():
+            return parent.name
+        return self.workspace_path.name
 
     async def start(self) -> None:
         """Start watching the inbound relay file."""
@@ -158,7 +170,7 @@ class SoftnixAppChannel(BaseChannel):
             "size": relay_path.stat().st_size,
             "kind": kind,
             "url": (
-                f"/admin/mobile/media?instance_id={self.workspace_path.name}"
+                f"/admin/mobile/media?instance_id={self.instance_id}"
                 f"&sender_id={sender_id}&file={relay_name}"
             ),
             "source_path": str(source),
