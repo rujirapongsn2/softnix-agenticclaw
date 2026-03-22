@@ -1127,6 +1127,14 @@ function showDisconnectMenu() {
       <div class="disconnect-sheet">
         <h3>Settings</h3>
         <p>Device: ${escapeHtml(device?.label || device?.device_id || "Unknown")}</p>
+        <div class="device-id-panel">
+          <div class="device-id-label">Device ID</div>
+          <div class="device-id-row">
+            <code class="device-id-value" id="device-id-value">${escapeHtml(device?.device_id || "Unknown")}</code>
+            <button class="device-id-copy" id="btn-copy-device-id" type="button">Copy</button>
+          </div>
+          <p class="settings-note device-id-note">Use this ID to match the device in <code>softnix_app.allow_from</code>.</p>
+        </div>
         <button class="action-btn" id="btn-new-chat">New Chat</button>
         ${!isStandaloneMode() ? '<button class="action-btn" id="btn-transfer-session">Transfer to Home Screen</button>' : ""}
         <p class="settings-note" id="push-settings-note"></p>
@@ -1139,6 +1147,9 @@ function showDisconnectMenu() {
     $("btn-new-chat").addEventListener("click", () => {
       startNewChat();
       overlay.classList.remove("is-visible");
+    });
+    $("btn-copy-device-id").addEventListener("click", () => {
+      void copyTextToClipboard(device?.device_id || "");
     });
     $("btn-transfer-session")?.addEventListener("click", () => void showTransferSessionSheet());
     $("btn-toggle-push").addEventListener("click", () => void togglePushNotifications());
@@ -1156,6 +1167,21 @@ function showDisconnectMenu() {
   void syncPushStatus();
   renderPushSettings();
   overlay.classList.add("is-visible");
+}
+
+async function copyTextToClipboard(text) {
+  if (!text) return;
+  try {
+    await navigator.clipboard.writeText(text);
+    const button = $("btn-copy-device-id");
+    if (button) {
+      const original = button.textContent || "Copy";
+      button.textContent = "Copied";
+      window.setTimeout(() => {
+        button.textContent = original;
+      }, 1200);
+    }
+  } catch (_) {}
 }
 
 async function showTransferSessionSheet() {

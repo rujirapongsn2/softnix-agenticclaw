@@ -1048,6 +1048,63 @@ body {
   margin-bottom: 16px;
 }
 
+.device-id-panel {
+  margin: 0 0 16px;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: var(--bg-subtle);
+  text-align: left;
+}
+
+.device-id-label {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--fg-secondary);
+  margin-bottom: 8px;
+}
+
+.device-id-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.device-id-value {
+  flex: 1;
+  min-width: 0;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: var(--bg-card);
+  color: var(--fg);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 13px;
+  word-break: break-all;
+}
+
+.device-id-copy {
+  flex: 0 0 auto;
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg-card);
+  color: var(--fg);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.device-id-copy:active {
+  transform: scale(0.98);
+}
+
+.device-id-note {
+  margin: 10px 0 0;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
 .disconnect-sheet .settings-note {
   margin: 6px 0 12px;
   line-height: 1.45;
