@@ -27,9 +27,18 @@ let voiceChunks = [];
 let isVoiceRecording = false;
 let isVoiceTranscribing = false;
 let voiceBannerTimer = null;
+const TOOLS_TOGGLE_SPINNER_FRAMES = ["", ".", "..", "..."];
+let toolsToggleSpinnerFrame = 0;
 
 const seenMessageIds = new Set();
 const messageStore = new Map();
+
+window.setInterval(() => {
+  toolsToggleSpinnerFrame = (toolsToggleSpinnerFrame + 1) % TOOLS_TOGGLE_SPINNER_FRAMES.length;
+  document.querySelectorAll(".tools-toggle-spinner.is-visible").forEach((spinner) => {
+    spinner.textContent = TOOLS_TOGGLE_SPINNER_FRAMES[toolsToggleSpinnerFrame];
+  });
+}, 350);
 
 const $ = (id) => document.getElementById(id);
 
@@ -89,6 +98,41 @@ function showScreen(name) {
   if (name === "chat") {
     $("screen-chat").style.flexDirection = "column";
   }
+}
+
+function ensureToolsToggleSpinner(toolsToggle) {
+  if (!toolsToggle) return null;
+  let spinner = toolsToggle.querySelector(".tools-toggle-spinner");
+  if (spinner) return spinner;
+  const label = toolsToggle.querySelector(".tools-toggle-label");
+  spinner = document.createElement("span");
+  spinner.className = "spinner tools-toggle-spinner";
+  spinner.setAttribute("aria-hidden", "true");
+  spinner.style.display = "none";
+  if (label?.nextSibling) {
+    toolsToggle.insertBefore(spinner, label.nextSibling);
+  } else if (label) {
+    toolsToggle.appendChild(spinner);
+  }
+  return spinner;
+}
+
+function showToolsToggleSpinner(toolsToggle) {
+  const spinner = ensureToolsToggleSpinner(toolsToggle);
+  if (!spinner) return;
+  spinner.classList.add("is-visible");
+  spinner.style.display = "";
+  spinner.setAttribute("aria-hidden", "false");
+  spinner.textContent = TOOLS_TOGGLE_SPINNER_FRAMES[toolsToggleSpinnerFrame];
+}
+
+function removeToolsToggleSpinner(toolsToggle) {
+  const spinner = toolsToggle?.querySelector(".tools-toggle-spinner");
+  if (!spinner) return;
+  spinner.classList.remove("is-visible");
+  spinner.style.display = "none";
+  spinner.setAttribute("aria-hidden", "true");
+  spinner.remove();
 }
 
 async function registerDevice(instanceId, token) {
@@ -478,11 +522,13 @@ function appendAgentToolOrProgress(message) {
       <svg class="tools-toggle-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
         <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>
       </svg>
-      <span class="tools-toggle-label">Agent is working...</span>
+      <span class="tools-toggle-label">Agent processing </span>
+      <span class="spinner tools-toggle-spinner is-visible" aria-hidden="false"></span>
       <svg class="tools-toggle-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
         <polyline points="6 9 12 15 18 9"/>
       </svg>
     `;
+    showToolsToggleSpinner(toolsToggle);
     toolsToggle.addEventListener("click", () => {
       toolsPanel.classList.toggle("is-expanded");
       const label = toolsToggle.querySelector(".tools-toggle-label");
@@ -490,6 +536,13 @@ function appendAgentToolOrProgress(message) {
       label.textContent = toolsPanel.classList.contains("is-expanded")
         ? `${count} tool step${count !== 1 ? "s" : ""}`
         : `${count} tool step${count !== 1 ? "s" : ""} (tap to view)`;
+      const spinner = toolsToggle.querySelector(".tools-toggle-spinner");
+      if (spinner) {
+        spinner.classList.remove("is-visible");
+        spinner.style.display = "none";
+        spinner.setAttribute("aria-hidden", "true");
+      }
+      removeToolsToggleSpinner(toolsToggle);
     });
 
     const toolsContent = document.createElement("div");
@@ -534,7 +587,8 @@ function appendAgentToolOrProgress(message) {
 
   const count = currentAgentGroup.toolMessages.length;
   const label = currentAgentGroup.toolsToggle.querySelector(".tools-toggle-label");
-  label.textContent = `Agent is working... (${count} step${count !== 1 ? "s" : ""})`;
+  label.textContent = `Agent processing (${count} step${count !== 1 ? "s" : ""}) `;
+  showToolsToggleSpinner(currentAgentGroup.toolsToggle);
   scrollToBottom();
 }
 
@@ -544,6 +598,7 @@ function appendAgentAnswer(message) {
     const count = currentAgentGroup.toolMessages.length;
     const label = currentAgentGroup.toolsToggle.querySelector(".tools-toggle-label");
     label.textContent = `${count} tool step${count !== 1 ? "s" : ""} (tap to view)`;
+    removeToolsToggleSpinner(currentAgentGroup.toolsToggle);
     currentAgentGroup.answerSlot.appendChild(element);
     currentAgentGroup = null;
   } else {

@@ -1475,6 +1475,10 @@ body {
   font-weight: 500;
 }
 
+/* Hide the tools-toggle spinner by default; only show when explicitly marked .is-visible */
+.tools-toggle-spinner { display: none; }
+.tools-toggle-spinner.is-visible { display: inline-flex; }
+
 .tools-toggle-chevron {
   width: 16px;
   height: 16px;
