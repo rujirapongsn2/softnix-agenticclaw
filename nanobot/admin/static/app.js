@@ -1,5 +1,5 @@
 const state = {
-overview: null,
+  overview: null,
   channels: [],
   mobileDevicesByInstance: {},
   qrModal: { open: false, instanceId: null, countdownTimer: null },
@@ -19,6 +19,7 @@ overview: null,
   securityTab: "policy",
   securityPolicySection: "rules",
   activity: null,
+  health: null,
   auth: {
     initialized: false,
     authenticated: false,
@@ -5882,8 +5883,13 @@ function auditLogPrev() {
 
 function setHealth() {
   const healthPill = document.getElementById("health-pill");
-  healthPill.textContent = "Operational";
+  const health = state.health || {};
+  healthPill.textContent = health.status === "ok" ? "Operational" : "Degraded";
   healthPill.className = "health-pill";
+  const sidebarCommit = document.getElementById("sidebar-commit-hash");
+  if (sidebarCommit) {
+    sidebarCommit.textContent = health.commit ? health.commit : "commit unavailable";
+  }
 }
 
 function switchView(nextView) {
@@ -5929,7 +5935,8 @@ async function loadDashboard() {
     return;
   }
   try {
-    const [schedules, overview, channels, security, activity, accessRequests] = await Promise.all([
+    const [health, schedules, overview, channels, security, activity, accessRequests] = await Promise.all([
+      fetchJson("/admin/health"),
       hasAuthPermission("schedule.read") ? fetchJson("/admin/schedules") : Promise.resolve({ jobs: [] }),
       fetchJson("/admin/overview"),
       hasAuthPermission("channel.read") ? fetchJson("/admin/channels") : Promise.resolve({ channels: [] }),
@@ -5949,6 +5956,7 @@ async function loadDashboard() {
         }
       }),
     );
+    state.health = health;
     state.schedules = schedules;
     state.overview = overview;
     state.channels = channels.channels;

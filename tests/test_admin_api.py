@@ -121,6 +121,44 @@ def test_admin_service_overview_collects_workspace_state(tmp_path) -> None:
     assert instance["sessions"]["count"] == 1
 
 
+def test_admin_service_health_includes_git_commit(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    config_path = tmp_path / "config.json"
+
+    config = Config()
+    config.agents.defaults.workspace = str(workspace)
+    save_config(config, config_path)
+
+    service = AdminService(config_path=config_path)
+    health = service.get_health()
+
+    expected_commit = subprocess.check_output(
+        ["git", "rev-parse", "--short", "HEAD"],
+        cwd=Path(__file__).resolve().parents[1],
+        text=True,
+    ).strip()
+
+    assert health["commit"] == expected_commit
+    assert health["service"] == "nanobot-admin"
+
+
+def test_admin_service_health_prefers_build_commit_env(tmp_path, monkeypatch) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    config_path = tmp_path / "config.json"
+
+    config = Config()
+    config.agents.defaults.workspace = str(workspace)
+    save_config(config, config_path)
+
+    monkeypatch.setenv("SOFTNIX_BUILD_COMMIT", "deadbee")
+    service = AdminService(config_path=config_path)
+    health = service.get_health()
+
+    assert health["commit"] == "deadbee"
+
+
 def test_admin_role_cannot_create_instances() -> None:
     permissions = permissions_for_role("admin")
     assert "instance.create" not in permissions

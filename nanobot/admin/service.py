@@ -77,6 +77,23 @@ def _expand_path(value: str | Path | None) -> Path | None:
     return Path(value).expanduser()
 
 
+def _read_git_commit_short(repo_root: Path) -> str:
+    env_value = str(os.environ.get("SOFTNIX_BUILD_COMMIT") or "").strip()
+    if env_value:
+        return env_value[:12]
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=str(repo_root),
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return ""
+    return result.stdout.strip()
+
+
 def _mask_secret(value: str, keep: int = 4) -> str:
     if not value:
         return ""
@@ -312,10 +329,12 @@ class AdminService:
     def get_health(self) -> dict[str, Any]:
         instances = self.list_instances()
         warnings = sum(len(item["security"]["findings"]) for item in instances)
+        repo_root = Path(__file__).resolve().parents[2]
         return {
             "status": "ok",
             "service": "nanobot-admin",
             "version": __version__,
+            "commit": _read_git_commit_short(repo_root),
             "mode": "safe-config",
             "instance_count": len(instances),
             "warning_count": warnings,

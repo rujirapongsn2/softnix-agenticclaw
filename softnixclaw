@@ -58,6 +58,18 @@ get_pid() {
     fi
 }
 
+get_build_commit() {
+    local repo_root="$PROJECT_ROOT"
+    local commit=""
+    if [ -d "$repo_root/.git" ]; then
+        commit="$(git -C "$repo_root" rev-parse --short HEAD 2>/dev/null || true)"
+    fi
+    if [ -z "$commit" ] && [ -n "${SOFTNIX_BUILD_COMMIT:-}" ]; then
+        commit="$SOFTNIX_BUILD_COMMIT"
+    fi
+    echo "$commit"
+}
+
 collect_registry_images() {
     local registry_path="$ADMIN_HOME/instances.json"
     if [ ! -f "$registry_path" ]; then
@@ -251,6 +263,8 @@ EOF
 
 start_admin() {
     echo "Starting Softnix Admin..."
+    local build_commit
+    build_commit="$(get_build_commit)"
     
     if is_systemd_active; then
         echo "Using Systemd service..."
@@ -261,7 +275,7 @@ start_admin() {
         if [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null; then
             echo "Softnix Admin is already running (PID: $PID)"
         else
-            nohup "$PYTHON_CMD" softnix-admin --host "$ADMIN_HOST" --port "$ADMIN_PORT" > "$LOG_FILE" 2>&1 &
+            SOFTNIX_BUILD_COMMIT="$build_commit" nohup "$PYTHON_CMD" softnix-admin --host "$ADMIN_HOST" --port "$ADMIN_PORT" > "$LOG_FILE" 2>&1 &
             NEW_PID=$!
             echo "$NEW_PID" > "$PID_FILE"
             echo "Softnix Admin started in background (PID: $NEW_PID)"
@@ -349,6 +363,9 @@ install_service() {
     SERVICE_FILE="$SYSTEMD_USER_DIR/$SERVICE_NAME.service"
     echo "Creating service file at: $SERVICE_FILE"
     
+    local build_commit
+    build_commit="$(get_build_commit)"
+
     cat > "$SERVICE_FILE" <<EOF
 [Unit]
 Description=Softnix AgenticClaw Admin Service
@@ -357,6 +374,7 @@ After=network.target
 [Service]
 Type=simple
 WorkingDirectory=$PROJECT_ROOT
+Environment=SOFTNIX_BUILD_COMMIT=$build_commit
 ExecStart=$PYTHON_CMD softnix-admin --host $ADMIN_HOST --port $ADMIN_PORT
 Restart=always
 RestartSec=10

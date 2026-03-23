@@ -680,13 +680,17 @@ setup_admin_service() {
   fi
 
   mkdir -p "$log_dir" "$run_dir" "$(dirname "$service_file")"
+  local build_commit=""
+  if [[ -d "$ROOT_DIR/.git" ]]; then
+    build_commit="$(git -C "$ROOT_DIR" rev-parse --short HEAD 2>/dev/null || true)"
+  fi
 
   # Create wrapper script for Docker access
   local wrapper_script="$ROOT_DIR/scripts/start-admin-with-docker.sh"
   cat > "$wrapper_script" <<'WRAPPER'
 #!/usr/bin/env bash
 # Wrapper script to start Admin with Docker group access
-exec sg docker -c "$NANOBOT_BIN softnix-admin --host $ADMIN_HOST --port $ADMIN_PORT"
+exec sg docker -c "SOFTNIX_BUILD_COMMIT=$SOFTNIX_BUILD_COMMIT $NANOBOT_BIN softnix-admin --host $ADMIN_HOST --port $ADMIN_PORT"
 WRAPPER
   chmod +x "$wrapper_script"
 
@@ -703,6 +707,7 @@ ExecStart=$wrapper_script
 Environment=NANOBOT_BIN=$VENV_DIR/bin/nanobot
 Environment=ADMIN_HOST=$ADMIN_HOST
 Environment=ADMIN_PORT=$ADMIN_PORT
+Environment=SOFTNIX_BUILD_COMMIT=$build_commit
 Restart=always
 RestartSec=10
 StandardOutput=append:$log_dir/admin.log
