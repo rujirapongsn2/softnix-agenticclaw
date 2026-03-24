@@ -366,6 +366,15 @@ function formatDateTime(value) {
   return date.toLocaleString();
 }
 
+function formatScheduleNextRun(job) {
+  const nextRunMs = Number(job?.state?.next_run_at_ms || 0);
+  if (!Number.isFinite(nextRunMs) || nextRunMs <= 0) {
+    return "n/a";
+  }
+  const tzLabel = job?.schedule?.tz || Intl.DateTimeFormat().resolvedOptions().timeZone || "local";
+  return `${formatDateTime(nextRunMs)} (${tzLabel})`;
+}
+
 function parseTimestamp(value) {
   const raw = String(value || "").trim();
   if (!raw) return null;
@@ -2727,6 +2736,7 @@ function renderSelectedInstanceSchedules(instance) {
             <span class="badge ${badgeClass(job.enabled ? "ok" : "neutral")}">${job.enabled ? "Enabled" : "Disabled"}</span>
           </div>
           <p class="meta">${escapeHtml(scheduleLabel)}</p>
+          <p class="meta">Next: ${escapeHtml(formatScheduleNextRun(job))}</p>
           <div class="inline-actions">
             <button type="button" class="secondary-button is-small" data-schedule-toggle="${escapeHtml(toggleKey)}">${job.enabled ? "Disable" : "Enable"}</button>
             <button type="button" class="primary-button is-small" data-schedule-run="${escapeHtml(runKey)}">Run Now</button>
@@ -4821,7 +4831,7 @@ function renderSchedules() {
                 </div>
                 <span class="badge ${badgeClass(job.enabled ? "ok" : "neutral")}">${job.enabled ? "Enabled" : "Disabled"}</span>
               </div>
-              <p class="meta">Last status: ${escapeHtml(job.state.last_status || "never")} · Next: ${escapeHtml(job.state.next_run_at_ms || "n/a")}</p>
+              <p class="meta">Last status: ${escapeHtml(job.state.last_status || "never")} · Next: ${escapeHtml(formatScheduleNextRun(job))}</p>
               <p class="event-summary">${escapeHtml(job.payload.message || "")}</p>
               <div class="inline-actions">
                 <button type="button" class="secondary-button" data-schedule-toggle="${escapeHtml(toggleKey)}" ${disabledToggle}>${job.enabled ? "Disable" : "Enable"}</button>
