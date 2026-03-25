@@ -2175,6 +2175,7 @@ function renderSelectedInstanceChannels(instance) {
     return;
   }
   const preferred = state.channelFocusByInstance[instance.id]
+    || (channels.find((item) => item.name === "softnix_app")?.name)
     || (channels.find((item) => item.name === "telegram")?.name)
     || channels[0].name;
   const selectedChannel = channels.find((item) => item.name === preferred) || channels[0];
