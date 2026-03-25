@@ -514,6 +514,37 @@ def test_admin_service_manages_registry_instances(tmp_path) -> None:
     )
 
 
+def test_instance_reuse_starts_with_clean_mobile_state(tmp_path) -> None:
+    registry_path = tmp_path / "admin" / "instances.json"
+    service = AdminService(registry_path=registry_path)
+
+    service.create_instance(
+        instance_id="acme-prod",
+        name="Acme Production",
+        owner="acme",
+        env="prod",
+        repo_root=str(tmp_path),
+        nanobot_bin="/opt/anaconda3/bin/nanobot",
+    )
+    pairing = service.get_mobile_pairing_data("acme-prod")
+    service.register_mobile_client("acme-prod", "mob-1", pairing.get("pairing_token"), "Tester")
+    assert len(service.list_mobile_devices("acme-prod")) == 1
+
+    service.delete_instance(instance_id="acme-prod", purge_files=True)
+
+    recreated = service.create_instance(
+        instance_id="acme-prod",
+        name="Acme Production Recreated",
+        owner="acme",
+        env="prod",
+        repo_root=str(tmp_path),
+        nanobot_bin="/opt/anaconda3/bin/nanobot",
+    )
+
+    assert recreated["instance"]["id"] == "acme-prod"
+    assert service.list_mobile_devices("acme-prod") == []
+
+
 def test_admin_service_grants_creator_access_on_instance_create(tmp_path) -> None:
     registry_path = tmp_path / "admin" / "instances.json"
     service = AdminService(registry_path=registry_path)

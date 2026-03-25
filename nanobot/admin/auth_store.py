@@ -387,6 +387,64 @@ class AdminAuthStore:
         ]
         self._save_json(self.mobile_devices_path, payload)
 
+    def clear_mobile_state_for_instance(self, instance_id: str) -> dict[str, int]:
+        key = str(instance_id or "").strip()
+        if not key:
+            return {
+                "pairing_tokens_removed": 0,
+                "devices_removed": 0,
+                "push_subscriptions_removed": 0,
+                "transfer_tokens_removed": 0,
+            }
+
+        pairing_payload = self._load_json(self.pairing_tokens_path, {"tokens": []})
+        pairing_tokens = [item for item in pairing_payload.get("tokens", []) if isinstance(item, dict)]
+        next_pairing_tokens = [item for item in pairing_tokens if item.get("instance_id") != key]
+        pairing_removed = len(pairing_tokens) - len(next_pairing_tokens)
+        if pairing_removed:
+            pairing_payload["tokens"] = next_pairing_tokens
+            self._save_json(self.pairing_tokens_path, pairing_payload)
+
+        devices_payload = self._load_json(self.mobile_devices_path, {"devices": []})
+        devices = [item for item in devices_payload.get("devices", []) if isinstance(item, dict)]
+        next_devices = [item for item in devices if item.get("instance_id") != key]
+        devices_removed = len(devices) - len(next_devices)
+        if devices_removed:
+            devices_payload["devices"] = next_devices
+            self._save_json(self.mobile_devices_path, devices_payload)
+
+        subscriptions_payload = self._load_json(self.mobile_push_subscriptions_path, {"subscriptions": []})
+        subscriptions = [item for item in subscriptions_payload.get("subscriptions", []) if isinstance(item, dict)]
+        next_subscriptions = [item for item in subscriptions if item.get("instance_id") != key]
+        subscriptions_removed = len(subscriptions) - len(next_subscriptions)
+        if subscriptions_removed:
+            subscriptions_payload["subscriptions"] = next_subscriptions
+            self._save_json(self.mobile_push_subscriptions_path, subscriptions_payload)
+
+        transfer_payload = self._load_json(self.mobile_transfer_tokens_path, {"tokens": []})
+        transfer_tokens = [item for item in transfer_payload.get("tokens", []) if isinstance(item, dict)]
+        next_transfer_tokens = []
+        transfer_removed = 0
+        for item in transfer_tokens:
+            payload = item.get("payload") if isinstance(item.get("payload"), dict) else {}
+            device = payload.get("device") if isinstance(payload.get("device"), dict) else {}
+            payload_instance_id = str(payload.get("instance_id") or "").strip()
+            device_instance_id = str(device.get("instance_id") or "").strip()
+            if payload_instance_id == key or device_instance_id == key:
+                transfer_removed += 1
+                continue
+            next_transfer_tokens.append(item)
+        if transfer_removed:
+            transfer_payload["tokens"] = next_transfer_tokens
+            self._save_json(self.mobile_transfer_tokens_path, transfer_payload)
+
+        return {
+            "pairing_tokens_removed": pairing_removed,
+            "devices_removed": devices_removed,
+            "push_subscriptions_removed": subscriptions_removed,
+            "transfer_tokens_removed": transfer_removed,
+        }
+
     def update_device_last_seen(self, instance_id: str, device_id: str) -> None:
         payload = self._load_json(self.mobile_devices_path, {"devices": []})
         for d in payload["devices"]:

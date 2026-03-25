@@ -2781,15 +2781,19 @@ class AdminService:
             ),
             force=force,
         )
+        mobile_state_cleanup = self.auth_store.clear_mobile_state_for_instance(instance_id)
         instance = self.get_instance(instance_id)
+        created_payload = {
+            "runtime_mode": instance["runtime_config"]["mode"],
+            "gateway_port": instance["gateway_port"],
+            "config_path": instance["config_path"],
+        }
+        if any(mobile_state_cleanup.values()):
+            created_payload["mobile_state_cleanup"] = mobile_state_cleanup
         self._append_audit_event(
             instance_id=instance_id,
             event_type="instance.created",
-            payload={
-                "runtime_mode": instance["runtime_config"]["mode"],
-                "gateway_port": instance["gateway_port"],
-                "config_path": instance["config_path"],
-            },
+            payload=created_payload,
         )
         creator_user_id = str(current_user_id or "").strip()
         if creator_user_id:
@@ -2954,24 +2958,25 @@ class AdminService:
             instance_id=instance_id,
             purge_files=purge_files,
         )
+        mobile_state_cleanup = self.auth_store.clear_mobile_state_for_instance(instance_id)
+        deleted_payload = {
+            "purge_files": bool(purge_files),
+            "config_path": str(target.config_path),
+        }
+        if any(mobile_state_cleanup.values()):
+            deleted_payload["mobile_state_cleanup"] = mobile_state_cleanup
         self._append_audit_event(
             instance_id=instance_id,
             event_type="instance.deleted",
             severity="warning",
-            payload={
-                "purge_files": bool(purge_files),
-                "config_path": str(target.config_path),
-            },
+            payload=deleted_payload,
         )
         self.auth_store.append_audit(
             event_type="instance.deleted",
             category="configuration",
             outcome="success",
             resource={"type": "instance", "id": target.id, "name": getattr(target, "name", target.id)},
-            payload={
-                "purge_files": bool(purge_files),
-                "config_path": str(target.config_path),
-            },
+            payload=deleted_payload,
         )
         return result
 
