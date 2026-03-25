@@ -2744,6 +2744,7 @@ class AdminService:
         sandbox_network_policy: str | None = None,
         sandbox_timeout_seconds: int | None = None,
         force: bool = False,
+        current_user_id: str | None = None,
         accessible_instance_ids: set[str] | list[str] | tuple[str, ...] | None = None,
     ) -> dict[str, Any]:
         """Create one instance in the configured registry."""
@@ -2790,6 +2791,23 @@ class AdminService:
                 "config_path": instance["config_path"],
             },
         )
+        creator_user_id = str(current_user_id or "").strip()
+        if creator_user_id:
+            creator = self.auth_store.get_user_by_id(creator_user_id)
+            creator_scope = normalize_instance_ids((creator or {}).get("instance_ids"))
+            if creator is not None and creator_scope is not None and instance_id not in creator_scope:
+                creator_scope.append(instance_id)
+                updated_creator = dict(creator)
+                updated_creator["instance_ids"] = creator_scope
+                updated_creator["updated_at"] = iso_now()
+                self.auth_store.upsert_user(updated_creator)
+                self.auth_store.append_audit(
+                    event_type="user.instance_access_granted",
+                    category="user_management",
+                    outcome="success",
+                    resource={"type": "user", "id": creator.get("id"), "name": creator.get("username")},
+                    payload={"instance_id": instance_id},
+                )
         return {"instance": instance, "registry_entry": result["registry_entry"]}
 
     def update_instance(

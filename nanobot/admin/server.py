@@ -585,6 +585,7 @@ def resolve_admin_post(
     raw_path: str,
     payload: dict[str, Any],
     *,
+    current_user_id: str | None = None,
     accessible_instance_ids: set[str] | list[str] | tuple[str, ...] | None = None,
 ) -> tuple[HTTPStatus, Any]:
     """Resolve one POST request path into a JSON payload."""
@@ -772,6 +773,7 @@ def resolve_admin_post(
                 sandbox_network_policy=payload.get("sandbox_network_policy"),
                 sandbox_timeout_seconds=payload.get("sandbox_timeout_seconds"),
                 force=bool(payload.get("force")),
+                current_user_id=current_user_id,
             )
             return HTTPStatus.OK, result
         if path.startswith("/admin/instances/") and path.endswith(("/start", "/stop", "/restart")):
@@ -1117,7 +1119,14 @@ def create_admin_server(host: str, port: int, service: AdminService) -> Threadin
                 if not _mobile_unauthenticated and not self._authorize_user_mutation(method="POST", path=self.path, payload=payload, context=context):
                     return
                 accessible_ids = self._mobile_accessible_instance_ids(payload) or _accessible_instance_ids(context)
-                status, response = resolve_admin_post(service, self.path, payload, accessible_instance_ids=accessible_ids)
+                current_user_id = str((context.get("user") or {}).get("id") or "").strip() or None
+                status, response = resolve_admin_post(
+                    service,
+                    self.path,
+                    payload,
+                    current_user_id=current_user_id,
+                    accessible_instance_ids=accessible_ids,
+                )
                 self._send_json(response, status=status)
             finally:
                 clear_request_audit_context()

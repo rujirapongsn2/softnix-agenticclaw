@@ -20,7 +20,7 @@ from nanobot.admin.server import (
     resolve_admin_post,
     resolve_static_asset,
 )
-from nanobot.admin.auth import has_permission, permissions_for_role
+from nanobot.admin.auth import has_permission, permissions_for_role, hash_password
 from nanobot.admin.service import AdminService
 from nanobot.channels.access_requests import AccessRequestStore
 from nanobot.config.loader import load_config, save_config
@@ -243,6 +243,30 @@ def test_admin_server_resolves_mobile_transcribe_route(tmp_path) -> None:
 
     assert status == HTTPStatus.OK
     assert payload["transcript"] == "hello"
+
+
+def test_admin_server_forwards_current_user_id_for_instance_create() -> None:
+    class DummyService:
+        def create_instance(self, **kwargs):  # noqa: ANN003
+            return kwargs
+
+    status, payload = resolve_admin_post(
+        DummyService(),
+        "/admin/instances",
+        {
+            "instance_id": "acme-prod",
+            "name": "Acme Production",
+            "owner": "acme",
+            "env": "prod",
+            "repo_root": "/tmp",
+            "nanobot_bin": "/opt/anaconda3/bin/nanobot",
+        },
+        current_user_id="user-creator",
+        accessible_instance_ids={"default-prod"},
+    )
+
+    assert status == HTTPStatus.OK
+    assert payload["current_user_id"] == "user-creator"
 
 
 def test_admin_server_marks_missing_groq_key_on_mobile_transcribe() -> None:
@@ -488,6 +512,42 @@ def test_admin_service_manages_registry_instances(tmp_path) -> None:
         and (event.get("resource") or {}).get("id") == "acme-prod"
         for event in audit_log["events"]
     )
+
+
+def test_admin_service_grants_creator_access_on_instance_create(tmp_path) -> None:
+    registry_path = tmp_path / "admin" / "instances.json"
+    service = AdminService(registry_path=registry_path)
+
+    creator = service.auth_store.upsert_user(
+        {
+            "id": "user-creator",
+            "username": "datateam",
+            "display_name": "Data Team",
+            "email": None,
+            "role": "admin",
+            "status": "active",
+            "password_hash": hash_password("password123"),
+            "created_at": "2026-03-25T00:00:00+07:00",
+            "updated_at": "2026-03-25T00:00:00+07:00",
+            "last_login_at": None,
+            "instance_ids": ["default-prod"],
+        }
+    )
+
+    created = service.create_instance(
+        instance_id="acme-prod",
+        name="Acme Production",
+        owner="acme",
+        env="prod",
+        repo_root=str(tmp_path),
+        nanobot_bin="/opt/anaconda3/bin/nanobot",
+        current_user_id=creator["id"],
+    )
+
+    assert created["instance"]["id"] == "acme-prod"
+    updated_creator = service.auth_store.get_user_by_id(creator["id"])
+    assert updated_creator is not None
+    assert updated_creator["instance_ids"] == ["default-prod", "acme-prod"]
 
 
 def test_admin_service_create_instance_applies_fast_profile(tmp_path) -> None:
