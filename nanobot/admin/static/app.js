@@ -1585,7 +1585,8 @@ function deriveInstanceValues(editor) {
 }
 
 function defaultInstanceEditor() {
-  const seed = state.overview?.instances?.[0];
+  const seed = state.overview?.instances?.find((instance) => instance.id === "default-prod")
+    || state.overview?.instances?.[0];
   const runtime = seed?.runtime_config || {};
   const sandbox = runtime.sandbox || {};
   const profile = normalizeSandboxProfile(sandbox.profile || "balanced");
@@ -1600,8 +1601,8 @@ function defaultInstanceEditor() {
     repoRoot: seed?.working_dir || "/Volumes/Seagate/myapp/nanobot",
     nanobotBin: seed?.nanobot_bin || "/opt/anaconda3/bin/nanobot",
     gatewayPort: seed?.gateway_port ? String(seed.gateway_port) : "",
-    sourceConfig: "",
-    runtimeMode: SANDBOX_PROFILE_DEFAULTS[profile].runtimeMode,
+    sourceConfig: seed?.config_path || "",
+    runtimeMode: runtime.mode || SANDBOX_PROFILE_DEFAULTS[profile].runtimeMode,
     sandboxProfile: profile,
     runtimeOverrideOpen: false,
     sandboxImage: sandbox.image || "softnixclaw:latest",
