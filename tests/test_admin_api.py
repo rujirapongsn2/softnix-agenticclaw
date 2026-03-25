@@ -159,10 +159,10 @@ def test_admin_service_health_prefers_build_commit_env(tmp_path, monkeypatch) ->
     assert health["commit"] == "deadbee"
 
 
-def test_admin_role_cannot_create_instances() -> None:
+def test_admin_role_can_create_instances() -> None:
     permissions = permissions_for_role("admin")
-    assert "instance.create" not in permissions
-    assert has_permission("admin", "instance.create") is False
+    assert "instance.create" in permissions
+    assert has_permission("admin", "instance.create") is True
 
 
 def test_admin_server_supports_http_range_requests_for_static_files() -> None:

@@ -74,6 +74,7 @@ ADMIN_ROLE_PERMISSIONS: dict[str, set[str]] = {
         "activity.read",
         "runtime_audit.read",
         "instance.read",
+        "instance.create",
         "instance.update",
         "instance.control",
         "config.read",
