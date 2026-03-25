@@ -285,6 +285,7 @@ function defaultSkillState() {
     selectedSkill: null,
     files: {},
     selectedFile: null,
+    searchQuery: "",
   };
 }
 
@@ -308,6 +309,18 @@ function getMemoryState(instanceId) {
     state.memoryByInstance[instanceId] = defaultMemoryState();
   }
   return state.memoryByInstance[instanceId];
+}
+
+function normalizeSkillSearch(value) {
+  return String(value || "").trim().toLowerCase();
+}
+
+function sortSkillFilePaths(paths) {
+  return [...paths].sort((a, b) => {
+    if (a === "SKILL.md") return -1;
+    if (b === "SKILL.md") return 1;
+    return a.localeCompare(b);
+  });
 }
 
 function syncLocationState() {
@@ -4241,50 +4254,75 @@ function renderSelectedInstanceSkills(instance) {
   const canUpdate = hasAuthPermission("skills.update");
   const canDelete = hasAuthPermission("skills.delete");
   const canDownload = hasAuthPermission("skills.read");
+  const searchQuery = normalizeSkillSearch(skillState.searchQuery);
+  const visibleSkills = skillState.skills.filter((skill) => {
+    if (!searchQuery) return true;
+    const haystack = [
+      skill.skill_name,
+      skill.name,
+      skill.description,
+      skill.file_count,
+    ]
+      .map((value) => normalizeSkillSearch(value))
+      .join(" ");
+    return haystack.includes(searchQuery);
+  });
+  const selectedSkill = skillState.selectedSkill
+    ? skillState.skills.find((skill) => skill.skill_name === skillState.selectedSkill) || null
+    : null;
 
   const skillCards = skillState.loading && !skillState.skills.length
     ? `<p class="meta">Loading skills…</p>`
     : skillState.skills.length === 0
       ? `<p class="meta">No skills found in workspace/skills/.</p>`
-      : skillState.skills.map((skill) => {
-        const isSelected = skillState.selectedSkill === skill.skill_name;
-        const busyDel = state.busyKey === `skill-delete:${instance.id}:${skill.skill_name}` ? "disabled" : "";
-        return `<div class="skill-card item-card ${isSelected ? "is-active" : ""}" data-skill-select="${escapeHtml(instance.id)}:${escapeHtml(skill.skill_name)}">
-          <div class="row-between">
-            <div style="min-width:0">
-              <h4>${escapeHtml(skill.name || skill.skill_name)}</h4>
-              ${skill.description ? `<p class="meta">${escapeHtml(skill.description)}</p>` : ""}
+      : visibleSkills.length === 0
+        ? `<p class="meta">No skills match this search.</p>`
+        : visibleSkills.map((skill) => {
+          const isSelected = skillState.selectedSkill === skill.skill_name;
+          const busyDel = state.busyKey === `skill-delete:${instance.id}:${skill.skill_name}` ? "disabled" : "";
+          return `<article class="skill-card item-card ${isSelected ? "is-active" : ""}" data-skill-select="${escapeHtml(instance.id)}:${escapeHtml(skill.skill_name)}" role="button" tabindex="0" aria-pressed="${isSelected ? "true" : "false"}">
+            <div class="skill-card-head">
+              <div class="skill-card-copy">
+                <h4>${escapeHtml(skill.name || skill.skill_name)}</h4>
+                ${skill.description ? `<p class="meta">${escapeHtml(skill.description)}</p>` : `<p class="meta">Open skill details and edit files in place.</p>`}
+              </div>
+              <span class="badge is-blue">${escapeHtml(String(skill.file_count))} file${skill.file_count !== 1 ? "s" : ""}</span>
             </div>
-            <span class="badge is-blue">${escapeHtml(String(skill.file_count))} file${skill.file_count !== 1 ? "s" : ""}</span>
-          </div>
-          ${canDelete ? `<div class="inline-actions" style="margin-top:6px">
-            <button class="secondary-button is-small is-danger" data-skill-delete="${escapeHtml(instance.id)}:${escapeHtml(skill.skill_name)}" ${busyDel}>Delete</button>
-          </div>` : ""}
-        </div>`;
-      }).join("");
+            <div class="skill-card-foot">
+              <span class="skill-card-hint">${isSelected ? "Selected" : "Open files"}</span>
+              ${canDelete ? `<button class="secondary-button is-small is-danger" data-skill-delete="${escapeHtml(instance.id)}:${escapeHtml(skill.skill_name)}" ${busyDel}>Delete</button>` : ""}
+            </div>
+          </article>`;
+        }).join("");
 
   const selectedSkillName = skillState.selectedSkill;
-  const files = Object.values(skillState.files || {});
+  const files = sortSkillFilePaths(Object.keys(skillState.files || {})).map((path) => skillState.files[path]).filter(Boolean);
   const selectedFilePath = skillState.selectedFile;
   const selectedFileObj = selectedFilePath ? skillState.files[selectedFilePath] : null;
+  const selectedSkillLabel = selectedSkill?.name || selectedSkillName || "";
+  const selectedSkillDescription = selectedSkill?.description || "All files in this skill can be edited and saved.";
+  const selectedSkillCount = selectedSkill ? selectedSkill.file_count : files.length;
 
   const fileNav = selectedSkillName
     ? files.length
       ? files.map((f) => {
         const dirty = f.content !== f.originalContent;
-        return `<button class="console-tab ${f.path === selectedFilePath ? "is-active" : ""}" data-skill-file="${escapeHtml(instance.id)}:${escapeHtml(selectedSkillName)}:${escapeHtml(f.path)}">${escapeHtml(f.path)}${dirty ? " *" : ""}</button>`;
+        return `<button class="console-tab skill-file-tab ${f.path === selectedFilePath ? "is-active" : ""}" data-skill-file="${escapeHtml(instance.id)}:${escapeHtml(selectedSkillName)}:${escapeHtml(f.path)}">${escapeHtml(f.path)}${dirty ? " *" : ""}</button>`;
       }).join("")
       : `<p class="meta">${skillState.loadingFiles ? "Loading files…" : "No files found."}</p>`
-    : `<p class="meta">Select a skill to view files.</p>`;
+    : `<p class="meta">Select a skill card to open its files.</p>`;
 
   const editorBody = selectedFileObj
     ? (() => {
       const dirty = selectedFileObj.content !== selectedFileObj.originalContent;
       const busyKey = `skill-save:${instance.id}:${selectedSkillName}:${selectedFileObj.path}`;
       const busy = state.busyKey === busyKey ? "disabled" : "";
-      return `<div class="item-card">
-        <div class="row-between">
-          <h4>Edit · ${escapeHtml(selectedFileObj.path)}</h4>
+      return `<div class="skill-editor-shell">
+        <div class="skill-editor-head">
+          <div>
+            <p class="meta">Editing</p>
+            <h4>${escapeHtml(selectedFileObj.path)}</h4>
+          </div>
           <div class="inline-actions">
             ${canDownload ? `<button class="secondary-button is-small" data-skill-download="${escapeHtml(instance.id)}:${escapeHtml(selectedSkillName)}">Download</button>` : ""}
             <span class="badge ${badgeClass(dirty ? "warning" : "ok")}">${dirty ? "Unsaved" : "Saved"}</span>
@@ -4292,41 +4330,71 @@ function renderSelectedInstanceSkills(instance) {
         </div>
         <div class="field">
           <label>Content</label>
-          <textarea class="memory-editor-textarea" data-skill-editor="${escapeHtml(instance.id)}:${escapeHtml(selectedSkillName)}:${escapeHtml(selectedFileObj.path)}" ${busy}>${escapeHtml(selectedFileObj.content)}</textarea>
+          <textarea class="memory-editor-textarea skill-editor-textarea" data-skill-editor="${escapeHtml(instance.id)}:${escapeHtml(selectedSkillName)}:${escapeHtml(selectedFileObj.path)}" ${busy}>${escapeHtml(selectedFileObj.content)}</textarea>
         </div>
-        ${canUpdate ? `<div class="inline-actions">
+        ${canUpdate ? `<div class="inline-actions skill-editor-actions">
           <button class="primary-button is-small" data-skill-save="${escapeHtml(instance.id)}:${escapeHtml(selectedSkillName)}:${escapeHtml(selectedFileObj.path)}" ${busy || !dirty ? "disabled" : ""}>Save</button>
           <button class="secondary-button is-small" data-skill-reset="${escapeHtml(instance.id)}:${escapeHtml(selectedSkillName)}:${escapeHtml(selectedFileObj.path)}" ${busy || !dirty ? "disabled" : ""}>Reset</button>
         </div>` : ""}
       </div>`;
     })()
     : selectedSkillName
-      ? `<div class="item-card"><h4>No file selected</h4><p class="meta">${skillState.loadingFiles ? "Loading…" : "Choose a file from the list."}</p></div>`
-      : `<div class="item-card"><h4>No skill selected</h4><p class="meta">Click a skill from the list to view its files.</p></div>`;
+      ? `<div class="item-card skill-empty-state"><h4>No file selected</h4><p class="meta">${skillState.loadingFiles ? "Loading…" : "Choose a tab to edit the file."}</p></div>`
+      : `<div class="item-card skill-empty-state"><h4>No skill selected</h4><p class="meta">Click a skill card to open its files.</p></div>`;
 
   target.innerHTML = `
-    <div class="memory-workspace">
-      <div class="memory-nav item-card">
-        <div class="row-between">
-          <h4>Skills</h4>
+    <div class="skills-workspace">
+      <section class="skills-rail item-card">
+        <div class="skills-header">
+          <div>
+            <h4>Skills</h4>
+            <p class="meta">All skills are installed locally in workspace/skills/. Click a card to edit its files.</p>
+          </div>
           <div class="inline-actions">
             ${canUpdate ? `<button class="secondary-button is-small" data-skill-upload="${escapeHtml(instance.id)}" ${skillState.uploading ? "disabled" : ""}>Upload</button>` : ""}
             <button class="secondary-button is-small" data-skills-reload="${escapeHtml(instance.id)}" ${skillState.loading ? "disabled" : ""}>Refresh</button>
           </div>
         </div>
-        <p class="meta">Skills loaded from workspace/skills/.</p>
-        <div class="skill-card-list">${skillCards}</div>
-      </div>
-      <div class="stack">
-        ${selectedSkillName ? `<div class="memory-file-list" style="margin-bottom:8px">${fileNav}</div>` : ""}
+        <div class="skills-toolbar">
+          <label class="skills-search">
+            <span>Search skills</span>
+            <input type="search" placeholder="Search skills" value="${escapeHtml(skillState.searchQuery || "")}" data-skill-search="${escapeHtml(instance.id)}">
+          </label>
+          <div class="skills-summary">
+            <span class="badge is-blue" data-skill-shown-count>${escapeHtml(String(visibleSkills.length))} shown</span>
+            <span class="meta" data-skill-total-count>${escapeHtml(String(skillState.skills.length))} total</span>
+          </div>
+        </div>
+        <div class="skill-card-list skill-card-grid">${skillCards}</div>
+        <p class="meta skill-search-empty" hidden></p>
+      </section>
+      <section class="skill-detail-panel item-card">
+        <div class="skill-detail-header">
+          <div>
+            <p class="meta">Selected skill</p>
+            <h4>${escapeHtml(selectedSkillLabel || "No skill selected")}</h4>
+            <p class="meta">${escapeHtml(selectedSkillDescription)} ${selectedSkillName ? ` · ${escapeHtml(String(selectedSkillCount))} file${selectedSkillCount !== 1 ? "s" : ""}` : ""}</p>
+          </div>
+          ${selectedSkillName && canDelete ? `<div class="inline-actions">
+            <button class="secondary-button is-small is-danger" data-skill-delete="${escapeHtml(instance.id)}:${escapeHtml(selectedSkillName)}">Delete skill</button>
+          </div>` : ""}
+        </div>
+        ${selectedSkillName ? `<div class="skill-file-tabs console-tabs">${fileNav}</div>` : ""}
         ${editorBody}
-      </div>
+      </section>
     </div>
     <input type="file" accept=".zip,application/zip" data-skill-upload-input="${escapeHtml(instance.id)}" style="display:none">
   `;
 
   target.querySelectorAll("[data-skill-select]").forEach((el) => {
     el.addEventListener("click", (e) => {
+      if (e.target.closest("[data-skill-delete]")) return;
+      const [instanceId, skillName] = el.dataset.skillSelect.split(":");
+      handleSkillSelect(instanceId, skillName);
+    });
+    el.addEventListener("keydown", (e) => {
+      if (e.key !== "Enter" && e.key !== " ") return;
+      e.preventDefault();
       if (e.target.closest("[data-skill-delete]")) return;
       const [instanceId, skillName] = el.dataset.skillSelect.split(":");
       handleSkillSelect(instanceId, skillName);
@@ -4388,6 +4456,14 @@ function renderSelectedInstanceSkills(instance) {
       handleSkillDownload(instanceId, skillName);
     });
   });
+  target.querySelectorAll("[data-skill-search]").forEach((input) => {
+    input.addEventListener("input", () => {
+      const skillState = getSkillState(input.dataset.skillSearch);
+      skillState.searchQuery = input.value || "";
+      updateSkillSearchResults(input.dataset.skillSearch, skillState.searchQuery);
+    });
+  });
+  updateSkillSearchResults(instance.id);
 }
 
 function readFileAsBase64(file) {
@@ -4455,6 +4531,12 @@ async function loadInstanceSkills(instanceId, { force = false } = {}) {
       skillState.files = {};
       skillState.selectedFile = null;
     }
+    if (!skillState.selectedSkill && skillState.skills.length) {
+      skillState.selectedSkill = skillState.skills[0].skill_name;
+      skillState.files = {};
+      skillState.selectedFile = null;
+      void loadInstanceSkillFiles(instanceId, skillState.selectedSkill);
+    }
     clearBanner();
   } catch (error) {
     setBanner(`Unable to load skills: ${error.message}`, "error");
@@ -4512,7 +4594,69 @@ function handleSkillEditorInput(instanceId, skillName, path, value) {
   const file = skillState.files[path];
   if (!file) return;
   file.content = value;
-  renderSelectedInstanceSkills(selectedInstance());
+  updateSkillEditorDirtyState(instanceId, skillName, path);
+}
+
+function updateSkillEditorDirtyState(instanceId, skillName, path) {
+  const target = document.getElementById("instance-workspace-skills");
+  if (!target) return;
+  const skillState = getSkillState(instanceId);
+  const file = skillState.files[path];
+  if (!file) return;
+  const dirty = file.content !== file.originalContent;
+  const busyKey = `skill-save:${instanceId}:${skillName}:${path}`;
+  const editorShell = target.querySelector(".skill-editor-shell");
+  if (editorShell) {
+    const statusBadge = editorShell.querySelector(".skill-editor-head .badge");
+    if (statusBadge) {
+      statusBadge.textContent = dirty ? "Unsaved" : "Saved";
+      statusBadge.classList.toggle("is-warning", dirty);
+      statusBadge.classList.toggle("is-ok", !dirty);
+    }
+  }
+  target.querySelectorAll("[data-skill-save]").forEach((btn) => {
+    if (btn.dataset.skillSave !== `${instanceId}:${skillName}:${path}`) return;
+    btn.disabled = state.busyKey === busyKey || !dirty;
+  });
+  target.querySelectorAll("[data-skill-reset]").forEach((btn) => {
+    if (btn.dataset.skillReset !== `${instanceId}:${skillName}:${path}`) return;
+    btn.disabled = state.busyKey === busyKey || !dirty;
+  });
+  target.querySelectorAll("[data-skill-file]").forEach((btn) => {
+    if (btn.dataset.skillFile !== `${instanceId}:${skillName}:${path}`) return;
+    const baseLabel = path;
+    btn.textContent = `${baseLabel}${dirty ? " *" : ""}`;
+  });
+}
+
+function updateSkillSearchResults(instanceId, query = null) {
+  const target = document.getElementById("instance-workspace-skills");
+  if (!target) return;
+  const skillState = getSkillState(instanceId);
+  const normalizedQuery = normalizeSkillSearch(query ?? skillState.searchQuery);
+  const cards = Array.from(target.querySelectorAll("[data-skill-select]"));
+  let visibleCount = 0;
+  cards.forEach((card) => {
+    const text = normalizeSkillSearch(card.textContent);
+    const matches = !normalizedQuery || text.includes(normalizedQuery);
+    card.hidden = !matches;
+    if (matches) visibleCount += 1;
+  });
+  const shownBadge = target.querySelector(".skills-summary .badge");
+  if (shownBadge) {
+    shownBadge.textContent = `${visibleCount} shown`;
+  }
+  const totalMeta = target.querySelector(".skills-summary .meta");
+  if (totalMeta) {
+    totalMeta.textContent = `${skillState.skills.length} total`;
+  }
+  const emptyState = target.querySelector(".skill-search-empty");
+  if (emptyState) {
+    const hasSkills = skillState.skills.length > 0;
+    const hasVisibleSkills = visibleCount > 0;
+    emptyState.hidden = !hasSkills || hasVisibleSkills;
+    emptyState.textContent = hasSkills ? "No skills match this search." : "No skills found in workspace/skills/.";
+  }
 }
 
 async function handleSkillFileSave(instanceId, skillName, path) {
