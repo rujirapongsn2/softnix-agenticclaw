@@ -71,7 +71,7 @@ def _allows_unauthenticated_admin_access(method: str, path: str) -> bool:
     if path in {"/admin/auth/me", "/admin/auth/login", "/admin/auth/logout", "/admin/auth/bootstrap", "/admin/auth/bootstrap-status"}:
         return True
     if method == "GET":
-        return path in {"/admin/mobile/poll", "/admin/mobile/push/config", "/admin/mobile/media"}
+        return path in {"/admin/mobile/poll", "/admin/mobile/push/config", "/admin/mobile/media", "/admin/mobile/status"}
     if method == "POST":
         return path in {
             "/admin/mobile/register",
@@ -280,6 +280,18 @@ def resolve_admin_get(
         if not instance_id:
             return HTTPStatus.BAD_REQUEST, {"error": "Missing instance_id"}
         return HTTPStatus.OK, {"devices": service.list_mobile_devices(instance_id, accessible_instance_ids=accessible_instance_ids)}
+
+    if path == "/admin/mobile/status":
+        query = parse_qs(parsed.query)
+        instance_id = (query.get("instance_id") or [None])[0]
+        device_id = (query.get("device_id") or [None])[0]
+        if not instance_id or not device_id:
+            return HTTPStatus.BAD_REQUEST, {"error": "Missing instance_id or device_id"}
+        return HTTPStatus.OK, service.get_mobile_device_status(
+            instance_id,
+            device_id,
+            accessible_instance_ids=accessible_instance_ids,
+        )
 
     if path == "/admin/mobile/push/config":
         return HTTPStatus.OK, service.get_mobile_push_config()

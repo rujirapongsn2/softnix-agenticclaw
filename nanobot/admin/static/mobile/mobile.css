@@ -439,6 +439,18 @@ body {
   letter-spacing: -0.02em;
 }
 
+.chat-status-note {
+  margin-top: 12px;
+  padding: 12px 14px;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.82);
+  border: 1px solid rgba(45, 48, 71, 0.08);
+  color: var(--fg-secondary);
+  font-size: 14px;
+  line-height: 1.45;
+  box-shadow: var(--shadow-sm);
+}
+
 /* ── Chat Shell ─────────────────────────────── */
 .chat-shell {
   display: flex;
@@ -572,6 +584,10 @@ body {
   z-index: 1;
 }
 
+.chat-home.is-pending-approval .hero-copy h1 {
+  font-size: 28px;
+}
+
 .hero-stack {
   display: flex;
   flex-direction: column;
@@ -632,6 +648,15 @@ body {
   transform: scale(0.97) translateY(1px);
   box-shadow:
     0 10px 18px rgba(20, 56, 125, 0.08),
+    0 0 0 1px rgba(255,255,255,0.16) inset;
+}
+
+.quick-action:disabled {
+  opacity: 0.48;
+  cursor: default;
+  transform: none;
+  box-shadow:
+    0 8px 18px rgba(20, 56, 125, 0.05),
     0 0 0 1px rgba(255,255,255,0.16) inset;
 }
 
@@ -866,6 +891,11 @@ body {
   box-shadow: var(--shadow-lg);
 }
 
+.compose-bar.is-disabled {
+  opacity: 0.72;
+  box-shadow: var(--shadow-sm);
+}
+
 .compose-main {
   flex: 1;
   display: flex;
@@ -1005,6 +1035,11 @@ body {
   opacity: 0.6;
 }
 
+.compose-main textarea:disabled {
+  opacity: 0.72;
+  cursor: default;
+}
+
 .compose-meta {
   display: none;
 }
@@ -1051,6 +1086,12 @@ body {
 .attach-btn svg {
   width: 22px;
   height: 22px;
+}
+
+.attach-btn:disabled,
+.voice-btn:disabled {
+  opacity: 0.42;
+  cursor: default;
 }
 
 .voice-btn {

@@ -3,6 +3,7 @@
 
 const STORAGE_KEY = "softnix_mobile_v1";
 const POLL_INTERVAL_MS = 2000;
+const APPROVAL_STATUS_POLL_MS = 4000;
 const MAX_ATTACHMENT_BYTES = 15 * 1024 * 1024;
 const REPLY_CONTEXT_WINDOW = 4;
 const MAX_STORED_MESSAGES = 200;
@@ -27,6 +28,8 @@ let voiceChunks = [];
 let isVoiceRecording = false;
 let isVoiceTranscribing = false;
 let voiceBannerTimer = null;
+let lastApprovalStatusCheckAt = 0;
+let approvalStatusRequest = null;
 const TOOLS_TOGGLE_SPINNER_FRAMES = ["", ".", "..", "..."];
 let toolsToggleSpinnerFrame = 0;
 
@@ -100,6 +103,72 @@ function showScreen(name) {
   }
 }
 
+function createDefaultAppState(settings = null) {
+  const themeMode = settings?.themeMode;
+  return {
+    device: null,
+    activeSessionId: null,
+    conversations: {},
+    settings: { themeMode: THEME_MODES.includes(themeMode) ? themeMode : "system" },
+  };
+}
+
+function replaceAppStateForDevice(nextDevice) {
+  const previousSettings = appState?.settings || loadAppState().settings;
+  const activeSessionId = nextDevice?.current_session_id || (nextDevice?.device_id ? `mobile-${nextDevice.device_id}` : null);
+  appState = createDefaultAppState(previousSettings);
+  appState.device = {
+    ...nextDevice,
+    current_session_id: activeSessionId,
+  };
+  appState.activeSessionId = activeSessionId;
+  device = appState.device;
+  saveAppState();
+}
+
+function isDevicePendingApproval() {
+  return !!device && String(device.approval_status || "") === "pending";
+}
+
+function renderApprovalState() {
+  const pending = isDevicePendingApproval();
+  const note = $("chat-status-note");
+  const home = $("chat-home");
+  const composeBar = document.querySelector(".compose-bar");
+  const input = $("compose-input");
+  const attachButton = $("btn-attach");
+
+  if (note) {
+    if (pending) {
+      note.style.display = "block";
+      note.textContent = "This device is paired but still waiting for allowlist approval. Chat will unlock automatically after approval.";
+    } else {
+      note.style.display = "none";
+      note.textContent = "";
+    }
+  }
+  if (home) {
+    home.classList.toggle("is-pending-approval", pending);
+  }
+  if (composeBar) {
+    composeBar.classList.toggle("is-disabled", pending);
+  }
+  if (input) {
+    if (pending) {
+      input.value = "";
+    }
+    input.disabled = pending;
+    input.placeholder = pending ? "Waiting for allowlist approval..." : "Message AI...";
+    autoResizeInput(input);
+  }
+  if (attachButton) {
+    attachButton.disabled = pending;
+  }
+  document.querySelectorAll("[data-quick-prompt]").forEach((button) => {
+    button.disabled = pending;
+  });
+}
+
 function ensureToolsToggleSpinner(toolsToggle) {
   if (!toolsToggle) return null;
   let spinner = toolsToggle.querySelector(".tools-toggle-spinner");
@@ -155,17 +224,21 @@ async function registerDevice(instanceId, token) {
       throw new Error(data.error || `Registration failed (${response.status})`);
     }
 
-    device = {
+    replaceAppStateForDevice({
       device_id: deviceId,
       instance_id: instanceId,
       label,
       registered_at: new Date().toISOString(),
       device_token: data.device_token || data.mobile_token || "",
-    };
-    saveDevice(device);
+      approval_status: data.already_allowed ? "approved" : "pending",
+      already_allowed: !!data.already_allowed,
+    });
     window.history.replaceState({}, "", "/mobile");
     showScreen("chat");
     setupChat();
+    if (!data.already_allowed) {
+      setBanner("Device paired. Waiting for allowlist approval before chat is enabled.", "info", 5000);
+    }
   } catch (error) {
     const message = error.message || "Registration failed.";
     if (/invalid or expired pairing token/i.test(message)) {
@@ -188,9 +261,11 @@ function setupChat() {
   applyRequestedSessionFromUrl();
   restoreActiveConversation();
   renderComposerMeta();
+  renderApprovalState();
   refreshHomeState();
   startPolling();
   void setupPushNotifications();
+  void syncDeviceApprovalStatus({ force: true, silent: true });
 }
 
 function configureDisconnectedState() {
@@ -239,7 +314,7 @@ function handleRetryAction(event) {
 async function handleSend() {
   const input = $("compose-input");
   const text = input.value.trim();
-  if ((!text && selectedAttachments.length === 0) || isSending || !device) return;
+  if ((!text && selectedAttachments.length === 0) || isSending || !device || isDevicePendingApproval()) return;
 
   const messageId = "mobu-" + crypto.randomUUID();
   const replyToMessageId = currentReplyTarget?.messageId || null;
@@ -359,6 +434,8 @@ function startPolling() {
 
 async function pollReplies() {
   if (!device) return;
+  await syncDeviceApprovalStatus({ silent: true });
+  if (isDevicePendingApproval()) return;
 
   try {
     const senderId = getActiveSessionId() || device.device_id;
@@ -1034,6 +1111,7 @@ function refreshHomeState() {
 }
 
 function applyQuickPrompt(prompt) {
+  if (isDevicePendingApproval()) return;
   const input = $("compose-input");
   if (!input) return;
   const templates = {
@@ -1050,6 +1128,7 @@ function applyQuickPrompt(prompt) {
 }
 
 function handleAttachClick() {
+  if (isDevicePendingApproval()) return;
   $("attachment-input")?.click();
 }
 
@@ -1078,6 +1157,7 @@ async function handleAttachmentInput(event) {
 }
 
 async function handleVoiceButton() {
+  if (isDevicePendingApproval()) return;
   if (isVoiceTranscribing) return;
   if (isVoiceRecording) {
     stopVoiceRecording();
@@ -1224,7 +1304,7 @@ async function transcribeVoiceBlob(blob, mimeType) {
 function syncVoiceButtonState() {
   const button = $("btn-voice");
   if (!button) return;
-  button.disabled = isVoiceTranscribing;
+  button.disabled = isVoiceTranscribing || isDevicePendingApproval();
   button.classList.toggle("is-recording", isVoiceRecording);
   button.classList.toggle("is-transcribing", isVoiceTranscribing);
   button.setAttribute("aria-pressed", String(isVoiceRecording));
@@ -1326,8 +1406,16 @@ function autoResizeInput(textarea) {
 }
 
 function updateSendButton() {
+  if (!$("compose-input") || !$("btn-send")) return;
   const hasText = $("compose-input").value.trim().length > 0;
-  $("btn-send").disabled = !(hasText || selectedAttachments.length > 0) || isSending || isVoiceRecording || isVoiceTranscribing;
+  $("btn-send").disabled = (
+    !(hasText || selectedAttachments.length > 0)
+    || isSending
+    || isVoiceRecording
+    || isVoiceTranscribing
+    || isDevicePendingApproval()
+  );
+  renderApprovalState();
   syncVoiceButtonState();
 }
 
@@ -1794,9 +1882,13 @@ async function consumeTransferToken(transferToken) {
       throw new Error("Transfer payload is invalid");
     }
     appState = {
-      device: payload.device,
+      device: {
+        ...payload.device,
+        approval_status: payload.device.approval_status || "approved",
+      },
       activeSessionId: payload.activeSessionId || payload.device.current_session_id || `mobile-${payload.device.device_id}`,
       conversations: payload.conversations && typeof payload.conversations === "object" ? payload.conversations : {},
+      settings: loadAppState().settings,
     };
     device = appState.device;
     saveAppState();
@@ -2141,26 +2233,24 @@ function loadAppState() {
     const raw = localStorage.getItem(STORAGE_KEY);
     const parsed = raw ? JSON.parse(raw) : null;
     if (!parsed) {
-      return { device: null, activeSessionId: null, conversations: {}, settings: { themeMode: "system" } };
+      return createDefaultAppState();
     }
     if (parsed.device_id) {
       return {
         device: parsed,
         activeSessionId: parsed.current_session_id || `mobile-${parsed.device_id}`,
         conversations: {},
-        settings: { themeMode: "system" },
+        settings: createDefaultAppState().settings,
       };
     }
     return {
       device: parsed.device || null,
       activeSessionId: parsed.activeSessionId || parsed.device?.current_session_id || null,
       conversations: parsed.conversations && typeof parsed.conversations === "object" ? parsed.conversations : {},
-      settings: {
-        themeMode: THEME_MODES.includes(parsed.settings?.themeMode) ? parsed.settings.themeMode : "system",
-      },
+      settings: createDefaultAppState(parsed.settings).settings,
     };
   } catch (_) {
-    return { device: null, activeSessionId: null, conversations: {}, settings: { themeMode: "system" } };
+    return createDefaultAppState();
   }
 }
 
@@ -2177,7 +2267,7 @@ function saveDevice(value) {
 
 function saveAppState() {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(appState || { device: null, activeSessionId: null, conversations: {}, settings: { themeMode: "system" } }));
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(appState || createDefaultAppState()));
   } catch (_) {}
 }
 
@@ -2191,12 +2281,7 @@ function clearDevice() {
   messageStore.clear();
   seenMessageIds.clear();
   device = null;
-  appState = {
-    device: null,
-    activeSessionId: null,
-    conversations: {},
-    settings: { themeMode: getThemeMode() },
-  };
+  appState = createDefaultAppState({ themeMode: getThemeMode() });
   try {
     saveAppState();
   } catch (_) {}
@@ -2253,6 +2338,56 @@ function restoreActiveConversation() {
   conversation.messages.forEach((message) => {
     appendMessageInternal(message, { skipPersist: true });
   });
+}
+
+async function syncDeviceApprovalStatus({ force = false, silent = false } = {}) {
+  if (!device?.device_token || !device.instance_id || !device.device_id) {
+    return null;
+  }
+  const now = Date.now();
+  if (!force && approvalStatusRequest) {
+    return approvalStatusRequest;
+  }
+  if (!force && now - lastApprovalStatusCheckAt < APPROVAL_STATUS_POLL_MS) {
+    return null;
+  }
+  lastApprovalStatusCheckAt = now;
+  approvalStatusRequest = (async () => {
+    try {
+      const response = await apiFetch(
+        `/admin/mobile/status?instance_id=${encodeURIComponent(device.instance_id)}&device_id=${encodeURIComponent(device.device_id)}`,
+      );
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(payload.error || `Status check failed (${response.status})`);
+      }
+      if (payload.registered === false) {
+        clearDevice();
+        showScreen("error");
+        $("error-message").textContent = "This mobile device is no longer registered. Scan a new QR code from the admin console.";
+        $("btn-retry").style.display = "inline-block";
+        $("btn-retry").textContent = "Scan New QR Code";
+        $("btn-retry").dataset.action = "clear-token";
+        return payload;
+      }
+      const nextStatus = payload.already_allowed ? "approved" : "pending";
+      const previousStatus = String(device.approval_status || "approved");
+      device.approval_status = nextStatus;
+      device.already_allowed = !!payload.already_allowed;
+      saveDevice(device);
+      renderApprovalState();
+      updateSendButton();
+      if (!silent && previousStatus !== nextStatus && nextStatus === "approved") {
+        setBanner("Device approved. Chat is now enabled.", "info", 4000);
+      }
+      return payload;
+    } catch (_) {
+      return null;
+    } finally {
+      approvalStatusRequest = null;
+    }
+  })();
+  return approvalStatusRequest;
 }
 
 function persistMessage(message) {

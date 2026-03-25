@@ -1169,6 +1169,35 @@ class AdminService:
         self._require_target_access(target, accessible_instance_ids)
         return self.auth_store.list_mobile_devices(instance_id)
 
+    def get_mobile_device_status(
+        self,
+        instance_id: str,
+        device_id: str,
+        *,
+        accessible_instance_ids: set[str] | list[str] | tuple[str, ...] | None = None,
+    ) -> dict[str, Any]:
+        """Return allowlist approval status for one mobile device."""
+        target = self._get_target(instance_id)
+        self._require_target_access(target, accessible_instance_ids)
+        device = self.auth_store.get_mobile_device(instance_id, device_id)
+        if device is None:
+            return {
+                "registered": False,
+                "device_id": device_id,
+                "instance_id": instance_id,
+                "status": "missing",
+                "already_allowed": False,
+            }
+        config = self._load_target_config(target)
+        already_allowed = device_id in list(config.channels.softnix_app.allow_from or [])
+        return {
+            "registered": True,
+            "device_id": device_id,
+            "instance_id": instance_id,
+            "status": "approved" if already_allowed else "pending_approval",
+            "already_allowed": already_allowed,
+        }
+
     def _sync_relay_allow_from(self, target: InstanceTarget, config: Config) -> None:
         """Write softnix_app allow_from to relay/allow_from.json for zero-restart channel reload.
 
