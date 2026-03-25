@@ -1644,7 +1644,7 @@ function buildInstanceEditorFromInstance(instance) {
 }
 
 function openCreateInstanceEditor() {
-  if (currentUserRole() !== "owner" || !hasAuthPermission("instance.create")) {
+  if (!hasAuthPermission("instance.create")) {
     return;
   }
   state.instanceEditor = defaultInstanceEditor();
@@ -1971,7 +1971,7 @@ async function renderActivityHeatmap() {
 function renderInstances() {
   const target = document.getElementById("instances-list-panel");
   if (!target) return;
-  const canCreateInstance = currentUserRole() === "owner" && hasAuthPermission("instance.create");
+  const canCreateInstance = hasAuthPermission("instance.create");
   const canUpdateInstance = hasAuthPermission("instance.update");
   const canDeleteInstance = hasAuthPermission("instance.delete");
   const canControlInstance = hasAuthPermission("instance.control");
