@@ -2844,7 +2844,6 @@ class AdminService:
         return {
             "instance": instance,
             "registry_entry": result["registry_entry"],
-            "gateway_port_assignment": result.get("gateway_port_assignment"),
         }
 
     def update_instance(

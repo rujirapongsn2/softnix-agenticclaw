@@ -6536,12 +6536,7 @@ async function handleInstanceFormSubmit() {
         throw new Error(result.error);
       }
       savedInstance = result.instance || null;
-      const portNotice = result.gateway_port_assignment?.message;
-      if (portNotice) {
-        setBanner(portNotice, "warning");
-      } else {
-        clearBanner();
-      }
+      clearBanner();
       state.selectedInstanceId = payload.instance_id;
       state.instanceCreateOpen = false;
     }

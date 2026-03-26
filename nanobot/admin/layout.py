@@ -302,52 +302,22 @@ def _instance_container_name(instance_id: str) -> str:
 
 def _next_available_gateway_port(used_ports: set[int], start: int = _DEFAULT_GATEWAY_PORT) -> int:
     candidate = max(start, 1)
-    while candidate <= 65535 and (candidate in used_ports or not _is_tcp_port_available(candidate)):
+    while candidate <= 65535 and candidate in used_ports:
         candidate += 1
     if candidate > 65535:
         raise ValueError("No available Gateway Port found in range 1-65535")
     return candidate
 
 
-def _is_tcp_port_available(port: int) -> bool:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        try:
-            sock.bind(("127.0.0.1", port))
-            return True
-        except OSError:
-            return False
-
-
 def _resolve_gateway_port(*, desired: int | None, used_ports: set[int], strict: bool) -> int:
     if desired is None:
         desired = _DEFAULT_GATEWAY_PORT
     port = _validate_gateway_port(desired)
-    if port not in used_ports and _is_tcp_port_available(port):
+    if port not in used_ports:
         return port
-    if strict and port in used_ports:
+    if strict:
         raise ValueError(f"Gateway Port {port} is already used by another instance")
-    if strict and not _is_tcp_port_available(port):
-        raise ValueError(f"Gateway Port {port} is already in use by another process")
     return _next_available_gateway_port(used_ports, start=port + 1)
-
-
-def _gateway_port_assignment_notice(*, requested: int | None, selected: int) -> dict[str, Any]:
-    requested_port = int(requested) if requested is not None else None
-    selected_port = int(selected)
-    auto_assigned = requested_port is None or requested_port != selected_port
-    if requested_port is None:
-        message = f"Gateway port auto-assigned to {selected_port}."
-    elif requested_port == selected_port:
-        message = f"Gateway port set to {selected_port}."
-    else:
-        message = f"Gateway port {requested_port} was already in use; assigned {selected_port} instead."
-    return {
-        "requested": requested_port,
-        "selected": selected_port,
-        "auto_assigned": auto_assigned,
-        "message": message,
-    }
 
 
 def infer_softnix_home_from_registry(registry_path: Path) -> Path:
@@ -498,10 +468,6 @@ def bootstrap_softnix_instance(
         used_ports=used_ports,
         strict=False,
     )
-    gateway_port_assignment = _gateway_port_assignment_notice(
-        requested=gateway_port if gateway_port is not None else int(config.gateway.port),
-        selected=selected_gateway_port,
-    )
     config.gateway.port = selected_gateway_port
     config_path = paths["config_path"]
     save_config(config, config_path)
@@ -519,7 +485,6 @@ def bootstrap_softnix_instance(
             "admin": None,
         },
         "runtime": runtime_settings,
-        "gateway_port_assignment": gateway_port_assignment,
     }
     (instance_home / "instance.json").write_text(
         json.dumps(metadata, indent=2, ensure_ascii=False),
@@ -569,7 +534,6 @@ def bootstrap_softnix_instance(
         "workspace_path": workspace_dir,
         "scripts": {name: str(path) for name, path in script_paths.items()},
         "registry_entry": registry_entry,
-        "gateway_port_assignment": gateway_port_assignment,
     }
 
 
@@ -684,13 +648,6 @@ def update_softnix_instance(
                 },
             }
 
-        gateway_port_assignment = None
-        if gateway_port is not None:
-            gateway_port_assignment = _gateway_port_assignment_notice(
-                requested=int(gateway_port),
-                selected=selected_gateway_port,
-            )
-
         workspace_path = Path(entry.get("workspace") or instance_home / "workspace").expanduser()
         if workspace_path.exists():
             sync_workspace_templates(
@@ -716,7 +673,6 @@ def update_softnix_instance(
                 "description": f"Softnix-managed instance for {entry.get('owner')} ({entry.get('env')})",
                 "ports": ports,
                 "runtime": runtime_settings,
-                "gateway_port_assignment": gateway_port_assignment,
             }
         )
         metadata_path.write_text(json.dumps(metadata, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -738,8 +694,6 @@ def update_softnix_instance(
         }
 
     save_instances_registry(registry_path, registry)
-    if gateway_port is not None:
-        entry["gateway_port_assignment"] = gateway_port_assignment
     return entry
 
 

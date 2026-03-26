@@ -144,7 +144,7 @@ def test_softnix_init_command_is_registered():
     assert "Bootstrap the Softnix multi-instance filesystem layout." in result.stdout
 
 
-def test_softnix_init_prints_gateway_port_notice(tmp_path):
+def test_softnix_init_stays_silent_on_gateway_port_auto_assignment(tmp_path):
     repo_root = tmp_path / "repo"
     repo_root.mkdir()
 
@@ -155,9 +155,6 @@ def test_softnix_init_prints_gateway_port_notice(tmp_path):
             "workspace_path": tmp_path / "instances" / "acme-prod" / "workspace",
             "registry_path": tmp_path / "admin" / "instances.json",
             "scripts": {"start": tmp_path / "instances" / "acme-prod" / "scripts" / "start.sh"},
-            "gateway_port_assignment": {
-                "message": "Gateway port 19090 was already in use; assigned 19091 instead."
-            },
         }
 
         result = runner.invoke(
@@ -176,4 +173,4 @@ def test_softnix_init_prints_gateway_port_notice(tmp_path):
         )
 
     assert result.exit_code == 0
-    assert "Gateway port 19090 was already in use; assigned 19091 instead." in result.stdout
+    assert "Gateway port" not in result.stdout
