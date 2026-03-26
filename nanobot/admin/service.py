@@ -2841,7 +2841,11 @@ class AdminService:
                     resource={"type": "user", "id": creator.get("id"), "name": creator.get("username")},
                     payload={"instance_id": instance_id},
                 )
-        return {"instance": instance, "registry_entry": result["registry_entry"]}
+        return {
+            "instance": instance,
+            "registry_entry": result["registry_entry"],
+            "gateway_port_assignment": result.get("gateway_port_assignment"),
+        }
 
     def update_instance(
         self,

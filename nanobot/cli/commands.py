@@ -1084,6 +1084,9 @@ def softnix_init(
         raise typer.Exit(1) from exc
 
     console.print(f"[green]✓[/green] Bootstrapped Softnix instance '{instance_id}'")
+    port_notice = (result.get("gateway_port_assignment") or {}).get("message")
+    if port_notice:
+        console.print(f"[yellow]{port_notice}[/yellow]")
     console.print(f"  Home: {result['instance_home']}")
     console.print(f"  Config: {result['config_path']}")
     console.print(f"  Workspace: {result['workspace_path']}")

@@ -142,3 +142,38 @@ def test_softnix_init_command_is_registered():
 
     assert result.exit_code == 0
     assert "Bootstrap the Softnix multi-instance filesystem layout." in result.stdout
+
+
+def test_softnix_init_prints_gateway_port_notice(tmp_path):
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+
+    with patch("nanobot.admin.layout.bootstrap_softnix_instance") as bootstrap_mock:
+        bootstrap_mock.return_value = {
+            "instance_home": tmp_path / "instances" / "acme-prod",
+            "config_path": tmp_path / "instances" / "acme-prod" / "config.json",
+            "workspace_path": tmp_path / "instances" / "acme-prod" / "workspace",
+            "registry_path": tmp_path / "admin" / "instances.json",
+            "scripts": {"start": tmp_path / "instances" / "acme-prod" / "scripts" / "start.sh"},
+            "gateway_port_assignment": {
+                "message": "Gateway port 19090 was already in use; assigned 19091 instead."
+            },
+        }
+
+        result = runner.invoke(
+            app,
+            [
+                "softnix-init",
+                "--instance-id",
+                "acme-prod",
+                "--name",
+                "Acme Production",
+                "--owner",
+                "acme",
+                "--repo-root",
+                str(repo_root),
+            ],
+        )
+
+    assert result.exit_code == 0
+    assert "Gateway port 19090 was already in use; assigned 19091 instead." in result.stdout

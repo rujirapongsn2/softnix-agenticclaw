@@ -758,11 +758,22 @@ function summarizeCommandResult(result) {
 
 function setBanner(message, type = "warning") {
   const banner = document.getElementById("alert-banner");
+  const normalizedType = type === "error" || type === "success" ? type : "warning";
   banner.textContent = message;
   banner.classList.remove("is-hidden");
-  banner.style.borderColor = type === "error" ? "rgba(199,81,70,0.3)" : "rgba(243,144,63,0.3)";
-  banner.style.background = type === "error" ? "rgba(199,81,70,0.08)" : "rgba(243,144,63,0.1)";
-  banner.style.color = type === "error" ? "#9a3e36" : "#8a4b16";
+  if (normalizedType === "error") {
+    banner.style.borderColor = "rgba(199,81,70,0.3)";
+    banner.style.background = "rgba(199,81,70,0.08)";
+    banner.style.color = "#9a3e36";
+  } else if (normalizedType === "success") {
+    banner.style.borderColor = "rgba(169,203,46,0.35)";
+    banner.style.background = "rgba(169,203,46,0.12)";
+    banner.style.color = "#5d6f1a";
+  } else {
+    banner.style.borderColor = "rgba(243,144,63,0.3)";
+    banner.style.background = "rgba(243,144,63,0.1)";
+    banner.style.color = "#8a4b16";
+  }
 }
 
 function clearBanner() {
@@ -6525,7 +6536,12 @@ async function handleInstanceFormSubmit() {
         throw new Error(result.error);
       }
       savedInstance = result.instance || null;
-      clearBanner();
+      const portNotice = result.gateway_port_assignment?.message;
+      if (portNotice) {
+        setBanner(portNotice, "warning");
+      } else {
+        clearBanner();
+      }
       state.selectedInstanceId = payload.instance_id;
       state.instanceCreateOpen = false;
     }

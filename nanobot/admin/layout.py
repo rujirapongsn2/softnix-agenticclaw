@@ -120,6 +120,55 @@ def _extract_entry_gateway_port(entry: dict[str, Any]) -> int | None:
     return int(config.gateway.port)
 
 
+def _collect_known_gateway_ports(
+    registry: dict[str, Any],
+    *,
+    base_dir: Path | None = None,
+    exclude_instance_id: str | None = None,
+) -> set[int]:
+    """Collect gateway ports from registry entries and on-disk instance configs."""
+    used: set[int] = set()
+    seen_config_paths: set[Path] = set()
+
+    for item in registry.get("instances", []):
+        if item.get("id") == exclude_instance_id:
+            continue
+        config_path = Path(item.get("config") or "").expanduser()
+        if config_path.exists():
+            try:
+                resolved_path = config_path.resolve()
+            except OSError:
+                resolved_path = config_path
+            if resolved_path not in seen_config_paths:
+                seen_config_paths.add(resolved_path)
+            try:
+                used.add(int(load_config(config_path).gateway.port))
+                continue
+            except Exception:
+                pass
+        port = _extract_entry_gateway_port(item)
+        if isinstance(port, int):
+            used.add(port)
+
+    instances_dir = get_softnix_instances_dir(base_dir)
+    if instances_dir.exists():
+        for config_path in instances_dir.glob("*/config.json"):
+            if exclude_instance_id and config_path.parent.name == exclude_instance_id:
+                continue
+            try:
+                resolved_path = config_path.resolve()
+            except OSError:
+                resolved_path = config_path
+            if resolved_path in seen_config_paths:
+                continue
+            try:
+                used.add(int(load_config(config_path).gateway.port))
+            except Exception:
+                continue
+
+    return used
+
+
 def _normalize_runtime_mode(value: str | None, *, default: str = "sandbox") -> str:
     normalized = str(value or default).strip().lower()
     if normalized not in {"host", "sandbox"}:
@@ -250,19 +299,6 @@ def _instance_container_name(instance_id: str) -> str:
     return f"softnix-{instance_id}-gateway"
 
 
-def _collect_registry_gateway_ports(
-    registry: dict[str, Any], *, exclude_instance_id: str | None = None
-) -> set[int]:
-    used: set[int] = set()
-    for item in registry.get("instances", []):
-        if item.get("id") == exclude_instance_id:
-            continue
-        port = _extract_entry_gateway_port(item)
-        if isinstance(port, int):
-            used.add(port)
-    return used
-
-
 def _next_available_gateway_port(used_ports: set[int], start: int = _DEFAULT_GATEWAY_PORT) -> int:
     candidate = max(start, 1)
     while candidate in used_ports and candidate <= 65535:
@@ -281,6 +317,24 @@ def _resolve_gateway_port(*, desired: int | None, used_ports: set[int], strict: 
     if strict:
         raise ValueError(f"Gateway Port {port} is already used by another instance")
     return _next_available_gateway_port(used_ports, start=port + 1)
+
+
+def _gateway_port_assignment_notice(*, requested: int | None, selected: int) -> dict[str, Any]:
+    requested_port = int(requested) if requested is not None else None
+    selected_port = int(selected)
+    auto_assigned = requested_port is None or requested_port != selected_port
+    if requested_port is None:
+        message = f"Gateway port auto-assigned to {selected_port}."
+    elif requested_port == selected_port:
+        message = f"Gateway port set to {selected_port}."
+    else:
+        message = f"Gateway port {requested_port} was already in use; assigned {selected_port} instead."
+    return {
+        "requested": requested_port,
+        "selected": selected_port,
+        "auto_assigned": auto_assigned,
+        "message": message,
+    }
 
 
 def infer_softnix_home_from_registry(registry_path: Path) -> Path:
@@ -405,7 +459,6 @@ def bootstrap_softnix_instance(
 
     registry_path = get_softnix_registry_path(home)
     registry = load_instances_registry(registry_path)
-    used_ports = _collect_registry_gateway_ports(registry, exclude_instance_id=normalized_id)
 
     config = _load_source_config(source_config)
     config.agents.defaults.workspace = str(workspace_dir)
@@ -422,10 +475,19 @@ def bootstrap_softnix_instance(
         sandbox_network_policy=sandbox_network_policy,
         sandbox_timeout_seconds=sandbox_timeout_seconds,
     )
+    used_ports = _collect_known_gateway_ports(
+        registry,
+        base_dir=home,
+        exclude_instance_id=normalized_id,
+    )
     selected_gateway_port = _resolve_gateway_port(
         desired=gateway_port if gateway_port is not None else int(config.gateway.port),
         used_ports=used_ports,
-        strict=gateway_port is not None,
+        strict=False,
+    )
+    gateway_port_assignment = _gateway_port_assignment_notice(
+        requested=gateway_port if gateway_port is not None else int(config.gateway.port),
+        selected=selected_gateway_port,
     )
     config.gateway.port = selected_gateway_port
     config_path = paths["config_path"]
@@ -444,6 +506,7 @@ def bootstrap_softnix_instance(
             "admin": None,
         },
         "runtime": runtime_settings,
+        "gateway_port_assignment": gateway_port_assignment,
     }
     (instance_home / "instance.json").write_text(
         json.dumps(metadata, indent=2, ensure_ascii=False),
@@ -493,6 +556,7 @@ def bootstrap_softnix_instance(
         "workspace_path": workspace_dir,
         "scripts": {name: str(path) for name, path in script_paths.items()},
         "registry_entry": registry_entry,
+        "gateway_port_assignment": gateway_port_assignment,
     }
 
 
@@ -554,11 +618,16 @@ def update_softnix_instance(
     if nanobot_bin is not None:
         entry["nanobot_bin"] = nanobot_bin.strip()
     if gateway_port is not None:
-        used_ports = _collect_registry_gateway_ports(registry, exclude_instance_id=instance_id)
+        used_ports = _collect_known_gateway_ports(
+            registry,
+            base_dir=infer_softnix_home_from_registry(registry_path),
+            exclude_instance_id=instance_id,
+        )
+        requested_gateway_port = int(gateway_port)
         entry["gateway_port"] = _resolve_gateway_port(
-            desired=gateway_port,
+            desired=requested_gateway_port,
             used_ports=used_ports,
-            strict=True,
+            strict=False,
         )
 
     instance_home = Path(entry.get("instance_home") or "").expanduser()
@@ -602,6 +671,13 @@ def update_softnix_instance(
                 },
             }
 
+        gateway_port_assignment = None
+        if gateway_port is not None:
+            gateway_port_assignment = _gateway_port_assignment_notice(
+                requested=int(gateway_port),
+                selected=selected_gateway_port,
+            )
+
         workspace_path = Path(entry.get("workspace") or instance_home / "workspace").expanduser()
         if workspace_path.exists():
             sync_workspace_templates(
@@ -627,6 +703,7 @@ def update_softnix_instance(
                 "description": f"Softnix-managed instance for {entry.get('owner')} ({entry.get('env')})",
                 "ports": ports,
                 "runtime": runtime_settings,
+                "gateway_port_assignment": gateway_port_assignment,
             }
         )
         metadata_path.write_text(json.dumps(metadata, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -648,6 +725,8 @@ def update_softnix_instance(
         }
 
     save_instances_registry(registry_path, registry)
+    if gateway_port is not None:
+        entry["gateway_port_assignment"] = gateway_port_assignment
     return entry
 
 

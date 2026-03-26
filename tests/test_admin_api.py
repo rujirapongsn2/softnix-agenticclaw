@@ -838,9 +838,16 @@ def test_admin_service_runtime_audit_explorer_filters_and_pagination(tmp_path) -
     assert "soul.md" in (search_only["events"][0]["path"] or "").lower()
 
 
-def test_admin_service_rejects_duplicate_gateway_port_on_create(tmp_path) -> None:
+def test_admin_service_assigns_next_available_gateway_port_on_create(tmp_path) -> None:
     registry_path = tmp_path / "admin" / "instances.json"
     service = AdminService(registry_path=registry_path)
+
+    orphan_instance_home = tmp_path / "instances" / "orphan-prod"
+    orphan_instance_home.mkdir(parents=True)
+    orphan_config_path = orphan_instance_home / "config.json"
+    orphan_config = Config()
+    orphan_config.gateway.port = 19090
+    save_config(orphan_config, orphan_config_path)
 
     service.create_instance(
         instance_id="acme-prod",
@@ -849,22 +856,20 @@ def test_admin_service_rejects_duplicate_gateway_port_on_create(tmp_path) -> Non
         env="prod",
         repo_root=str(tmp_path),
         nanobot_bin="/opt/anaconda3/bin/nanobot",
+        gateway_port=19089,
+    )
+
+    created = service.create_instance(
+        instance_id="acme-uat",
+        name="Acme UAT",
+        owner="acme",
+        env="uat",
+        repo_root=str(tmp_path),
+        nanobot_bin="/opt/anaconda3/bin/nanobot",
         gateway_port=19090,
     )
-    try:
-        service.create_instance(
-            instance_id="acme-uat",
-            name="Acme UAT",
-            owner="acme",
-            env="uat",
-            repo_root=str(tmp_path),
-            nanobot_bin="/opt/anaconda3/bin/nanobot",
-            gateway_port=19090,
-        )
-    except ValueError as exc:
-        assert "already used" in str(exc)
-    else:
-        raise AssertionError("Expected duplicate gateway port to fail")
+
+    assert created["instance"]["gateway_port"] == 19091
 
 
 def test_admin_service_reads_and_updates_instance_config(tmp_path) -> None:
