@@ -165,6 +165,24 @@ def test_admin_role_can_create_instances() -> None:
     assert has_permission("admin", "instance.create") is True
 
 
+def test_operator_role_can_manage_assigned_instances() -> None:
+    permissions = set(permissions_for_role("operator"))
+    assert {
+        "instance.update",
+        "config.update",
+        "memory.update",
+        "skills.update",
+        "skills.delete",
+        "channel.update",
+        "provider.update",
+        "mcp.update",
+        "schedule.update",
+    }.issubset(permissions)
+    assert "instance.create" not in permissions
+    assert "instance.delete" not in permissions
+    assert "user.create" not in permissions
+
+
 def test_admin_server_supports_http_range_requests_for_static_files() -> None:
     path, _ = resolve_static_asset("/favicon.ico")
     assert path is not None
