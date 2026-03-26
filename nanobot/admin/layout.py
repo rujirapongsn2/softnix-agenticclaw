@@ -734,12 +734,16 @@ def _write_lifecycle_scripts(
     runtime_settings: dict[str, Any],
 ) -> dict[str, Path]:
     pidfile = instance_home / "run" / "gateway.pid"
+    watchdog_pidfile = instance_home / "run" / "gateway.watchdog.pid"
+    stopfile = instance_home / "run" / "gateway.stop"
     cidfile = instance_home / "run" / "gateway.cid"
     log_file = instance_home / "logs" / "gateway.log"
     err_file = instance_home / "logs" / "gateway.err.log"
+    lifecycle_log = instance_home / "logs" / "gateway.lifecycle.log"
     config_path = instance_home / "config.json"
     workspace_path = instance_home / "workspace"
     container_name = _instance_container_name(instance_id)
+    watchdog_script = scripts_dir / "watchdog.sh"
     runtime_mode = runtime_settings.get("mode") or "host"
     sandbox = runtime_settings.get("sandbox") if isinstance(runtime_settings.get("sandbox"), dict) else {}
     sandbox_image = str(sandbox.get("image") or _DEFAULT_SANDBOX_IMAGE)
@@ -764,6 +768,8 @@ set -euo pipefail
 
 CIDFILE="{cidfile}"
 PIDFILE="{pidfile}"
+WATCHDOG_PIDFILE="{watchdog_pidfile}"
+STOPFILE="{stopfile}"
 INSTANCE_HOME="{instance_home}"
 ADMIN_HOME="{instance_home.parent.parent / 'admin'}"
 CONFIG="{config_path}"
@@ -795,6 +801,19 @@ if [ -f "$PIDFILE" ]; then
   fi
   rm -f "$PIDFILE"
 fi
+
+if [ -f "$WATCHDOG_PIDFILE" ]; then
+  WATCHDOG_PID="$(cat "$WATCHDOG_PIDFILE" 2>/dev/null || true)"
+  if [ -n "$WATCHDOG_PID" ] && kill -0 "$WATCHDOG_PID" 2>/dev/null; then
+    kill "$WATCHDOG_PID" 2>/dev/null || true
+    sleep 1
+    if kill -0 "$WATCHDOG_PID" 2>/dev/null; then
+      kill -9 "$WATCHDOG_PID" 2>/dev/null || true
+    fi
+  fi
+  rm -f "$WATCHDOG_PIDFILE"
+fi
+rm -f "$STOPFILE"
 
 if docker container inspect "$CONTAINER_NAME" >/dev/null 2>&1; then
   STATUS="$(docker inspect -f '{{{{.State.Status}}}}' "$CONTAINER_NAME" 2>/dev/null || echo unknown)"
@@ -863,6 +882,8 @@ set -euo pipefail
 
 CIDFILE="{cidfile}"
 PIDFILE="{pidfile}"
+WATCHDOG_PIDFILE="{watchdog_pidfile}"
+STOPFILE="{stopfile}"
 CONTAINER_NAME="{container_name}"
 TIMEOUT="{sandbox_timeout_seconds}"
 
@@ -889,6 +910,15 @@ if [ -f "$PIDFILE" ]; then
   fi
   rm -f "$PIDFILE"
 fi
+
+if [ -f "$WATCHDOG_PIDFILE" ]; then
+  WATCHDOG_PID="$(cat "$WATCHDOG_PIDFILE" 2>/dev/null || true)"
+  if [ -n "$WATCHDOG_PID" ] && kill -0 "$WATCHDOG_PID" 2>/dev/null; then
+    kill "$WATCHDOG_PID" 2>/dev/null || true
+  fi
+  rm -f "$WATCHDOG_PIDFILE"
+fi
+rm -f "$STOPFILE"
 
 echo "stopped"
 """,
@@ -929,15 +959,28 @@ exit 1
 set -euo pipefail
 
 PIDFILE="{pidfile}"
+WATCHDOG_PIDFILE="{watchdog_pidfile}"
+STOPFILE="{stopfile}"
 CIDFILE="{cidfile}"
 LOGFILE="{log_file}"
 ERRFILE="{err_file}"
+LIFECYCLE_LOG="{lifecycle_log}"
 CONFIG="{config_path}"
 WORKSPACE="{workspace_path}"
 REPO="{repo_root}"
 NANOBOT="{nanobot_bin}"
 PORT="{gateway_port}"
 CONTAINER_NAME="{container_name}"
+WATCHDOG_SCRIPT="{watchdog_script}"
+
+timestamp() {{
+  date '+%Y-%m-%d %H:%M:%S%z'
+}}
+
+log_lifecycle() {{
+  mkdir -p "$(dirname "$LIFECYCLE_LOG")"
+  printf '%s %s\\n' "$(timestamp)" "$1" >> "$LIFECYCLE_LOG"
+}}
 
 find_host_gateway_pid() {{
   local pid cmd candidate
@@ -968,12 +1011,49 @@ find_host_gateway_pid() {{
   return 1
 }}
 
+find_watchdog_pid() {{
+  local pid cmd candidate
+  if [ -f "$WATCHDOG_PIDFILE" ]; then
+    pid="$(cat "$WATCHDOG_PIDFILE" 2>/dev/null || true)"
+    if [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then
+      cmd="$(ps -p "$pid" -o command= 2>/dev/null || true)"
+      if [[ "$cmd" == *"$WATCHDOG_SCRIPT"* ]]; then
+        printf '%s\\n' "$pid"
+        return 0
+      fi
+    fi
+  fi
+  if command -v pgrep >/dev/null 2>&1; then
+    while IFS= read -r candidate; do
+      if ! [[ "$candidate" =~ ^[0-9]+$ ]]; then
+        continue
+      fi
+      cmd="$(ps -p "$candidate" -o command= 2>/dev/null || true)"
+      if [[ "$cmd" == *"$WATCHDOG_SCRIPT"* ]]; then
+        printf '%s\\n' "$candidate" > "$WATCHDOG_PIDFILE"
+        printf '%s\\n' "$candidate"
+        return 0
+      fi
+    done < <(pgrep -f "$WATCHDOG_SCRIPT" || true)
+  fi
+  rm -f "$WATCHDOG_PIDFILE"
+  return 1
+}}
+
 cleanup_stale_pid() {{
   find_host_gateway_pid >/dev/null 2>&1 || true
 }}
 
+cleanup_stale_watchdog() {{
+  find_watchdog_pid >/dev/null 2>&1 || true
+}}
+
 is_host_gateway_running() {{
   find_host_gateway_pid >/dev/null 2>&1
+}}
+
+is_watchdog_running() {{
+  find_watchdog_pid >/dev/null 2>&1
 }}
 
 # Clean up stale sandbox-mode container/state before starting host mode.
@@ -984,26 +1064,43 @@ if command -v docker >/dev/null 2>&1; then
 fi
 rm -f "$CIDFILE"
 
+cleanup_stale_watchdog
 cleanup_stale_pid
 if is_host_gateway_running; then
+  if ! is_watchdog_running; then
+    log_lifecycle "gateway already running without watchdog supervision"
+  fi
+  echo "already running"
+  exit 0
+fi
+if is_watchdog_running; then
   echo "already running"
   exit 0
 fi
 
 mkdir -p "$(dirname "$PIDFILE")" "$(dirname "$LOGFILE")" "$(dirname "$ERRFILE")"
+rm -f "$STOPFILE"
 cd "$REPO"
-nohup "$NANOBOT" gateway --config "$CONFIG" --workspace "$WORKSPACE" -p "$PORT" >>"$LOGFILE" 2>>"$ERRFILE" &
-echo $! > "$PIDFILE"
+if command -v setsid >/dev/null 2>&1; then
+  nohup setsid "$WATCHDOG_SCRIPT" </dev/null >>"$LOGFILE" 2>>"$ERRFILE" &
+else
+  nohup "$WATCHDOG_SCRIPT" </dev/null >>"$LOGFILE" 2>>"$ERRFILE" &
+fi
+echo $! > "$WATCHDOG_PIDFILE"
+log_lifecycle "start requested; watchdog pid $!"
 
-for _ in $(seq 1 20); do
-  if is_host_gateway_running; then
+for _ in $(seq 1 30); do
+  if is_watchdog_running && is_host_gateway_running; then
+    log_lifecycle "gateway started successfully"
     echo "started"
     exit 0
   fi
   sleep 0.5
 done
 
+cleanup_stale_watchdog
 cleanup_stale_pid
+log_lifecycle "gateway failed to start within start timeout"
 echo "gateway failed to start" >&2
 tail -n 20 "$ERRFILE" 2>/dev/null >&2 || true
 exit 1
@@ -1012,10 +1109,23 @@ exit 1
 set -euo pipefail
 
 PIDFILE="{pidfile}"
+WATCHDOG_PIDFILE="{watchdog_pidfile}"
+STOPFILE="{stopfile}"
 CIDFILE="{cidfile}"
 CONTAINER_NAME="{container_name}"
 CONFIG="{config_path}"
 NANOBOT="{nanobot_bin}"
+WATCHDOG_SCRIPT="{watchdog_script}"
+LIFECYCLE_LOG="{lifecycle_log}"
+
+timestamp() {{
+  date '+%Y-%m-%d %H:%M:%S%z'
+}}
+
+log_lifecycle() {{
+  mkdir -p "$(dirname "$LIFECYCLE_LOG")"
+  printf '%s %s\\n' "$(timestamp)" "$1" >> "$LIFECYCLE_LOG"
+}}
 
 find_host_gateway_pid() {{
   local pid cmd candidate
@@ -1046,8 +1156,41 @@ find_host_gateway_pid() {{
   return 1
 }}
 
+find_watchdog_pid() {{
+  local pid cmd candidate
+  if [ -f "$WATCHDOG_PIDFILE" ]; then
+    pid="$(cat "$WATCHDOG_PIDFILE" 2>/dev/null || true)"
+    if [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then
+      cmd="$(ps -p "$pid" -o command= 2>/dev/null || true)"
+      if [[ "$cmd" == *"$WATCHDOG_SCRIPT"* ]]; then
+        printf '%s\\n' "$pid"
+        return 0
+      fi
+    fi
+  fi
+  if command -v pgrep >/dev/null 2>&1; then
+    while IFS= read -r candidate; do
+      if ! [[ "$candidate" =~ ^[0-9]+$ ]]; then
+        continue
+      fi
+      cmd="$(ps -p "$candidate" -o command= 2>/dev/null || true)"
+      if [[ "$cmd" == *"$WATCHDOG_SCRIPT"* ]]; then
+        printf '%s\\n' "$candidate" > "$WATCHDOG_PIDFILE"
+        printf '%s\\n' "$candidate"
+        return 0
+      fi
+    done < <(pgrep -f "$WATCHDOG_SCRIPT" || true)
+  fi
+  rm -f "$WATCHDOG_PIDFILE"
+  return 1
+}}
+
 cleanup_stale_pid() {{
   find_host_gateway_pid >/dev/null 2>&1 || true
+}}
+
+cleanup_stale_watchdog() {{
+  find_watchdog_pid >/dev/null 2>&1 || true
 }}
 
 is_host_gateway_running() {{
@@ -1055,7 +1198,8 @@ is_host_gateway_running() {{
 }}
 
 cleanup_stale_pid
-if [ ! -f "$PIDFILE" ]; then
+cleanup_stale_watchdog
+if [ ! -f "$PIDFILE" ] && [ ! -f "$WATCHDOG_PIDFILE" ]; then
   if command -v docker >/dev/null 2>&1; then
     if docker container inspect "$CONTAINER_NAME" >/dev/null 2>&1; then
       docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
@@ -1066,31 +1210,49 @@ if [ ! -f "$PIDFILE" ]; then
   exit 0
 fi
 
+touch "$STOPFILE"
+log_lifecycle "stop requested"
+WATCHDOG_PID="$(find_watchdog_pid || true)"
 PID="$(find_host_gateway_pid || true)"
 if [ -z "$PID" ]; then
   PID="$(cat "$PIDFILE" 2>/dev/null || true)"
 fi
+if [ -n "$WATCHDOG_PID" ] && kill -0 "$WATCHDOG_PID" 2>/dev/null; then
+  kill "$WATCHDOG_PID" 2>/dev/null || true
+fi
 if [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null; then
-  kill "$PID"
+  kill "$PID" 2>/dev/null || true
   for _ in $(seq 1 20); do
     if ! kill -0 "$PID" 2>/dev/null; then
-      rm -f "$PIDFILE"
-      echo "stopped"
-      exit 0
+      break
     fi
     sleep 1
   done
-  echo "process did not stop cleanly"
-  exit 1
+  if kill -0 "$PID" 2>/dev/null; then
+    kill -9 "$PID" 2>/dev/null || true
+  fi
 fi
 
-rm -f "$PIDFILE"
+if [ -n "$WATCHDOG_PID" ] && kill -0 "$WATCHDOG_PID" 2>/dev/null; then
+  for _ in $(seq 1 10); do
+    if ! kill -0 "$WATCHDOG_PID" 2>/dev/null; then
+      break
+    fi
+    sleep 1
+  done
+  if kill -0 "$WATCHDOG_PID" 2>/dev/null; then
+    kill -9 "$WATCHDOG_PID" 2>/dev/null || true
+  fi
+fi
+
+rm -f "$PIDFILE" "$WATCHDOG_PIDFILE"
 if command -v docker >/dev/null 2>&1; then
   if docker container inspect "$CONTAINER_NAME" >/dev/null 2>&1; then
     docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
   fi
 fi
-rm -f "$CIDFILE"
+rm -f "$CIDFILE" "$STOPFILE"
+log_lifecycle "stop completed"
 echo "stopped"
 """,
             "restart": f"""#!/usr/bin/env bash
@@ -1103,8 +1265,10 @@ set -euo pipefail
 set -euo pipefail
 
 PIDFILE="{pidfile}"
+WATCHDOG_PIDFILE="{watchdog_pidfile}"
 CONFIG="{config_path}"
 NANOBOT="{nanobot_bin}"
+WATCHDOG_SCRIPT="{watchdog_script}"
 
 find_host_gateway_pid() {{
   local pid cmd candidate
@@ -1135,12 +1299,49 @@ find_host_gateway_pid() {{
   return 1
 }}
 
+find_watchdog_pid() {{
+  local pid cmd candidate
+  if [ -f "$WATCHDOG_PIDFILE" ]; then
+    pid="$(cat "$WATCHDOG_PIDFILE" 2>/dev/null || true)"
+    if [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then
+      cmd="$(ps -p "$pid" -o command= 2>/dev/null || true)"
+      if [[ "$cmd" == *"$WATCHDOG_SCRIPT"* ]]; then
+        printf '%s\\n' "$pid"
+        return 0
+      fi
+    fi
+  fi
+  if command -v pgrep >/dev/null 2>&1; then
+    while IFS= read -r candidate; do
+      if ! [[ "$candidate" =~ ^[0-9]+$ ]]; then
+        continue
+      fi
+      cmd="$(ps -p "$candidate" -o command= 2>/dev/null || true)"
+      if [[ "$cmd" == *"$WATCHDOG_SCRIPT"* ]]; then
+        printf '%s\\n' "$candidate" > "$WATCHDOG_PIDFILE"
+        printf '%s\\n' "$candidate"
+        return 0
+      fi
+    done < <(pgrep -f "$WATCHDOG_SCRIPT" || true)
+  fi
+  rm -f "$WATCHDOG_PIDFILE"
+  return 1
+}}
+
 is_host_gateway_running() {{
   find_host_gateway_pid >/dev/null 2>&1
 }}
 
+is_watchdog_running() {{
+  find_watchdog_pid >/dev/null 2>&1
+}}
+
 if is_host_gateway_running; then
   echo "running"
+  exit 0
+fi
+if is_watchdog_running; then
+  echo "supervising"
   exit 0
 fi
 
@@ -1149,8 +1350,109 @@ exit 1
 """,
         }
 
+        watchdog_body = f"""#!/usr/bin/env bash
+set -euo pipefail
+
+PIDFILE="{pidfile}"
+WATCHDOG_PIDFILE="{watchdog_pidfile}"
+STOPFILE="{stopfile}"
+LOGFILE="{log_file}"
+ERRFILE="{err_file}"
+LIFECYCLE_LOG="{lifecycle_log}"
+CONFIG="{config_path}"
+WORKSPACE="{workspace_path}"
+REPO="{repo_root}"
+NANOBOT="{nanobot_bin}"
+PORT="{gateway_port}"
+
+timestamp() {{
+  date '+%Y-%m-%d %H:%M:%S%z'
+}}
+
+log_lifecycle() {{
+  mkdir -p "$(dirname "$LIFECYCLE_LOG")"
+  printf '%s %s\\n' "$(timestamp)" "$1" >> "$LIFECYCLE_LOG"
+}}
+
+child_pid=""
+
+shutdown_child() {{
+  if [ -n "$child_pid" ] && kill -0 "$child_pid" 2>/dev/null; then
+    kill "$child_pid" 2>/dev/null || true
+    for _ in $(seq 1 10); do
+      if ! kill -0 "$child_pid" 2>/dev/null; then
+        break
+      fi
+      sleep 1
+    done
+    if kill -0 "$child_pid" 2>/dev/null; then
+      kill -9 "$child_pid" 2>/dev/null || true
+    fi
+  fi
+}}
+
+on_term() {{
+  log_lifecycle "watchdog received termination signal"
+  touch "$STOPFILE"
+  shutdown_child
+  exit 0
+}}
+
+on_exit() {{
+  local exit_code="$?"
+  rm -f "$PIDFILE" "$WATCHDOG_PIDFILE"
+  if [ "$exit_code" -eq 0 ]; then
+    log_lifecycle "watchdog exited cleanly"
+  else
+    log_lifecycle "watchdog exited unexpectedly with code $exit_code"
+  fi
+}}
+
+trap on_term TERM INT
+trap on_exit EXIT
+
+mkdir -p "$(dirname "$PIDFILE")" "$(dirname "$LOGFILE")" "$(dirname "$ERRFILE")"
+echo "$$" > "$WATCHDOG_PIDFILE"
+cd "$REPO"
+log_lifecycle "watchdog started"
+
+while true; do
+  if [ -f "$STOPFILE" ]; then
+    log_lifecycle "watchdog stopping because stop flag is present"
+    break
+  fi
+
+  log_lifecycle "launching gateway process"
+  "$NANOBOT" gateway --config "$CONFIG" --workspace "$WORKSPACE" -p "$PORT" >>"$LOGFILE" 2>>"$ERRFILE" &
+  child_pid="$!"
+  echo "$child_pid" > "$PIDFILE"
+
+  set +e
+  wait "$child_pid"
+  exit_code="$?"
+  set -e
+
+  rm -f "$PIDFILE"
+  child_pid=""
+
+  if [ -f "$STOPFILE" ]; then
+    log_lifecycle "gateway exited with code $exit_code after intentional stop"
+    break
+  fi
+
+  log_lifecycle "gateway exited unexpectedly with code $exit_code; restarting in 5 seconds"
+  sleep 5
+done
+
+rm -f "$STOPFILE"
+"""
+
     for name, path in scripts.items():
         path.write_text(bodies[name], encoding="utf-8")
         path.chmod(0o755)
+
+    if runtime_mode != "sandbox":
+        watchdog_script.write_text(watchdog_body, encoding="utf-8")
+        watchdog_script.chmod(0o755)
 
     return scripts

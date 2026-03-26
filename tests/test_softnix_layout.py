@@ -136,15 +136,31 @@ def test_update_softnix_instance_can_switch_to_host_runtime(tmp_path) -> None:
 
     start_script = (result["instance_home"] / "scripts" / "start.sh").read_text(encoding="utf-8")
     status_script = (result["instance_home"] / "scripts" / "status.sh").read_text(encoding="utf-8")
+    stop_script = (result["instance_home"] / "scripts" / "stop.sh").read_text(encoding="utf-8")
+    watchdog_script = (result["instance_home"] / "scripts" / "watchdog.sh").read_text(encoding="utf-8")
     config = json.loads((result["instance_home"] / "config.json").read_text(encoding="utf-8"))
-    assert 'nohup "$NANOBOT" gateway' in start_script
+    assert 'WATCHDOG_PIDFILE="' in start_script
+    assert 'STOPFILE="' in start_script
+    assert 'LIFECYCLE_LOG="' in start_script
+    assert 'WATCHDOG_SCRIPT="' in start_script
+    assert 'nohup setsid "$WATCHDOG_SCRIPT"' in start_script
     assert 'pgrep -f "nanobot gateway --config $CONFIG"' in start_script
+    assert 'find_watchdog_pid() {' in start_script
+    assert 'is_watchdog_running() {' in start_script
     assert 'cleanup_stale_pid() {' in start_script
+    assert 'cleanup_stale_watchdog() {' in start_script
     assert 'find_host_gateway_pid() {' in start_script
     assert 'is_host_gateway_running() {' in start_script
     assert 'gateway failed to start' in start_script
     assert 'find_host_gateway_pid() {' in status_script
     assert 'pgrep -f "nanobot gateway --config $CONFIG"' in status_script
+    assert 'find_watchdog_pid() {' in status_script
+    assert 'echo "supervising"' in status_script
+    assert 'touch "$STOPFILE"' in stop_script
+    assert 'log_lifecycle "stop requested"' in stop_script
+    assert 'WATCHDOG_PIDFILE="' in watchdog_script
+    assert 'log_lifecycle "watchdog started"' in watchdog_script
+    assert 'gateway exited unexpectedly with code $exit_code; restarting in 5 seconds' in watchdog_script
     assert 'CIDFILE="' in start_script
     assert 'docker rm -f "$CONTAINER_NAME"' in start_script
     assert config["runtime"]["mode"] == "host"
