@@ -1624,7 +1624,7 @@ function defaultInstanceEditor() {
     env: "prod",
     repoRoot: seed?.working_dir || "/Volumes/Seagate/myapp/nanobot",
     nanobotBin: seed?.nanobot_bin || "/opt/anaconda3/bin/nanobot",
-    gatewayPort: seed?.gateway_port ? String(seed.gateway_port) : "",
+    gatewayPort: "",
     sourceConfig: seed?.config_path || "",
     runtimeMode: runtime.mode || SANDBOX_PROFILE_DEFAULTS[profile].runtimeMode,
     sandboxProfile: profile,
