@@ -251,6 +251,34 @@ def test_bootstrap_softnix_instance_auto_assigns_next_gateway_port(tmp_path) -> 
     assert second["gateway_port_assignment"]["message"] == "Gateway port 18790 was already in use; assigned 18791 instead."
 
 
+def test_bootstrap_softnix_instance_skips_ports_bound_by_other_processes(tmp_path, monkeypatch) -> None:
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    base_dir = tmp_path / ".softnix"
+
+    from nanobot.admin import layout as layout_module
+
+    monkeypatch.setattr(
+        layout_module,
+        "_is_tcp_port_available",
+        lambda port: port != 18790,
+    )
+
+    result = bootstrap_softnix_instance(
+        instance_id="acme-prod",
+        name="Acme Production",
+        owner="acme",
+        env="prod",
+        nanobot_bin="/opt/anaconda3/bin/nanobot",
+        repo_root=repo_root,
+        base_dir=base_dir,
+    )
+
+    start_script = (result["instance_home"] / "scripts" / "start.sh").read_text(encoding="utf-8")
+    assert 'PORT="18791"' in start_script
+    assert result["gateway_port_assignment"]["message"] == "Gateway port 18790 was already in use; assigned 18791 instead."
+
+
 def test_bootstrap_softnix_instance_rejects_source_config_equal_to_target(tmp_path) -> None:
     repo_root = tmp_path / "repo"
     repo_root.mkdir()

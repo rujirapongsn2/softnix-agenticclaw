@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import shutil
 import re
+import socket
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -301,21 +302,33 @@ def _instance_container_name(instance_id: str) -> str:
 
 def _next_available_gateway_port(used_ports: set[int], start: int = _DEFAULT_GATEWAY_PORT) -> int:
     candidate = max(start, 1)
-    while candidate in used_ports and candidate <= 65535:
+    while candidate <= 65535 and (candidate in used_ports or not _is_tcp_port_available(candidate)):
         candidate += 1
     if candidate > 65535:
         raise ValueError("No available Gateway Port found in range 1-65535")
     return candidate
 
 
+def _is_tcp_port_available(port: int) -> bool:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            sock.bind(("127.0.0.1", port))
+            return True
+        except OSError:
+            return False
+
+
 def _resolve_gateway_port(*, desired: int | None, used_ports: set[int], strict: bool) -> int:
     if desired is None:
         desired = _DEFAULT_GATEWAY_PORT
     port = _validate_gateway_port(desired)
-    if port not in used_ports:
+    if port not in used_ports and _is_tcp_port_available(port):
         return port
-    if strict:
+    if strict and port in used_ports:
         raise ValueError(f"Gateway Port {port} is already used by another instance")
+    if strict and not _is_tcp_port_available(port):
+        raise ValueError(f"Gateway Port {port} is already in use by another process")
     return _next_available_gateway_port(used_ports, start=port + 1)
 
 
