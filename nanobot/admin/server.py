@@ -123,6 +123,8 @@ def resolve_admin_get(
                 "/admin/connectors/presets",
                 "/admin/connectors/github/install",
                 "/admin/connectors/github/validate",
+                "/admin/connectors/notion/install",
+                "/admin/connectors/notion/validate",
                 "/admin/security",
                 "/admin/security/policies/global",
                 "/admin/security/policies/global/hits",
@@ -834,6 +836,32 @@ def resolve_admin_post(
                 accessible_instance_ids=accessible_instance_ids,
             )
             return HTTPStatus.OK, result
+        if path == "/admin/connectors/notion/install":
+            instance_id = payload.get("instance_id") or "default"
+            token = str(payload.get("token") or "")
+            result = service.install_notion_connector(
+                instance_id=instance_id,
+                token=token,
+                default_page_id=payload.get("default_page_id"),
+                api_base=payload.get("api_base"),
+                notion_version=payload.get("notion_version"),
+                server_name=payload.get("server_name"),
+                accessible_instance_ids=accessible_instance_ids,
+            )
+            return HTTPStatus.OK, result
+        if path == "/admin/connectors/notion/validate":
+            instance_id = payload.get("instance_id") or "default"
+            token = str(payload.get("token") or "")
+            result = service.validate_notion_connector(
+                instance_id=instance_id,
+                token=token,
+                default_page_id=payload.get("default_page_id"),
+                api_base=payload.get("api_base"),
+                notion_version=payload.get("notion_version"),
+                server_name=payload.get("server_name"),
+                accessible_instance_ids=accessible_instance_ids,
+            )
+            return HTTPStatus.OK, result
         if path == "/admin/schedules":
             instance_id = payload.get("instance_id") or "default"
             schedule = payload.get("schedule")
@@ -1026,6 +1054,10 @@ def _match_permission(method: str, path: str) -> str | None:
         if path == "/admin/connectors/github/install":
             return "mcp.update"
         if path == "/admin/connectors/github/validate":
+            return "mcp.read"
+        if path == "/admin/connectors/notion/install":
+            return "mcp.update"
+        if path == "/admin/connectors/notion/validate":
             return "mcp.read"
         if path == "/admin/schedules":
             return "schedule.update"

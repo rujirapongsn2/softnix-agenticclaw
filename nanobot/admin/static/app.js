@@ -2681,14 +2681,29 @@ function renderSelectedInstanceConnectors(instance) {
     skill_name: "github-connector",
     server_name: "github",
   };
+  const notionPreset = getConnectorPreset("notion") || {
+    name: "notion",
+    display_name: "Notion",
+    description: "Install a Notion connector preset.",
+    skill_name: "notion-connector",
+    server_name: "notion",
+  };
   const githubServer = servers.find((server) => server.name === githubPreset.server_name || server.name === githubPreset.name) || null;
+  const notionServer = servers.find((server) => server.name === notionPreset.server_name || server.name === notionPreset.name) || null;
   const githubStatus = String(
     state.connectorStatusByInstance[`${instance.id}:github`]
       || githubServer?.status
       || githubServer?.connector_status
       || "",
   ).trim() || "pending";
+  const notionStatus = String(
+    state.connectorStatusByInstance[`${instance.id}:notion`]
+      || notionServer?.status
+      || notionServer?.connector_status
+      || "",
+  ).trim() || "pending";
   const githubConnected = githubStatus === "connected";
+  const notionConnected = notionStatus === "connected";
   const searchValue = state.connectorSearchByInstance[instance.id] || "";
   const searchTerm = searchValue.trim().toLowerCase();
   const connectorCatalog = [
@@ -2701,6 +2716,16 @@ function renderSelectedInstanceConnectors(instance) {
       available: true,
       icon: "GH",
       accentClass: "connector-mark-github",
+    },
+    {
+      id: "notion",
+      name: notionPreset.display_name || "Notion",
+      description: notionPreset.description || "Install a Notion connector preset.",
+      status: notionConnected ? "Connected" : "Not Connected",
+      connected: notionConnected,
+      available: true,
+      icon: "NO",
+      accentClass: "connector-mark-custom",
     },
     {
       id: "gmail",
@@ -2897,6 +2922,16 @@ function buildGithubConnectorPayload(instanceId) {
   };
 }
 
+function buildNotionConnectorPayload(instanceId) {
+  return {
+    instance_id: instanceId,
+    token: document.getElementById("connector-notion-token")?.value ?? "",
+    default_page_id: document.getElementById("connector-notion-default-page-id")?.value ?? "",
+    api_base: document.getElementById("connector-notion-api-base")?.value ?? "",
+    notion_version: document.getElementById("connector-notion-version")?.value ?? "",
+  };
+}
+
 function getInstanceById(instanceId) {
   return (state.overview?.instances || []).find((instance) => instance.id === instanceId) || null;
 }
@@ -2955,6 +2990,11 @@ function connectorMaskToken(instance) {
   return env.GITHUB_TOKEN ? `••••${String(env.GITHUB_TOKEN).slice(-4)}` : "";
 }
 
+function connectorMaskNotionToken(instance) {
+  const env = instance?.mcp?.servers?.find((server) => server.name === "notion")?.env || {};
+  return env.NOTION_TOKEN ? `••••${String(env.NOTION_TOKEN).slice(-4)}` : "";
+}
+
 function renderConnectorModal() {
   const titleEl = document.getElementById("connector-modal-title");
   const body = document.getElementById("connector-modal-body");
@@ -2995,6 +3035,45 @@ function renderConnectorModal() {
     document.getElementById("connector-modal-cancel-btn")?.addEventListener("click", closeConnectorSettings);
     document.getElementById("connector-modal-save-btn")?.addEventListener("click", () => void handleGithubConnectorInstall(instanceId));
     document.getElementById("connector-modal-validate-btn")?.addEventListener("click", () => void handleGithubConnectorValidate(instanceId));
+    return;
+  }
+  if (connectorId === "notion") {
+    const notionServer = instance?.mcp?.servers?.find((server) => server.name === "notion") || null;
+    const currentEnv = notionServer?.env || {};
+    titleEl.textContent = "Notion Connector Settings";
+    body.innerHTML = `
+      <div class="stack connector-modal-stack">
+        <p class="meta">Configure the Notion connector for instance <strong>${escapeHtml(instance?.name || instanceId)}</strong>.</p>
+        <div id="connector-modal-status" class="connector-modal-status is-hidden" role="status" aria-live="polite"></div>
+        <div class="field">
+          <label for="connector-notion-token">Notion Token</label>
+          <input id="connector-notion-token" type="password" autocomplete="off" placeholder="${escapeHtml(connectorMaskNotionToken(instance) || "secret_...")}" value="">
+        </div>
+        <div class="field">
+          <label for="connector-notion-default-page-id">Default Page ID or URL</label>
+          <input id="connector-notion-default-page-id" type="text" placeholder="page-id or notion page URL" value="${escapeHtml(currentEnv.NOTION_DEFAULT_PAGE_ID || "")}">
+        </div>
+        <div class="field">
+          <label for="connector-notion-api-base">API Base</label>
+          <input id="connector-notion-api-base" type="text" placeholder="https://api.notion.com/v1" value="${escapeHtml(currentEnv.NOTION_API_BASE || "https://api.notion.com/v1")}">
+        </div>
+        <div class="field">
+          <label for="connector-notion-version">Notion Version</label>
+          <input id="connector-notion-version" type="text" placeholder="2026-03-11" value="${escapeHtml(currentEnv.NOTION_VERSION || "")}">
+        </div>
+        <p class="meta">Leave token blank to keep the current saved token.</p>
+        <div class="modal-footer-actions">
+          <div class="inline-actions" style="margin-left:auto">
+            <button class="secondary-button" id="connector-modal-cancel-btn" ${busy ? "disabled" : ""}>Cancel</button>
+            <button class="secondary-button" id="connector-modal-validate-btn" ${busy ? "disabled" : ""}>Validate</button>
+            <button class="primary-button" id="connector-modal-save-btn" ${busy ? "disabled" : ""}>Save</button>
+          </div>
+        </div>
+      </div>
+    `;
+    document.getElementById("connector-modal-cancel-btn")?.addEventListener("click", closeConnectorSettings);
+    document.getElementById("connector-modal-save-btn")?.addEventListener("click", () => void handleNotionConnectorInstall(instanceId));
+    document.getElementById("connector-modal-validate-btn")?.addEventListener("click", () => void handleNotionConnectorValidate(instanceId));
     return;
   }
   titleEl.textContent = "Custom MCP Settings";
@@ -3058,6 +3137,10 @@ async function handleConnectorModalSave() {
     await handleGithubConnectorInstall(ctx.instanceId);
     return;
   }
+  if (ctx.connectorId === "notion") {
+    await handleNotionConnectorInstall(ctx.instanceId);
+    return;
+  }
   await handleConnectorModalMcpSave(ctx.instanceId);
 }
 
@@ -3066,6 +3149,10 @@ async function handleConnectorModalValidate() {
   if (!ctx) return;
   if (ctx.connectorId === "github") {
     await handleGithubConnectorValidate(ctx.instanceId);
+    return;
+  }
+  if (ctx.connectorId === "notion") {
+    await handleNotionConnectorValidate(ctx.instanceId);
     return;
   }
   await handleConnectorModalMcpValidate(ctx.instanceId);
@@ -3107,6 +3194,47 @@ async function handleGithubConnectorValidate(instanceId) {
   } catch (error) {
     state.connectorStatusByInstance[`${instanceId}:github`] = "error";
     setConnectorModalStatus(`Unable to validate GitHub connector: ${error.message}`, "error");
+  } finally {
+    setConnectorModalBusy(false);
+  }
+}
+
+async function handleNotionConnectorInstall(instanceId) {
+  const payload = buildNotionConnectorPayload(instanceId);
+  setConnectorModalBusy(true);
+  try {
+    const installResult = await postJson("/admin/connectors/notion/install", payload);
+    const validationResult = await postJson("/admin/connectors/notion/validate", payload);
+    state.connectorStatusByInstance[`${instanceId}:notion`] = validationResult.status === "ok" ? "connected" : "error";
+    setConnectorModalStatus(formatValidationMessage("Notion connector", validationResult), validationResult.status === "ok" ? "success" : "error");
+    await loadDashboard();
+    if (validationResult.status === "ok") {
+      setBanner(`Notion connector installed on instance '${instanceId}'. Server '${installResult.server_name || "notion"}' is ready.`, "success");
+      closeConnectorSettings();
+    }
+  } catch (error) {
+    setBanner(`Unable to install Notion connector: ${error.message}`, "error");
+  } finally {
+    setConnectorModalBusy(false);
+  }
+}
+
+async function handleNotionConnectorValidate(instanceId) {
+  const payload = buildNotionConnectorPayload(instanceId);
+  setConnectorModalBusy(true);
+  try {
+    const result = await postJson("/admin/connectors/notion/validate", payload);
+    const bannerType = result.status === "error" ? "error" : result.status === "warning" ? "warning" : "success";
+    setConnectorModalStatus(formatValidationMessage("Notion connector", result), bannerType);
+    state.connectorStatusByInstance[`${instanceId}:notion`] = result.status === "ok" ? "connected" : "error";
+    await loadDashboard();
+    const selected = selectedInstance();
+    if (selected && selected.id === instanceId) {
+      renderSelectedInstanceConnectors(selected);
+    }
+  } catch (error) {
+    state.connectorStatusByInstance[`${instanceId}:notion`] = "error";
+    setConnectorModalStatus(`Unable to validate Notion connector: ${error.message}`, "error");
   } finally {
     setConnectorModalBusy(false);
   }

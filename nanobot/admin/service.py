@@ -53,7 +53,9 @@ from nanobot.admin.auth import (
 from nanobot.admin.auth_store import AdminAuthStore
 from nanobot.admin.connectors import (
     GITHUB_CONNECTOR_PRESET,
+    NOTION_CONNECTOR_PRESET,
     build_github_stdio_server_config,
+    build_notion_stdio_server_config,
     get_connector_preset,
     list_connector_presets as list_built_in_connector_presets,
 )
@@ -76,6 +78,7 @@ from nanobot.security.policy import GlobalControlPolicyStore, PolicyValidationEr
 from nanobot.session.manager import SessionManager
 from nanobot.utils.helpers import sync_workspace_templates
 from nanobot.integrations.github_mcp_server import GitHubClient
+from nanobot.integrations.notion_mcp_server import NOTION_API_BASE_DEFAULT, NotionClient, normalize_notion_target_id
 
 
 def _expand_path(value: str | Path | None) -> Path | None:
@@ -109,17 +112,25 @@ def _mask_secret(value: str, keep: int = 4) -> str:
     return f"{'*' * max(len(value) - keep, 3)}{value[-keep:]}"
 
 
-def _github_connector_runtime_script_source() -> Path:
-    return Path(__file__).resolve().parent.parent / "integrations" / "github_mcp_server.py"
+def _connector_runtime_script_source(filename: str) -> Path:
+    return Path(__file__).resolve().parent.parent / "integrations" / filename
 
 
-def _ensure_github_connector_runtime_script(target: "InstanceTarget") -> Path:
+def _ensure_connector_runtime_script(target: "InstanceTarget", filename: str) -> Path:
     instance_home = target.instance_home or target.config_path.expanduser().resolve().parent
     runtime_dir = instance_home / "runtime"
     runtime_dir.mkdir(parents=True, exist_ok=True)
-    runtime_script = runtime_dir / "github_mcp_server.py"
-    runtime_script.write_text(_github_connector_runtime_script_source().read_text(encoding="utf-8"), encoding="utf-8")
+    runtime_script = runtime_dir / filename
+    runtime_script.write_text(_connector_runtime_script_source(filename).read_text(encoding="utf-8"), encoding="utf-8")
     return runtime_script
+
+
+def _ensure_github_connector_runtime_script(target: "InstanceTarget") -> Path:
+    return _ensure_connector_runtime_script(target, "github_mcp_server.py")
+
+
+def _ensure_notion_connector_runtime_script(target: "InstanceTarget") -> Path:
+    return _ensure_connector_runtime_script(target, "notion_mcp_server.py")
 
 
 def _file_mode(path: Path) -> str | None:
@@ -2112,6 +2123,225 @@ class AdminService:
             event_type="connector.validated",
             payload={
                 "connector": GITHUB_CONNECTOR_PRESET.name,
+                "status": status,
+            },
+        )
+        return response
+
+    def install_notion_connector(
+        self,
+        *,
+        instance_id: str,
+        token: str,
+        default_page_id: str | None = None,
+        api_base: str | None = None,
+        notion_version: str | None = None,
+        server_name: str | None = None,
+        accessible_instance_ids: set[str] | list[str] | tuple[str, ...] | None = None,
+    ) -> dict[str, Any]:
+        """Install the built-in Notion connector preset into one instance."""
+        target = self._get_target(instance_id)
+        self._require_target_access(target, accessible_instance_ids)
+        preset = get_connector_preset(NOTION_CONNECTOR_PRESET.name)
+        normalized_server_name = str(server_name or preset.server_name).strip() or preset.server_name
+        config = self._load_target_config(target)
+        existing_server = config.tools.mcp_servers.get(normalized_server_name)
+        existing_env = existing_server.env if existing_server is not None else {}
+        token_value = str(token or "").strip() or str(existing_env.get("NOTION_TOKEN") or "").strip()
+        default_page_value = normalize_notion_target_id(default_page_id) or normalize_notion_target_id(existing_env.get("NOTION_DEFAULT_PAGE_ID")) or None
+        api_base_value = str(api_base or "").strip() or str(existing_env.get("NOTION_API_BASE") or "").strip() or NOTION_API_BASE_DEFAULT
+        notion_version_value = str(notion_version or "").strip() or str(existing_env.get("NOTION_VERSION") or "").strip() or None
+        if not token_value:
+            raise ValueError("Notion token is required")
+        runtime_script = _ensure_notion_connector_runtime_script(target)
+        config.tools.mcp_servers[normalized_server_name] = MCPServerConfig.model_validate(
+            build_notion_stdio_server_config(
+                token=token_value,
+                default_page_id=default_page_value,
+                api_base=api_base_value,
+                notion_version=notion_version_value,
+                script_path=str(runtime_script),
+            )
+        )
+        config.tools.mcp_servers[normalized_server_name].connector_status = "pending"
+        save_config(config, target.config_path)
+        workspace_path = target.workspace_path
+        if workspace_path.exists():
+            sync_workspace_templates(
+                workspace_path,
+                silent=True,
+                agent_name=target.name,
+                apply_identity=True,
+            )
+        self._append_audit_event(
+            instance_id=target.id,
+            event_type="connector.installed",
+            payload={
+                "connector": preset.name,
+                "server_name": normalized_server_name,
+                "skill_name": preset.skill_name,
+            },
+        )
+        return {
+            "instance": self._collect_instance(target),
+            "connector": preset.name,
+            "server_name": normalized_server_name,
+            "skill_name": preset.skill_name,
+        }
+
+    def validate_notion_connector(
+        self,
+        *,
+        instance_id: str,
+        token: str,
+        default_page_id: str | None = None,
+        api_base: str | None = None,
+        notion_version: str | None = None,
+        server_name: str | None = None,
+        accessible_instance_ids: set[str] | list[str] | tuple[str, ...] | None = None,
+    ) -> dict[str, Any]:
+        """Validate the Notion connector credential and optional page scope."""
+        target = self._get_target(instance_id)
+        self._require_target_access(target, accessible_instance_ids)
+        preset_server_name = str(server_name or NOTION_CONNECTOR_PRESET.server_name).strip() or NOTION_CONNECTOR_PRESET.server_name
+        token_value = str(token or "").strip()
+        config_defaults: dict[str, Any] = {}
+        if not token_value:
+            config = self._load_target_config(target)
+            server_config = config.tools.mcp_servers.get(preset_server_name)
+            if server_config is not None:
+                config_defaults = server_config.env or {}
+                token_value = str(config_defaults.get("NOTION_TOKEN") or "").strip()
+                if not default_page_id:
+                    default_page_id = normalize_notion_target_id(config_defaults.get("NOTION_DEFAULT_PAGE_ID")) or None
+                if not api_base:
+                    api_base = str(config_defaults.get("NOTION_API_BASE") or "").strip() or NOTION_API_BASE_DEFAULT
+                if not notion_version:
+                    notion_version = str(config_defaults.get("NOTION_VERSION") or "").strip() or None
+        if not token_value:
+            raise ValueError("Notion token is required")
+        default_page_id = normalize_notion_target_id(default_page_id) or None
+
+        client = NotionClient(
+            token=token_value,
+            api_base=str(api_base or NOTION_API_BASE_DEFAULT).strip() or NOTION_API_BASE_DEFAULT,
+            notion_version=str(notion_version or "2026-03-11").strip() or "2026-03-11",
+            default_page_id=normalize_notion_target_id(default_page_id),
+        )
+        findings: list[dict[str, Any]] = []
+        try:
+            user = client.whoami()
+            owner = user.get("name") or user.get("bot", {}).get("owner", {}).get("type") or "Notion integration"
+            findings.append(
+                {
+                    "severity": "info",
+                    "code": "token_valid",
+                    "detail": f"Authenticated as {owner}.",
+                }
+            )
+        except httpx.HTTPStatusError as exc:
+            status_code = exc.response.status_code
+            if status_code in {401, 403}:
+                findings.append(
+                    {
+                        "severity": "error",
+                        "code": "invalid_token",
+                        "detail": "Notion token was rejected by the API.",
+                    }
+                )
+            else:
+                findings.append(
+                    {
+                        "severity": "error",
+                        "code": "notion_api_error",
+                        "detail": f"Notion validation failed with HTTP {status_code}.",
+                    }
+                )
+        except Exception as exc:
+            findings.append(
+                {
+                    "severity": "error",
+                    "code": "notion_api_unreachable",
+                    "detail": str(exc),
+                }
+            )
+
+        if default_page_id and not any(item["severity"] == "error" for item in findings):
+            probe_error: str | None = None
+            for label, probe in (
+                ("page_visible", lambda: client.get_page(default_page_id)),
+                ("data_source_visible", lambda: client.get_data_source(default_page_id)),
+                ("database_visible", lambda: client.get_database(default_page_id)),
+            ):
+                try:
+                    probe_target = probe()
+                    findings.append(
+                        {
+                            "severity": "info",
+                            "code": label,
+                            "detail": f"{label.replace('_', ' ').title()} {probe_target.get('id') or default_page_id} is reachable.",
+                        }
+                    )
+                    probe_error = None
+                    break
+                except httpx.HTTPStatusError as exc:
+                    if exc.response.status_code != 404:
+                        findings.append(
+                            {
+                                "severity": "error",
+                                "code": f"{label.replace('_visible', '')}_probe_failed",
+                                "detail": f"Target probe returned HTTP {exc.response.status_code}.",
+                            }
+                        )
+                        probe_error = str(exc)
+                        break
+                    probe_error = "404"
+                except Exception as exc:
+                    findings.append(
+                        {
+                            "severity": "error",
+                            "code": f"{label.replace('_visible', '')}_probe_failed",
+                            "detail": str(exc),
+                        }
+                    )
+                    probe_error = str(exc)
+                    break
+            if probe_error == "404":
+                findings.append(
+                    {
+                        "severity": "warning",
+                        "code": "notion_target_unavailable",
+                        "detail": "Notion target was not found as a page, data source, or database. If this ID is valid, confirm it is shared with the integration.",
+                    }
+                )
+
+        status = "ok"
+        if any(item["severity"] == "error" for item in findings):
+            status = "error"
+        elif any(item["severity"] == "warning" for item in findings):
+            status = "warning"
+
+        response = {
+            "instance_id": target.id,
+            "connector": NOTION_CONNECTOR_PRESET.name,
+            "status": status,
+            "findings": findings,
+        }
+        config = self._load_target_config(target)
+        server_config = config.tools.mcp_servers.get(preset_server_name)
+        if server_config is not None:
+            runtime_script = _ensure_notion_connector_runtime_script(target)
+            server_config.command = "python3"
+            server_config.args = [str(runtime_script)]
+            if default_page_id:
+                server_config.env["NOTION_DEFAULT_PAGE_ID"] = default_page_id
+            server_config.connector_status = "connected" if status == "ok" else "error"
+            save_config(config, target.config_path)
+        self._append_audit_event(
+            instance_id=target.id,
+            event_type="connector.validated",
+            payload={
+                "connector": NOTION_CONNECTOR_PRESET.name,
                 "status": status,
             },
         )

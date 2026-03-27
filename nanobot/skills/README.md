@@ -19,6 +19,7 @@ The skill format and metadata structure follow OpenClaw's conventions to maintai
 |-------|-------------|
 | `github` | Interact with GitHub using the `gh` CLI |
 | `github-connector` | Use the built-in GitHub MCP connector |
+| `notion-connector` | Use the built-in Notion MCP connector |
 | `weather` | Get weather info using wttr.in and Open-Meteo |
 | `summarize` | Summarize URLs, files, and YouTube videos |
 | `tmux` | Remote-control tmux sessions |

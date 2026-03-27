@@ -28,6 +28,10 @@ class ContextBuilder:
         """Build the system prompt from identity, bootstrap files, memory, and skills."""
         parts = [self._get_identity()]
 
+        connector_routing = self._build_connector_routing()
+        if connector_routing:
+            parts.append(connector_routing)
+
         bootstrap = self._load_bootstrap_files()
         if bootstrap:
             parts.append(bootstrap)
@@ -52,6 +56,26 @@ Skills with available="false" need dependencies installed first - you can try in
 {skills_summary}""")
 
         return "\n\n---\n\n".join(parts)
+
+    def _build_connector_routing(self) -> str:
+        """Add explicit connector selection guidance when built-in connector skills exist."""
+        available = set(self.skills.get_always_skills())
+        routing_lines = ["# Connector Routing", ""]
+        has_any = False
+        if "notion-connector" in available:
+            routing_lines.append("- Use the Notion connector for any Notion page, database, workspace, or content-reading question.")
+            has_any = True
+        if "github-connector" in available:
+            routing_lines.append("- Use the GitHub connector for any repository, issue, pull request, workflow, or commit question.")
+            has_any = True
+        if not has_any:
+            return ""
+        routing_lines += [
+            "- Do not substitute one connector for another.",
+            "- If the user mentions a product name explicitly, prefer that connector first before falling back to a generic skill.",
+            "- If a connector is available and the task matches its domain, call that connector even if another connector is also installed.",
+        ]
+        return "\n".join(routing_lines)
 
     def _get_identity(self) -> str:
         """Get the core identity section."""
