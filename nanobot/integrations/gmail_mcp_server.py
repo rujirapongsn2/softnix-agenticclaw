@@ -5,6 +5,7 @@ from __future__ import annotations
 from base64 import urlsafe_b64encode
 from email.message import EmailMessage
 from email.utils import format_datetime
+from email.policy import SMTP
 from datetime import datetime, timezone
 import os
 from dataclasses import dataclass
@@ -16,6 +17,12 @@ from mcp.server.fastmcp import FastMCP
 GMAIL_API_BASE_DEFAULT = "https://gmail.googleapis.com/gmail/v1"
 GMAIL_USER_ID_DEFAULT = "me"
 GMAIL_USER_AGENT = "nanobot-gmail-connector/1.0"
+GMAIL_WRITE_SCOPES = {
+    "https://mail.google.com/",
+    "https://www.googleapis.com/auth/gmail.compose",
+    "https://www.googleapis.com/auth/gmail.modify",
+    "https://www.googleapis.com/auth/gmail.send",
+}
 
 
 @dataclass(frozen=True)
@@ -51,7 +58,17 @@ class GmailClient:
             raise ValueError("Gmail access token is required")
         with self._client() as client:
             response = client.request(method, path, params=params, json=json_data)
-            response.raise_for_status()
+            try:
+                response.raise_for_status()
+            except httpx.HTTPStatusError as exc:
+                detail = _extract_response_detail(response)
+                if detail:
+                    raise httpx.HTTPStatusError(
+                        f"{exc}: {detail}",
+                        request=exc.request,
+                        response=exc.response,
+                    ) from exc
+                raise
             if not response.content:
                 return {}
             return response.json()
@@ -99,6 +116,27 @@ class GmailClient:
     def list_labels(self, user_id: str | None = None) -> dict[str, Any]:
         return self._request("GET", f"/users/{self._resolve_user_id(user_id)}/labels")
 
+    def token_scopes(self) -> set[str]:
+        with httpx.Client(
+            timeout=20.0,
+            transport=self.transport,
+            headers={"Accept": "application/json", "User-Agent": GMAIL_USER_AGENT},
+        ) as client:
+            response = client.get("https://oauth2.googleapis.com/tokeninfo", params={"access_token": self.token})
+            response.raise_for_status()
+            data = response.json()
+        scopes = str(data.get("scope") or "").split()
+        return {scope.strip() for scope in scopes if scope.strip()}
+
+    def ensure_write_scope(self) -> set[str]:
+        scopes = self.token_scopes()
+        if scopes.intersection(GMAIL_WRITE_SCOPES):
+            return scopes
+        raise ValueError(
+            "Gmail token does not include a write scope. Regenerate the token with gmail.compose or gmail.send "
+            "for draft/send support."
+        )
+
     def create_draft(
         self,
         *,
@@ -121,7 +159,9 @@ class GmailClient:
             body_html=body_html,
             reply_to=reply_to,
             thread_id=thread_id,
+            from_address=self._resolve_from_address(user_id),
         )
+        self.ensure_write_scope()
         return self._request(
             "POST",
             f"/users/{self._resolve_user_id(user_id)}/drafts",
@@ -150,7 +190,9 @@ class GmailClient:
             body_html=body_html,
             reply_to=reply_to,
             thread_id=thread_id,
+            from_address=self._resolve_from_address(user_id),
         )
+        self.ensure_write_scope()
         return self._request(
             "POST",
             f"/users/{self._resolve_user_id(user_id)}/messages/send",
@@ -168,6 +210,7 @@ class GmailClient:
         body_html: str | None = None,
         reply_to: str | None = None,
         thread_id: str | None = None,
+        from_address: str | None = None,
     ) -> dict[str, Any]:
         message = EmailMessage()
         to_list = _normalize_recipients(to)
@@ -180,6 +223,8 @@ class GmailClient:
             message["Cc"] = ", ".join(cc_list)
         if bcc_list:
             message["Bcc"] = ", ".join(bcc_list)
+        if from_address:
+            message["From"] = str(from_address).strip()
         if reply_to:
             message["Reply-To"] = str(reply_to).strip()
         message["Subject"] = str(subject or "").strip()
@@ -189,11 +234,24 @@ class GmailClient:
             message.add_alternative(str(body_html), subtype="html")
         else:
             message.set_content(str(body or ""))
-        raw = urlsafe_b64encode(message.as_bytes()).decode("ascii").rstrip("=")
+        raw = urlsafe_b64encode(message.as_bytes(policy=SMTP)).decode("ascii")
         payload: dict[str, Any] = {"raw": raw}
         if thread_id:
             payload["threadId"] = str(thread_id).strip()
         return payload
+
+    def _resolve_from_address(self, user_id: str | None = None) -> str | None:
+        resolved = str(user_id or self.user_id or "").strip()
+        if resolved and "@" in resolved:
+            return resolved
+        try:
+            profile = self.whoami()
+        except Exception:
+            return resolved or None
+        email_address = str(profile.get("emailAddress") or "").strip()
+        if email_address:
+            return email_address
+        return resolved or None
 
 
 def _normalize_recipients(value: str | None) -> list[str]:
@@ -204,6 +262,32 @@ def _normalize_recipients(value: str | None) -> list[str]:
     else:
         items = [str(value)]
     return [item.strip() for item in items if item and item.strip()]
+
+
+def _extract_response_detail(response: httpx.Response) -> str:
+    try:
+        data = response.json()
+    except Exception:
+        return response.text.strip()
+    if isinstance(data, dict):
+        error = data.get("error")
+        if isinstance(error, dict):
+            messages: list[str] = []
+            message = str(error.get("message") or "").strip()
+            if message:
+                messages.append(message)
+            errors = error.get("errors")
+            if isinstance(errors, list):
+                for item in errors:
+                    if isinstance(item, dict):
+                        reason = str(item.get("reason") or "").strip()
+                        location = str(item.get("location") or "").strip()
+                        if reason and location:
+                            messages.append(f"{reason} at {location}")
+                        elif reason:
+                            messages.append(reason)
+            return "; ".join(messages).strip()
+    return ""
 
 
 def _client_from_env() -> GmailClient:

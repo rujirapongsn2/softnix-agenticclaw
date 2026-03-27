@@ -17,6 +17,7 @@ Use the Gmail connector when the task is about reading Gmail, searching messages
 - If the task is about email, inbox, unread mail, attachments, sender, subject, label, thread context, drafting, or sending, use Gmail first and do not route it to GitHub or Notion.
 - Use `mcp_gmail_create_draft` when the user wants a draft or review step before sending.
 - Use `mcp_gmail_send_message` only when the user explicitly wants the email sent now.
+- Draft and send require a Gmail write scope such as `gmail.compose` or `gmail.send`; a read-only token is not enough.
 - If the user asks to send mail and the token lacks permission, report the validation failure plainly.
 
 ## Common Patterns

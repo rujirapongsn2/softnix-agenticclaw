@@ -7,7 +7,7 @@ from typing import Any, Callable
 import httpx
 import pytest
 
-from nanobot.admin.connectors import get_connector_preset, list_connector_presets
+from nanobot.admin.connectors import build_gmail_stdio_server_config, get_connector_preset, list_connector_presets
 from nanobot.admin.service import AdminService
 from nanobot.config.loader import load_config, save_config
 from nanobot.config.schema import Config, MCPServerConfig
@@ -167,6 +167,69 @@ def _notion_validate(service: AdminService) -> dict[str, Any]:
     )
 
 
+def _gmail_install(service: AdminService) -> dict[str, Any]:
+    return service.install_gmail_connector(
+        instance_id="default",
+        token="ya29_example",
+        user_id="me",
+    )
+
+
+def _gmail_seed_saved_config(config_path: Path) -> None:
+    config = load_config(config_path)
+    config.tools.mcp_servers["gmail"] = MCPServerConfig.model_validate(
+        build_gmail_stdio_server_config(
+            token="ya29_saved",
+            user_id="me",
+            api_base="https://gmail.googleapis.com/gmail/v1",
+        )
+    )
+    save_config(config, config_path)
+
+
+def _patch_gmail_validate_success(monkeypatch: pytest.MonkeyPatch) -> None:
+    class DummyGmailClient:
+        def __init__(self, *, token: str, api_base: str, user_id: str) -> None:
+            self.token = token
+            self.api_base = api_base
+            self.user_id = user_id
+
+        def whoami(self) -> dict[str, str]:
+            return {"emailAddress": "owner@example.com"}
+
+        def list_labels(self, user_id: str | None = None) -> dict[str, list[dict[str, str]]]:
+            return {"labels": [{"id": "INBOX"}]}
+
+        def token_scopes(self) -> set[str]:
+            return {"https://www.googleapis.com/auth/gmail.compose"}
+
+    monkeypatch.setattr("nanobot.admin.service.GmailClient", DummyGmailClient)
+
+
+def _patch_gmail_validate_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    class DummyGmailClient:
+        def __init__(self, *, token: str, api_base: str, user_id: str) -> None:
+            self.token = token
+            self.api_base = api_base
+            self.user_id = user_id
+
+        def whoami(self) -> dict[str, str]:
+            raise httpx.HTTPStatusError(
+                "unauthorized",
+                request=httpx.Request("GET", "https://gmail.googleapis.com/gmail/v1/users/me/profile"),
+                response=httpx.Response(401),
+            )
+
+    monkeypatch.setattr("nanobot.admin.service.GmailClient", DummyGmailClient)
+
+
+def _gmail_validate(service: AdminService) -> dict[str, Any]:
+    return service.validate_gmail_connector(
+        instance_id="default",
+        token="",
+    )
+
+
 CONNECTOR_CONTRACTS: tuple[ConnectorContract, ...] = (
     ConnectorContract(
         name="github",
@@ -187,6 +250,16 @@ CONNECTOR_CONTRACTS: tuple[ConnectorContract, ...] = (
         patch_validate_success=_patch_notion_validate_success,
         patch_validate_failure=_patch_notion_validate_failure,
         validate=_notion_validate,
+    ),
+    ConnectorContract(
+        name="gmail",
+        runtime_script_name="gmail_mcp_server.py",
+        expected_env_keys=("GMAIL_TOKEN", "GMAIL_USER_ID", "GMAIL_API_BASE"),
+        install=_gmail_install,
+        seed_saved_config=_gmail_seed_saved_config,
+        patch_validate_success=_patch_gmail_validate_success,
+        patch_validate_failure=_patch_gmail_validate_failure,
+        validate=_gmail_validate,
     ),
 )
 

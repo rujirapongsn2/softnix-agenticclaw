@@ -15,6 +15,8 @@ def test_gmail_client_uses_expected_routes() -> None:
 
     def handler(request: httpx.Request) -> httpx.Response:
         requests.append((request.method, request.url.path))
+        if request.url.host == "oauth2.googleapis.com" and request.url.path == "/tokeninfo":
+            return httpx.Response(200, json={"scope": "https://www.googleapis.com/auth/gmail.compose https://www.googleapis.com/auth/gmail.readonly"})
         if request.url.path == "/gmail/v1/users/me/profile":
             return httpx.Response(200, json={"emailAddress": "owner@example.com"})
         if request.url.path == "/gmail/v1/users/me/messages":
@@ -29,6 +31,7 @@ def test_gmail_client_uses_expected_routes() -> None:
             payload = json.loads(request.content.decode("utf-8"))
             raw = payload["message"]["raw"]
             message_text = base64.urlsafe_b64decode(_pad_base64(raw)).decode("utf-8")
+            assert "From: owner@example.com" in message_text
             assert "To: receiver@example.com" in message_text
             assert "Subject: Draft subject" in message_text
             assert "Draft body" in message_text
@@ -37,6 +40,7 @@ def test_gmail_client_uses_expected_routes() -> None:
             payload = json.loads(request.content.decode("utf-8"))
             raw = payload["raw"]
             message_text = base64.urlsafe_b64decode(_pad_base64(raw)).decode("utf-8")
+            assert "From: owner@example.com" in message_text
             assert "To: receiver@example.com" in message_text
             assert "Subject: Send subject" in message_text
             assert "Send body" in message_text
@@ -56,11 +60,38 @@ def test_gmail_client_uses_expected_routes() -> None:
     assert client.list_labels()["labels"][0]["id"] == "INBOX"
     assert client.create_draft(to="receiver@example.com", subject="Draft subject", body="Draft body")["id"] == "draft-1"
     assert client.send_message(to="receiver@example.com", subject="Send subject", body="Send body")["id"] == "msg-send-1"
-    assert requests[0] == ("GET", "/gmail/v1/users/me/profile")
+    assert ("GET", "/tokeninfo") in requests
 
 
 def _pad_base64(raw: str) -> str:
     return raw + "=" * (-len(raw) % 4)
+
+
+def test_gmail_client_requires_write_scope_for_draft_and_send() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "oauth2.googleapis.com" and request.url.path == "/tokeninfo":
+            return httpx.Response(200, json={"scope": "https://www.googleapis.com/auth/gmail.readonly"})
+        return httpx.Response(200, json={"emailAddress": "owner@example.com"})
+
+    client = GmailClient(
+        token="ya29_example",
+        user_id="me",
+        transport=httpx.MockTransport(handler),
+    )
+
+    try:
+        client.create_draft(to="receiver@example.com", subject="Draft subject", body="Draft body")
+    except ValueError as exc:
+        assert "write scope" in str(exc)
+    else:
+        raise AssertionError("Expected draft creation to require a Gmail write scope")
+
+    try:
+        client.send_message(to="receiver@example.com", subject="Send subject", body="Send body")
+    except ValueError as exc:
+        assert "write scope" in str(exc)
+    else:
+        raise AssertionError("Expected send_message to require a Gmail write scope")
 
 
 def test_admin_service_installs_gmail_connector(tmp_path) -> None:
@@ -118,6 +149,9 @@ def test_admin_service_validates_gmail_connector(tmp_path, monkeypatch) -> None:
 
         def list_labels(self, user_id: str | None = None) -> dict[str, list[dict[str, str]]]:
             return {"labels": [{"id": "INBOX"}]}
+
+        def token_scopes(self) -> set[str]:
+            return {"https://www.googleapis.com/auth/gmail.compose"}
 
     monkeypatch.setattr("nanobot.admin.service.GmailClient", DummyGmailClient)
 

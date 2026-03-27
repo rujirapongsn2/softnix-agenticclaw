@@ -52,8 +52,10 @@ from nanobot.admin.auth import (
 )
 from nanobot.admin.auth_store import AdminAuthStore
 from nanobot.admin.connectors import (
+    GMAIL_CONNECTOR_PRESET,
     GITHUB_CONNECTOR_PRESET,
     NOTION_CONNECTOR_PRESET,
+    build_gmail_stdio_server_config,
     build_github_stdio_server_config,
     build_notion_stdio_server_config,
     get_connector_preset,
@@ -78,6 +80,7 @@ from nanobot.security.policy import GlobalControlPolicyStore, PolicyValidationEr
 from nanobot.session.manager import SessionManager
 from nanobot.utils.helpers import sync_workspace_templates
 from nanobot.integrations.github_mcp_server import GitHubClient
+from nanobot.integrations.gmail_mcp_server import GMAIL_API_BASE_DEFAULT, GMAIL_WRITE_SCOPES, GmailClient
 from nanobot.integrations.notion_mcp_server import NOTION_API_BASE_DEFAULT, NotionClient, normalize_notion_target_id
 
 
@@ -131,6 +134,10 @@ def _ensure_github_connector_runtime_script(target: "InstanceTarget") -> Path:
 
 def _ensure_notion_connector_runtime_script(target: "InstanceTarget") -> Path:
     return _ensure_connector_runtime_script(target, "notion_mcp_server.py")
+
+
+def _ensure_gmail_connector_runtime_script(target: "InstanceTarget") -> Path:
+    return _ensure_connector_runtime_script(target, "gmail_mcp_server.py")
 
 
 def _file_mode(path: Path) -> str | None:
@@ -2342,6 +2349,223 @@ class AdminService:
             event_type="connector.validated",
             payload={
                 "connector": NOTION_CONNECTOR_PRESET.name,
+                "status": status,
+            },
+        )
+        return response
+
+    def install_gmail_connector(
+        self,
+        *,
+        instance_id: str,
+        token: str,
+        user_id: str | None = None,
+        api_base: str | None = None,
+        server_name: str | None = None,
+        accessible_instance_ids: set[str] | list[str] | tuple[str, ...] | None = None,
+    ) -> dict[str, Any]:
+        """Install the built-in Gmail connector preset into one instance."""
+        target = self._get_target(instance_id)
+        self._require_target_access(target, accessible_instance_ids)
+        preset = get_connector_preset(GMAIL_CONNECTOR_PRESET.name)
+        normalized_server_name = str(server_name or preset.server_name).strip() or preset.server_name
+        config = self._load_target_config(target)
+        existing_server = config.tools.mcp_servers.get(normalized_server_name)
+        existing_env = existing_server.env if existing_server is not None else {}
+        token_value = str(token or "").strip() or str(existing_env.get("GMAIL_TOKEN") or "").strip()
+        user_id_value = str(user_id or "").strip() or str(existing_env.get("GMAIL_USER_ID") or "").strip() or "me"
+        api_base_value = str(api_base or "").strip() or str(existing_env.get("GMAIL_API_BASE") or "").strip() or GMAIL_API_BASE_DEFAULT
+        if not token_value:
+            raise ValueError("Gmail access token is required")
+        runtime_script = _ensure_gmail_connector_runtime_script(target)
+        config.tools.mcp_servers[normalized_server_name] = MCPServerConfig.model_validate(
+            build_gmail_stdio_server_config(
+                token=token_value,
+                user_id=user_id_value,
+                api_base=api_base_value,
+                script_path=str(runtime_script),
+            )
+        )
+        config.tools.mcp_servers[normalized_server_name].connector_status = "pending"
+        save_config(config, target.config_path)
+        workspace_path = target.workspace_path
+        if workspace_path.exists():
+            sync_workspace_templates(
+                workspace_path,
+                silent=True,
+                agent_name=target.name,
+                apply_identity=True,
+            )
+        self._append_audit_event(
+            instance_id=target.id,
+            event_type="connector.installed",
+            payload={
+                "connector": preset.name,
+                "server_name": normalized_server_name,
+                "skill_name": preset.skill_name,
+            },
+        )
+        return {
+            "instance": self._collect_instance(target),
+            "connector": preset.name,
+            "server_name": normalized_server_name,
+            "skill_name": preset.skill_name,
+        }
+
+    def validate_gmail_connector(
+        self,
+        *,
+        instance_id: str,
+        token: str,
+        user_id: str | None = None,
+        api_base: str | None = None,
+        server_name: str | None = None,
+        accessible_instance_ids: set[str] | list[str] | tuple[str, ...] | None = None,
+    ) -> dict[str, Any]:
+        """Validate the Gmail connector credential and optional mailbox scope."""
+        target = self._get_target(instance_id)
+        self._require_target_access(target, accessible_instance_ids)
+        preset_server_name = str(server_name or GMAIL_CONNECTOR_PRESET.server_name).strip() or GMAIL_CONNECTOR_PRESET.server_name
+        token_value = str(token or "").strip()
+        if not token_value:
+            config = self._load_target_config(target)
+            server_config = config.tools.mcp_servers.get(preset_server_name)
+            if server_config is not None:
+                config_defaults = server_config.env or {}
+                token_value = str(config_defaults.get("GMAIL_TOKEN") or "").strip()
+                if not user_id:
+                    user_id = str(config_defaults.get("GMAIL_USER_ID") or "").strip() or "me"
+                if not api_base:
+                    api_base = str(config_defaults.get("GMAIL_API_BASE") or "").strip() or GMAIL_API_BASE_DEFAULT
+        if not token_value:
+            raise ValueError("Gmail access token is required")
+        user_id_value = str(user_id or "me").strip() or "me"
+
+        client = GmailClient(
+            token=token_value,
+            api_base=str(api_base or GMAIL_API_BASE_DEFAULT).strip() or GMAIL_API_BASE_DEFAULT,
+            user_id=user_id_value,
+        )
+        findings: list[dict[str, Any]] = []
+        try:
+            profile = client.whoami()
+            findings.append(
+                {
+                    "severity": "info",
+                    "code": "token_valid",
+                    "detail": f"Authenticated as {profile.get('emailAddress') or profile.get('displayName') or 'Gmail user'}.",
+                }
+            )
+        except httpx.HTTPStatusError as exc:
+            status = exc.response.status_code
+            if status in {401, 403}:
+                findings.append(
+                    {
+                        "severity": "error",
+                        "code": "invalid_token",
+                        "detail": "Gmail access token was rejected by the API.",
+                    }
+                )
+            else:
+                findings.append(
+                    {
+                        "severity": "error",
+                        "code": "gmail_api_error",
+                        "detail": f"Gmail validation failed with HTTP {status}.",
+                    }
+                )
+        except Exception as exc:
+            findings.append(
+                {
+                    "severity": "error",
+                    "code": "gmail_api_unreachable",
+                    "detail": str(exc),
+                }
+            )
+
+        if not any(item["severity"] == "error" for item in findings):
+            try:
+                labels = client.list_labels()
+                label_count = len([item for item in labels.get("labels", []) if isinstance(item, dict)])
+                findings.append(
+                    {
+                        "severity": "info",
+                        "code": "mailbox_visible",
+                        "detail": f"Mailbox is reachable and returned {label_count} labels.",
+                    }
+                )
+            except httpx.HTTPStatusError as exc:
+                status = exc.response.status_code
+                findings.append(
+                    {
+                        "severity": "warning" if status == 404 else "error",
+                        "code": "mailbox_unavailable" if status == 404 else "mailbox_probe_failed",
+                        "detail": f"Mailbox probe returned HTTP {status}.",
+                    }
+                )
+            except Exception as exc:
+                findings.append(
+                    {
+                        "severity": "error",
+                        "code": "mailbox_probe_failed",
+                        "detail": str(exc),
+                    }
+                )
+
+        if not any(item["severity"] == "error" for item in findings):
+            try:
+                scopes = client.token_scopes()
+                write_scopes = sorted(scope for scope in scopes if scope in GMAIL_WRITE_SCOPES)
+                if write_scopes:
+                    findings.append(
+                        {
+                            "severity": "info",
+                            "code": "write_scope_ready",
+                            "detail": f"Token includes Gmail write scope(s): {', '.join(write_scopes)}.",
+                        }
+                    )
+                else:
+                    findings.append(
+                        {
+                            "severity": "warning",
+                            "code": "write_scope_missing",
+                            "detail": "Token can read Gmail but cannot draft or send mail. Regenerate it with gmail.compose or gmail.send.",
+                        }
+                    )
+            except Exception as exc:
+                findings.append(
+                    {
+                        "severity": "warning",
+                        "code": "scope_probe_failed",
+                        "detail": str(exc),
+                    }
+                )
+
+        status = "ok"
+        if any(item["severity"] == "error" for item in findings):
+            status = "error"
+        elif any(item["severity"] == "warning" for item in findings):
+            status = "warning"
+
+        response = {
+            "instance_id": target.id,
+            "connector": GMAIL_CONNECTOR_PRESET.name,
+            "status": status,
+            "findings": findings,
+        }
+        config = self._load_target_config(target)
+        server_config = config.tools.mcp_servers.get(preset_server_name)
+        if server_config is not None:
+            runtime_script = _ensure_gmail_connector_runtime_script(target)
+            server_config.command = "python3"
+            server_config.args = [str(runtime_script)]
+            server_config.connector_status = "connected" if status == "ok" else "error"
+            save_config(config, target.config_path)
+        self._append_audit_event(
+            instance_id=target.id,
+            event_type="connector.validated",
+            payload={
+                "connector": GMAIL_CONNECTOR_PRESET.name,
                 "status": status,
             },
         )
