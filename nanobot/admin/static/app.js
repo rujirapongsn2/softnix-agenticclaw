@@ -3297,8 +3297,7 @@ async function handleGithubConnectorInstall(instanceId) {
     setConnectorModalStatus(formatValidationMessage("GitHub connector", validationResult), validationResult.status === "ok" ? "success" : "error");
     await loadDashboard();
     if (validationResult.status === "ok") {
-      setBanner(`GitHub connector installed on instance '${instanceId}'. Server '${installResult.server_name || "github"}' is ready.`, "success");
-      closeConnectorSettings();
+      await promptConnectorRestartAfterSave(installResult.instance || selectedInstance(), "GitHub connector", `Server '${installResult.server_name || "github"}' is ready.`);
     }
   } catch (error) {
     setBanner(`Unable to install GitHub connector: ${error.message}`, "error");
@@ -3338,8 +3337,7 @@ async function handleNotionConnectorInstall(instanceId) {
     setConnectorModalStatus(formatValidationMessage("Notion connector", validationResult), validationResult.status === "ok" ? "success" : "error");
     await loadDashboard();
     if (validationResult.status === "ok") {
-      setBanner(`Notion connector installed on instance '${instanceId}'. Server '${installResult.server_name || "notion"}' is ready.`, "success");
-      closeConnectorSettings();
+      await promptConnectorRestartAfterSave(installResult.instance || selectedInstance(), "Notion connector", `Server '${installResult.server_name || "notion"}' is ready.`);
     }
   } catch (error) {
     setBanner(`Unable to install Notion connector: ${error.message}`, "error");
@@ -3379,8 +3377,7 @@ async function handleGmailConnectorInstall(instanceId) {
     setConnectorModalStatus(formatValidationMessage("Gmail connector", validationResult), validationResult.status === "ok" ? "success" : "error");
     await loadDashboard();
     if (validationResult.status === "ok") {
-      setBanner(`Gmail connector installed on instance '${instanceId}'. Server '${installResult.server_name || "gmail"}' is ready.`, "success");
-      closeConnectorSettings();
+      await promptConnectorRestartAfterSave(installResult.instance || selectedInstance(), "Gmail connector", `Server '${installResult.server_name || "gmail"}' is ready.`);
     }
   } catch (error) {
     setBanner(`Unable to install Gmail connector: ${error.message}`, "error");
@@ -3405,6 +3402,49 @@ async function handleGmailConnectorValidate(instanceId) {
   } catch (error) {
     state.connectorStatusByInstance[`${instanceId}:gmail`] = "error";
     setConnectorModalStatus(`Unable to validate Gmail connector: ${error.message}`, "error");
+  } finally {
+    setConnectorModalBusy(false);
+  }
+}
+
+async function promptConnectorRestartAfterSave(instance, connectorLabel, readyMessage) {
+  const instanceId = instance?.id;
+  const instanceName = instance?.name || instanceId || "instance";
+  const runtime = instance?.runtime || {};
+  const actions = Array.isArray(runtime.actions) ? runtime.actions : [];
+  const isRunning = String(runtime.status || "").toLowerCase() === "running";
+  const canRestart = actions.includes("restart") && !!instanceId;
+
+  if (!isRunning) {
+    setBanner(`${connectorLabel} saved on instance '${instanceName}'. The instance is currently stopped, so no restart is needed right now. ${readyMessage}`, "success");
+    closeConnectorSettings();
+    return;
+  }
+
+  if (!canRestart) {
+    setBanner(`${connectorLabel} saved on instance '${instanceName}', but restart is not available for this instance. Please restart it manually to apply the new connector config. ${readyMessage}`, "warning");
+    closeConnectorSettings();
+    return;
+  }
+
+  const confirmed = window.confirm(`${connectorLabel} saved on instance '${instanceName}'. Restart the instance now to apply the new connector config?`);
+  if (!confirmed) {
+    setBanner(`${connectorLabel} saved on instance '${instanceName}'. Restart later to apply the new connector config. ${readyMessage}`, "warning");
+    closeConnectorSettings();
+    return;
+  }
+
+  setConnectorModalBusy(true);
+  try {
+    const restartResult = await postJson(`/admin/instances/${encodeURIComponent(instanceId)}/restart`, {});
+    if (!restartResult.ok) {
+      throw new Error(restartResult.error || summarizeCommandResult(restartResult));
+    }
+    await loadDashboard();
+    setBanner(`${connectorLabel} saved and instance '${instanceName}' restarted successfully. ${readyMessage}`, "success");
+    closeConnectorSettings();
+  } catch (error) {
+    setBanner(`${connectorLabel} was saved, but restarting instance '${instanceName}' failed: ${error.message}`, "error");
   } finally {
     setConnectorModalBusy(false);
   }
