@@ -2852,16 +2852,6 @@ function renderSelectedInstanceConnectors(instance) {
       iconMarkup: CONNECTOR_ICON_MARKUP.x,
       accentClass: "connector-mark-x",
     },
-    {
-      id: "custom-mcp",
-      name: "Custom MCP",
-      description: "Add a raw MCP server using a command or URL.",
-      status: servers.some((server) => String(server.status || server.connector_status || "").trim() === "connected") ? "Connected" : "Not Connected",
-      connected: servers.some((server) => String(server.status || server.connector_status || "").trim() === "connected"),
-      available: true,
-      iconMarkup: CONNECTOR_ICON_MARKUP.custom,
-      accentClass: "connector-mark-custom",
-    },
   ];
   const filteredCatalog = connectorCatalog.filter((connector) => {
     if (!searchTerm) return true;
