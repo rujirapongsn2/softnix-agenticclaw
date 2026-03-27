@@ -33,10 +33,18 @@ NOTION_CONNECTOR_PRESET = ConnectorPreset(
     server_name="notion",
 )
 
+GMAIL_CONNECTOR_PRESET = ConnectorPreset(
+    name="gmail",
+    display_name="Gmail",
+    description="Install a Gmail MCP server and companion skill for inbox search, thread, label, draft, and send tasks.",
+    skill_name="gmail-connector",
+    server_name="gmail",
+)
+
 
 def list_connector_presets() -> list[ConnectorPreset]:
     """Return the built-in connector presets."""
-    return [GITHUB_CONNECTOR_PRESET, NOTION_CONNECTOR_PRESET]
+    return [GITHUB_CONNECTOR_PRESET, NOTION_CONNECTOR_PRESET, GMAIL_CONNECTOR_PRESET]
 
 
 def get_connector_preset(name: str) -> ConnectorPreset:
@@ -91,6 +99,29 @@ def build_notion_stdio_server_config(
         "type": "stdio",
         "command": "python3",
         "args": [str(script_path).strip()] if str(script_path or "").strip() else ["-m", "nanobot.integrations.notion_mcp_server"],
+        "env": {key: value for key, value in env.items() if value},
+        "tool_timeout": int(tool_timeout),
+    }
+
+
+def build_gmail_stdio_server_config(
+    *,
+    token: str,
+    user_id: str | None = None,
+    api_base: str | None = None,
+    tool_timeout: int = 30,
+    script_path: str | None = None,
+) -> dict[str, Any]:
+    """Build the MCP server config payload for the Gmail connector."""
+    env = {
+        "GMAIL_TOKEN": str(token or "").strip(),
+        "GMAIL_USER_ID": str(user_id or "me").strip() or "me",
+        "GMAIL_API_BASE": str(api_base or "https://gmail.googleapis.com/gmail/v1").strip() or "https://gmail.googleapis.com/gmail/v1",
+    }
+    return {
+        "type": "stdio",
+        "command": "python3",
+        "args": [str(script_path).strip()] if str(script_path or "").strip() else ["-m", "nanobot.integrations.gmail_mcp_server"],
         "env": {key: value for key, value in env.items() if value},
         "tool_timeout": int(tool_timeout),
     }
