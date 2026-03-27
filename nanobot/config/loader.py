@@ -66,4 +66,11 @@ def _migrate_config(data: dict) -> dict:
     exec_cfg = tools.get("exec", {})
     if "restrictToWorkspace" in exec_cfg and "restrictToWorkspace" not in tools:
         tools["restrictToWorkspace"] = exec_cfg.pop("restrictToWorkspace")
+    mcp_servers = tools.get("mcpServers") or tools.get("mcp_servers") or {}
+    github_server = mcp_servers.get("github")
+    if isinstance(github_server, dict):
+        command = str(github_server.get("command") or "").strip()
+        args = github_server.get("args") or []
+        if command.startswith("/opt/anaconda3/bin/python") and args == ["-m", "nanobot.integrations.github_mcp_server"]:
+            github_server["command"] = "python3"
     return data

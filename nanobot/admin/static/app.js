@@ -44,6 +44,10 @@ const state = {
   providerFocusByInstance: {},
   mcpFocusByInstance: {},
   mcpCreateOpenByInstance: {},
+  connectorPresets: { presets: [] },
+  connectorSearchByInstance: {},
+  connectorModal: { open: false, instanceId: null, connectorId: null },
+  connectorStatusByInstance: {},
   memoryByInstance: {},
   memoryViewModeByInstance: {},
   skillsByInstance: {},
@@ -236,7 +240,7 @@ const views = {
   users: document.getElementById("users-view"),
 };
 const ALLOWED_VIEWS = new Set(Object.keys(views));
-const ALLOWED_WORKSPACE_TABS = new Set(["manage", "channels", "providers", "memory", "skills", "schedules", "security", "runtime-audit", "execution-visualize"]);
+const ALLOWED_WORKSPACE_TABS = new Set(["manage", "channels", "providers", "connectors", "memory", "skills", "schedules", "security", "runtime-audit", "execution-visualize"]);
 
 const VIEW_PERMISSIONS = {
   overview: "overview.read",
@@ -2128,6 +2132,7 @@ function renderInstanceWorkspaceTabs() {
   if (selected || editor.mode !== "create") {
     tabs.push(tabLabel("channels", "Channels"));
     tabs.push(tabLabel("providers", "Providers & MCP"));
+    tabs.push(tabLabel("connectors", "Connectors"));
     tabs.push(tabLabel("memory", "Memory"));
     tabs.push(tabLabel("skills", "Skills"));
     tabs.push(tabLabel("schedules", "Schedules"));
@@ -2152,6 +2157,7 @@ function syncInstanceWorkspacePanels() {
     manage: document.getElementById("instance-workspace-manage"),
     channels: document.getElementById("instance-workspace-channels"),
     providers: document.getElementById("instance-workspace-providers"),
+    connectors: document.getElementById("instance-workspace-connectors"),
     memory: document.getElementById("instance-workspace-memory"),
     skills: document.getElementById("instance-workspace-skills"),
     schedules: document.getElementById("instance-workspace-schedules"),
@@ -2172,7 +2178,7 @@ function renderInstanceWorkspaceContent() {
     return;
   }
   if (!selected) {
-    ["instance-workspace-channels", "instance-workspace-providers", "instance-workspace-memory", "instance-workspace-skills", "instance-workspace-schedules", "instance-workspace-security", "instance-workspace-runtime-audit", "instance-workspace-execution-visualize"].forEach((id) => {
+    ["instance-workspace-channels", "instance-workspace-providers", "instance-workspace-connectors", "instance-workspace-memory", "instance-workspace-skills", "instance-workspace-schedules", "instance-workspace-security", "instance-workspace-runtime-audit", "instance-workspace-execution-visualize"].forEach((id) => {
       const el = document.getElementById(id);
       if (el) {
         el.innerHTML = `<div class="item-card"><h4>Select an instance</h4><p class="meta">Choose an instance from the table to manage ${id.split("-").pop()}.</p></div>`;
@@ -2182,6 +2188,7 @@ function renderInstanceWorkspaceContent() {
   }
   renderSelectedInstanceChannels(selected);
   renderSelectedInstanceProviders(selected);
+  renderSelectedInstanceConnectors(selected);
   renderSelectedInstanceMemory(selected);
   renderSelectedInstanceSkills(selected);
   renderSelectedInstanceSchedules(selected);
@@ -2460,18 +2467,6 @@ function renderSelectedInstanceProviders(instance) {
   }
   const mcpCreateOpen = !!state.mcpCreateOpenByInstance[instance.id];
 
-  const leftList = mode === "providers"
-    ? providers.map((provider) => `
-      <button class="console-tab provider-subtab ${provider.name === selectedProvider?.name ? "is-active" : ""}" data-provider-focus="${escapeHtml(instance.id)}:${escapeHtml(provider.name)}">
-        ${escapeHtml(provider.label)}
-      </button>
-    `).join("")
-    : servers.map((server) => `
-      <button class="console-tab provider-subtab ${server.name === selectedServer?.name ? "is-active" : ""}" data-mcp-focus="${escapeHtml(instance.id)}:${escapeHtml(server.name)}">
-        ${escapeHtml(server.name)}
-      </button>
-    `).join("");
-
   const providerEditor = selectedProvider
     ? (() => {
       const key = `provider:${instance.id}:${selectedProvider.name}`;
@@ -2544,10 +2539,23 @@ function renderSelectedInstanceProviders(instance) {
   target.innerHTML = `
     <div class="stack">
       <div class="item-card">
-        <h4>Default Routing</h4>
-        <div class="field"><label>Model</label><input data-default-model="${escapeHtml(instance.id)}" value="${escapeHtml(instance.model || "")}" ${defaultBusy}></div>
-        <div class="field"><label>Provider</label><select data-default-provider="${escapeHtml(instance.id)}" ${defaultBusy}>${providerOptions}</select></div>
-        <div class="inline-actions"><button class="primary-button is-small" data-provider-default-save="${escapeHtml(instance.id)}" ${defaultBusy}>Save Defaults</button></div>
+        <div class="row-between">
+          <div>
+            <h4>Default Routing</h4>
+            <p class="meta">Select the model and provider used for new requests.</p>
+          </div>
+        </div>
+        <div class="field">
+          <label>Model</label>
+          <input data-default-model="${escapeHtml(instance.id)}" value="${escapeHtml(instance.model || "")}" ${defaultBusy}>
+        </div>
+        <div class="field">
+          <label>Provider</label>
+          <select data-default-provider="${escapeHtml(instance.id)}" ${defaultBusy}>${providerOptions}</select>
+        </div>
+        <div class="inline-actions">
+          <button class="primary-button is-small" data-provider-default-save="${escapeHtml(instance.id)}" ${defaultBusy}>Save Defaults</button>
+        </div>
       </div>
       <div class="provider-workspace">
         <div class="provider-nav">
@@ -2556,7 +2564,15 @@ function renderSelectedInstanceProviders(instance) {
             <button class="console-tab provider-main-tab ${mode === "mcp" ? "is-active" : ""}" data-provider-mode="${escapeHtml(instance.id)}:mcp">MCP Servers</button>
           </div>
           <p class="eyebrow provider-subtitle">${mode === "providers" ? "Provider List" : "MCP Server List"}</p>
-          <div class="provider-tab-list">${leftList || `<p class="meta">${mode === "providers" ? "No providers" : "No MCP servers"}</p>`}</div>
+          <div class="provider-tab-list">${mode === "providers" ? providers.map((provider) => `
+            <button class="console-tab provider-subtab ${provider.name === selectedProvider?.name ? "is-active" : ""}" data-provider-focus="${escapeHtml(instance.id)}:${escapeHtml(provider.name)}">
+              ${escapeHtml(provider.label)}
+            </button>
+          `).join("") : servers.map((server) => `
+            <button class="console-tab provider-subtab ${server.name === selectedServer?.name ? "is-active" : ""}" data-mcp-focus="${escapeHtml(instance.id)}:${escapeHtml(server.name)}">
+              ${escapeHtml(server.name)}
+            </button>
+          `).join("") || `<p class="meta">${mode === "providers" ? "No providers" : "No MCP servers"}</p>`}</div>
           ${mode === "mcp" ? `
             <div class="inline-actions provider-nav-actions">
               <button class="secondary-button is-small" data-mcp-create-toggle="${escapeHtml(instance.id)}">
@@ -2602,6 +2618,26 @@ function renderSelectedInstanceProviders(instance) {
     }
     renderSelectedInstanceProviders(instance);
   }));
+  target.querySelectorAll("[data-connector-focus]").forEach((button) => button.addEventListener("click", () => {
+    const [instanceId, connectorId] = button.dataset.connectorFocus.split(":");
+    if (button.dataset.connectorAvailable !== "true") {
+      return;
+    }
+    state.connectorFocusByInstance[instanceId] = connectorId;
+    if (connectorId === "custom-mcp") {
+      state.providerModeByInstance[instanceId] = "mcp";
+    }
+    renderSelectedInstanceProviders(instance);
+  }));
+  target.querySelectorAll("[data-connector-action]").forEach((button) => button.addEventListener("click", () => handleConnectorAction(button.dataset.connectorAction)));
+  target.querySelectorAll("[data-connector-search]").forEach((input) => input.addEventListener("input", () => {
+    const instanceId = input.dataset.connectorSearch;
+    state.connectorSearchByInstance[instanceId] = input.value || "";
+    renderSelectedInstanceProviders(instance);
+  }));
+  target.querySelectorAll("[data-connector-refresh]").forEach((button) => button.addEventListener("click", () => {
+    void loadDashboard();
+  }));
   target.querySelectorAll("[data-provider-focus]").forEach((button) => button.addEventListener("click", () => {
     const [instanceId, providerName] = button.dataset.providerFocus.split(":");
     state.providerFocusByInstance[instanceId] = providerName;
@@ -2623,6 +2659,8 @@ function renderSelectedInstanceProviders(instance) {
     state.mcpCreateOpenByInstance[instanceId] = false;
     renderSelectedInstanceProviders(instance);
   }));
+  target.querySelectorAll("[data-github-install]").forEach((button) => button.addEventListener("click", () => handleGithubConnectorInstall(button.dataset.githubInstall)));
+  target.querySelectorAll("[data-github-validate]").forEach((button) => button.addEventListener("click", () => handleGithubConnectorValidate(button.dataset.githubValidate)));
   target.querySelectorAll("[data-provider-default-save]").forEach((button) => button.addEventListener("click", () => handleProviderDefaultsSave(button.dataset.providerDefaultSave)));
   target.querySelectorAll("[data-provider-save]").forEach((button) => button.addEventListener("click", () => handleProviderSave(button.dataset.providerSave)));
   target.querySelectorAll("[data-provider-validate]").forEach((button) => button.addEventListener("click", () => handleProviderValidate(button.dataset.providerValidate)));
@@ -2630,6 +2668,499 @@ function renderSelectedInstanceProviders(instance) {
   target.querySelectorAll("[data-mcp-validate]").forEach((button) => button.addEventListener("click", () => handleMcpValidate(button.dataset.mcpValidate)));
   target.querySelectorAll("[data-mcp-delete]").forEach((button) => button.addEventListener("click", () => handleMcpDelete(button.dataset.mcpDelete)));
   target.querySelectorAll("[data-mcp-create-save]").forEach((button) => button.addEventListener("click", () => handleMcpCreate(button.dataset.mcpCreateSave)));
+}
+
+function renderSelectedInstanceConnectors(instance) {
+  const target = document.getElementById("instance-workspace-connectors");
+  if (!target) return;
+  const servers = instance.mcp?.servers || [];
+  const githubPreset = getConnectorPreset("github") || {
+    name: "github",
+    display_name: "GitHub",
+    description: "Install a GitHub MCP server and companion skill for repo, issue, PR, and workflow tasks.",
+    skill_name: "github-connector",
+    server_name: "github",
+  };
+  const githubServer = servers.find((server) => server.name === githubPreset.server_name || server.name === githubPreset.name) || null;
+  const githubStatus = String(
+    state.connectorStatusByInstance[`${instance.id}:github`]
+      || githubServer?.status
+      || githubServer?.connector_status
+      || "",
+  ).trim() || "pending";
+  const githubConnected = githubStatus === "connected";
+  const searchValue = state.connectorSearchByInstance[instance.id] || "";
+  const searchTerm = searchValue.trim().toLowerCase();
+  const connectorCatalog = [
+    {
+      id: "github",
+      name: githubPreset.display_name || "GitHub",
+      description: githubPreset.description || "Install a GitHub connector preset.",
+      status: githubConnected ? "Connected" : "Not Connected",
+      connected: githubConnected,
+      available: true,
+      icon: "GH",
+      accentClass: "connector-mark-github",
+    },
+    {
+      id: "gmail",
+      name: "Gmail",
+      description: "Read inboxes, draft replies, and manage mail workflows.",
+      status: "Coming Soon",
+      connected: false,
+      available: false,
+      icon: "GM",
+      accentClass: "connector-mark-gmail",
+    },
+    {
+      id: "linkedin",
+      name: "LinkedIn",
+      description: "Access profiles, company pages, and hiring signals.",
+      status: "Coming Soon",
+      connected: false,
+      available: false,
+      icon: "IN",
+      accentClass: "connector-mark-linkedin",
+    },
+    {
+      id: "instagram",
+      name: "Instagram",
+      description: "Read media, profiles, and engagement data.",
+      status: "Coming Soon",
+      connected: false,
+      available: false,
+      icon: "IG",
+      accentClass: "connector-mark-instagram",
+    },
+    {
+      id: "google-calendar",
+      name: "Google Calendar",
+      description: "Read schedules and manage calendar events.",
+      status: "Coming Soon",
+      connected: false,
+      available: false,
+      icon: "GC",
+      accentClass: "connector-mark-calendar",
+    },
+    {
+      id: "google-drive",
+      name: "Google Drive",
+      description: "Read, search, and manage Drive files.",
+      status: "Coming Soon",
+      connected: false,
+      available: false,
+      icon: "GD",
+      accentClass: "connector-mark-drive",
+    },
+    {
+      id: "youtube",
+      name: "YouTube",
+      description: "Read, upload, and manage channel content.",
+      status: "Coming Soon",
+      connected: false,
+      available: false,
+      icon: "YT",
+      accentClass: "connector-mark-youtube",
+    },
+    {
+      id: "reddit",
+      name: "Reddit",
+      description: "Search posts, read discussions, and monitor communities.",
+      status: "Coming Soon",
+      connected: false,
+      available: false,
+      icon: "RD",
+      accentClass: "connector-mark-reddit",
+    },
+    {
+      id: "tiktok",
+      name: "TikTok",
+      description: "Access video data, trending content, and creator insights.",
+      status: "Coming Soon",
+      connected: false,
+      available: false,
+      icon: "TT",
+      accentClass: "connector-mark-tiktok",
+    },
+    {
+      id: "x",
+      name: "X (Twitter)",
+      description: "Read tweets, search conversations, and monitor trends.",
+      status: "Coming Soon",
+      connected: false,
+      available: false,
+      icon: "X",
+      accentClass: "connector-mark-x",
+    },
+    {
+      id: "custom-mcp",
+      name: "Custom MCP",
+      description: "Add a raw MCP server using a command or URL.",
+      status: servers.some((server) => String(server.status || server.connector_status || "").trim() === "connected") ? "Connected" : "Not Connected",
+      connected: servers.some((server) => String(server.status || server.connector_status || "").trim() === "connected"),
+      available: true,
+      icon: "MC",
+      accentClass: "connector-mark-custom",
+    },
+  ];
+  const filteredCatalog = connectorCatalog.filter((connector) => {
+    if (!searchTerm) return true;
+    return [connector.id, connector.name, connector.description, connector.status]
+      .some((value) => String(value || "").toLowerCase().includes(searchTerm));
+  });
+  const connectedCount = connectorCatalog.filter((item) => item.connected).length;
+  const catalogCards = filteredCatalog
+    .map((connector) => `
+      <article class="connector-card ${connector.available ? "" : "is-coming-soon"}">
+        <div class="connector-card-top">
+          <div class="connector-mark ${connector.accentClass}" aria-hidden="true">${escapeHtml(connector.icon)}</div>
+          <div class="connector-card-meta">
+            <div class="row-between connector-card-heading">
+              <h4>${escapeHtml(connector.name)}</h4>
+              <span class="connector-status ${connector.connected ? "is-connected" : connector.available ? "is-disconnected" : "is-coming-soon"}">
+                <span class="connector-status-dot"></span>
+                ${escapeHtml(connector.status)}
+              </span>
+            </div>
+            <p>${escapeHtml(connector.description)}</p>
+          </div>
+        </div>
+        <div class="connector-card-actions">
+          ${connector.available ? `
+            <button
+              class="secondary-button is-small"
+              data-connector-setting="${escapeHtml(instance.id)}:${escapeHtml(connector.id)}"
+            >
+              Setting
+            </button>
+          ` : `<span class="connector-coming-soon-pill">Coming Soon</span>`}
+        </div>
+      </article>
+    `)
+    .join("");
+  target.innerHTML = `
+    <div class="connector-shell">
+      <div class="connector-header">
+        <div>
+          <h3>Connectors</h3>
+          <p>Authorize third-party platforms to let the instance access data on your behalf.</p>
+        </div>
+        <div class="connector-header-actions">
+          <span class="connector-summary-count">${escapeHtml(String(connectorCatalog.length))} connectors</span>
+          <span class="connector-summary-separator"></span>
+          <span class="connector-summary-state">${escapeHtml(String(connectedCount))} connected</span>
+          <button class="secondary-button is-small" data-connector-refresh="${escapeHtml(instance.id)}">Refresh</button>
+        </div>
+      </div>
+      <div class="connector-toolbar">
+        <div class="field connector-search-field">
+          <label class="sr-only" for="connector-search-${escapeHtml(instance.id)}">Search connectors</label>
+          <input
+            id="connector-search-${escapeHtml(instance.id)}"
+            data-connector-search="${escapeHtml(instance.id)}"
+            value="${escapeHtml(searchValue)}"
+            placeholder="Search connectors..."
+          >
+        </div>
+        <div class="connector-toolbar-stats">
+          <span class="connector-toolbar-stat">${escapeHtml(String(connectorCatalog.length))} connectors</span>
+          <span class="connector-toolbar-divider"></span>
+          <span class="connector-toolbar-stat is-connected">${escapeHtml(String(connectedCount))} connected</span>
+        </div>
+      </div>
+      <div class="connector-grid">
+        ${catalogCards || `<div class="connector-empty"><h4>No connectors found</h4><p class="meta">Try a different search term.</p></div>`}
+      </div>
+    </div>
+  `;
+  target.querySelectorAll("[data-connector-search]").forEach((input) => input.addEventListener("input", () => {
+    const instanceId = input.dataset.connectorSearch;
+    state.connectorSearchByInstance[instanceId] = input.value || "";
+    renderSelectedInstanceConnectors(instance);
+  }));
+  target.querySelectorAll("[data-connector-refresh]").forEach((button) => button.addEventListener("click", () => {
+    void loadDashboard();
+  }));
+  target.querySelectorAll("[data-connector-setting]").forEach((button) => button.addEventListener("click", () => openConnectorSettings(button.dataset.connectorSetting)));
+}
+
+function getConnectorPreset(name) {
+  return (state.connectorPresets?.presets || []).find((preset) => preset.name === name) || null;
+}
+
+function buildGithubConnectorPayload(instanceId) {
+  return {
+    instance_id: instanceId,
+    token: document.getElementById("connector-github-token")?.value ?? "",
+    default_repo: document.getElementById("connector-github-default-repo")?.value ?? "",
+    api_base: document.getElementById("connector-github-api-base")?.value ?? "",
+  };
+}
+
+function getInstanceById(instanceId) {
+  return (state.overview?.instances || []).find((instance) => instance.id === instanceId) || null;
+}
+
+function getCurrentConnectorContext() {
+  const instanceId = state.connectorModal.instanceId;
+  if (!instanceId) return null;
+  const instance = getInstanceById(instanceId) || selectedInstance();
+  return {
+    instanceId,
+    instance,
+    connectorId: state.connectorModal.connectorId,
+  };
+}
+
+function openConnectorSettings(key) {
+  const [instanceId, connectorId] = String(key || "").split(":");
+  if (!instanceId || !connectorId) return;
+  state.connectorModal = { open: true, instanceId, connectorId };
+  renderConnectorModal();
+  const modal = document.getElementById("connector-modal");
+  modal?.classList.remove("is-hidden");
+  modal?.addEventListener("click", (event) => {
+    if (event.target === modal) {
+      closeConnectorSettings();
+    }
+  }, { once: true });
+  document.getElementById("connector-modal-close")?.addEventListener("click", closeConnectorSettings, { once: true });
+}
+
+function closeConnectorSettings() {
+  state.connectorModal = { open: false, instanceId: null, connectorId: null };
+  document.getElementById("connector-modal")?.classList.add("is-hidden");
+}
+
+function setConnectorModalStatus(message, type = "info") {
+  const statusEl = document.getElementById("connector-modal-status");
+  if (!statusEl) return;
+  statusEl.className = `connector-modal-status is-${type}`;
+  statusEl.textContent = message || "";
+  statusEl.classList.toggle("is-hidden", !message);
+}
+
+function setConnectorModalBusy(isBusy) {
+  const modal = document.getElementById("connector-modal");
+  if (!modal) return;
+  modal.dataset.busy = isBusy ? "true" : "false";
+  modal.querySelectorAll("button, input, textarea, select").forEach((element) => {
+    if (element.id === "connector-modal-close") return;
+    element.disabled = isBusy;
+  });
+}
+
+function connectorMaskToken(instance) {
+  const env = instance?.mcp?.servers?.find((server) => server.name === "github")?.env || {};
+  return env.GITHUB_TOKEN ? `••••${String(env.GITHUB_TOKEN).slice(-4)}` : "";
+}
+
+function renderConnectorModal() {
+  const titleEl = document.getElementById("connector-modal-title");
+  const body = document.getElementById("connector-modal-body");
+  const ctx = getCurrentConnectorContext();
+  if (!titleEl || !body || !ctx) return;
+  const { instance, connectorId, instanceId } = ctx;
+  const busy = state.busyKey.startsWith(`connector-`);
+  if (connectorId === "github") {
+    const githubServer = instance?.mcp?.servers?.find((server) => server.name === "github") || null;
+    const currentEnv = githubServer?.env || {};
+    titleEl.textContent = "GitHub Connector Settings";
+    body.innerHTML = `
+      <div class="stack connector-modal-stack">
+        <p class="meta">Configure the GitHub connector for instance <strong>${escapeHtml(instance?.name || instanceId)}</strong>.</p>
+        <div id="connector-modal-status" class="connector-modal-status is-hidden" role="status" aria-live="polite"></div>
+        <div class="field">
+          <label for="connector-github-token">GitHub Token</label>
+          <input id="connector-github-token" type="password" autocomplete="off" placeholder="${escapeHtml(connectorMaskToken(instance) || "ghp_...")}" value="">
+        </div>
+        <div class="field">
+          <label for="connector-github-default-repo">Default Repo</label>
+          <input id="connector-github-default-repo" type="text" placeholder="owner/repo" value="${escapeHtml(currentEnv.GITHUB_DEFAULT_REPO || "")}">
+        </div>
+        <div class="field">
+          <label for="connector-github-api-base">API Base</label>
+          <input id="connector-github-api-base" type="text" placeholder="https://api.github.com" value="${escapeHtml(currentEnv.GITHUB_API_BASE || "")}">
+        </div>
+        <p class="meta">Leave token blank to keep the current saved token.</p>
+        <div class="modal-footer-actions">
+          <div class="inline-actions" style="margin-left:auto">
+            <button class="secondary-button" id="connector-modal-cancel-btn" ${busy ? "disabled" : ""}>Cancel</button>
+            <button class="secondary-button" id="connector-modal-validate-btn" ${busy ? "disabled" : ""}>Validate</button>
+            <button class="primary-button" id="connector-modal-save-btn" ${busy ? "disabled" : ""}>Save</button>
+          </div>
+        </div>
+      </div>
+    `;
+    document.getElementById("connector-modal-cancel-btn")?.addEventListener("click", closeConnectorSettings);
+    document.getElementById("connector-modal-save-btn")?.addEventListener("click", () => void handleGithubConnectorInstall(instanceId));
+    document.getElementById("connector-modal-validate-btn")?.addEventListener("click", () => void handleGithubConnectorValidate(instanceId));
+    return;
+  }
+  titleEl.textContent = "Custom MCP Settings";
+  const server = instance?.mcp?.servers?.[0] || {};
+  const serverArgs = Array.isArray(server.args) ? server.args : [];
+  const serverHeaders = server.headers && typeof server.headers === "object" ? server.headers : {};
+  body.innerHTML = `
+    <div class="stack connector-modal-stack">
+      <p class="meta">Configure a raw MCP server for instance <strong>${escapeHtml(instance?.name || instanceId)}</strong>.</p>
+      <div id="connector-modal-status" class="connector-modal-status is-hidden" role="status" aria-live="polite"></div>
+      <div class="field">
+        <label for="connector-mcp-name">Server Name</label>
+        <input id="connector-mcp-name" type="text" placeholder="my-server" value="${escapeHtml(server.name || "")}">
+      </div>
+      <div class="field">
+        <label for="connector-mcp-type">Type</label>
+        <select id="connector-mcp-type">
+          <option value="streamableHttp" ${server.type === "streamableHttp" ? "selected" : ""}>streamableHttp</option>
+          <option value="sse" ${server.type === "sse" ? "selected" : ""}>sse</option>
+          <option value="stdio" ${server.type === "stdio" ? "selected" : ""}>stdio</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="connector-mcp-command">Command</label>
+        <input id="connector-mcp-command" type="text" value="${escapeHtml(server.command || "")}">
+      </div>
+      <div class="field">
+        <label for="connector-mcp-url">URL</label>
+        <input id="connector-mcp-url" type="text" value="${escapeHtml(server.url || "")}">
+      </div>
+      <div class="field">
+        <label for="connector-mcp-timeout">Tool Timeout</label>
+        <input id="connector-mcp-timeout" type="number" value="${escapeHtml(server.tool_timeout || 30)}">
+      </div>
+      <div class="field">
+        <label for="connector-mcp-args">Args (JSON array)</label>
+        <textarea id="connector-mcp-args">${escapeHtml(JSON.stringify(serverArgs, null, 2))}</textarea>
+      </div>
+      <div class="field">
+        <label for="connector-mcp-headers">Headers (JSON object)</label>
+        <textarea id="connector-mcp-headers">${escapeHtml(JSON.stringify(serverHeaders, null, 2))}</textarea>
+      </div>
+      <div class="modal-footer-actions">
+        <div class="inline-actions" style="margin-left:auto">
+          <button class="secondary-button" id="connector-modal-cancel-btn" ${busy ? "disabled" : ""}>Cancel</button>
+          <button class="secondary-button" id="connector-modal-validate-btn" ${busy ? "disabled" : ""}>Validate</button>
+          <button class="primary-button" id="connector-modal-save-btn" ${busy ? "disabled" : ""}>Save</button>
+        </div>
+      </div>
+    </div>
+  `;
+  document.getElementById("connector-modal-cancel-btn")?.addEventListener("click", closeConnectorSettings);
+  document.getElementById("connector-modal-save-btn")?.addEventListener("click", () => void handleConnectorModalSave());
+  document.getElementById("connector-modal-validate-btn")?.addEventListener("click", () => void handleConnectorModalValidate());
+}
+
+async function handleConnectorModalSave() {
+  const ctx = getCurrentConnectorContext();
+  if (!ctx) return;
+  if (ctx.connectorId === "github") {
+    await handleGithubConnectorInstall(ctx.instanceId);
+    return;
+  }
+  await handleConnectorModalMcpSave(ctx.instanceId);
+}
+
+async function handleConnectorModalValidate() {
+  const ctx = getCurrentConnectorContext();
+  if (!ctx) return;
+  if (ctx.connectorId === "github") {
+    await handleGithubConnectorValidate(ctx.instanceId);
+    return;
+  }
+  await handleConnectorModalMcpValidate(ctx.instanceId);
+}
+
+async function handleGithubConnectorInstall(instanceId) {
+  const payload = buildGithubConnectorPayload(instanceId);
+  setConnectorModalBusy(true);
+  try {
+    const installResult = await postJson("/admin/connectors/github/install", payload);
+    const validationResult = await postJson("/admin/connectors/github/validate", payload);
+    state.connectorStatusByInstance[`${instanceId}:github`] = validationResult.status === "ok" ? "connected" : "error";
+    setConnectorModalStatus(formatValidationMessage("GitHub connector", validationResult), validationResult.status === "ok" ? "success" : "error");
+    await loadDashboard();
+    if (validationResult.status === "ok") {
+      setBanner(`GitHub connector installed on instance '${instanceId}'. Server '${installResult.server_name || "github"}' is ready.`, "success");
+      closeConnectorSettings();
+    }
+  } catch (error) {
+    setBanner(`Unable to install GitHub connector: ${error.message}`, "error");
+  } finally {
+    setConnectorModalBusy(false);
+  }
+}
+
+async function handleGithubConnectorValidate(instanceId) {
+  const payload = buildGithubConnectorPayload(instanceId);
+  setConnectorModalBusy(true);
+  try {
+    const result = await postJson("/admin/connectors/github/validate", payload);
+    const bannerType = result.status === "error" ? "error" : result.status === "warning" ? "warning" : "success";
+    setConnectorModalStatus(formatValidationMessage("GitHub connector", result), bannerType);
+    state.connectorStatusByInstance[`${instanceId}:github`] = result.status === "ok" ? "connected" : "error";
+    await loadDashboard();
+    const selected = selectedInstance();
+    if (selected && selected.id === instanceId) {
+      renderSelectedInstanceConnectors(selected);
+    }
+  } catch (error) {
+    state.connectorStatusByInstance[`${instanceId}:github`] = "error";
+    setConnectorModalStatus(`Unable to validate GitHub connector: ${error.message}`, "error");
+  } finally {
+    setConnectorModalBusy(false);
+  }
+}
+
+function buildConnectorMcpPayload(instanceId) {
+  return {
+    instance_id: instanceId,
+    server_name: document.getElementById("connector-mcp-name")?.value?.trim() || "",
+    server: {
+      type: document.getElementById("connector-mcp-type")?.value || null,
+      command: document.getElementById("connector-mcp-command")?.value ?? "",
+      url: document.getElementById("connector-mcp-url")?.value ?? "",
+      tool_timeout: Number(document.getElementById("connector-mcp-timeout")?.value || "30"),
+      args: parseJsonField("#connector-mcp-args", []),
+      headers: parseJsonField("#connector-mcp-headers", {}),
+    },
+  };
+}
+
+async function handleConnectorModalMcpSave(instanceId) {
+  const payload = buildConnectorMcpPayload(instanceId);
+  setConnectorModalBusy(true);
+  try {
+    const result = await patchJson("/admin/mcp/servers", payload);
+    await runAutoLifecycleAfterSave(result.instance || null);
+    await loadDashboard();
+    closeConnectorSettings();
+  } catch (error) {
+    setBanner(`Unable to save MCP server: ${error.message}`, "error");
+  } finally {
+    setConnectorModalBusy(false);
+  }
+}
+
+async function handleConnectorModalMcpValidate(instanceId) {
+  const serverName = document.getElementById("connector-mcp-name")?.value?.trim() || "";
+  if (!serverName) {
+    setBanner("Server name is required.", "error");
+    return;
+  }
+  const payload = {
+    instance_id: instanceId,
+  };
+  setConnectorModalBusy(true);
+  try {
+    const result = await postJson(`/admin/mcp/servers/${encodeURIComponent(serverName)}/validate`, payload);
+    setConnectorModalStatus(formatValidationMessage(`MCP server '${serverName}'`, result), result.status === "error" ? "error" : "warning");
+    await loadDashboard();
+  } catch (error) {
+    setConnectorModalStatus(`Unable to validate MCP server '${serverName}': ${error.message}`, "error");
+  } finally {
+    setConnectorModalBusy(false);
+  }
 }
 
 function renderSelectedInstanceMemory(instance) {
@@ -6102,11 +6633,12 @@ async function loadDashboard() {
     return;
   }
   try {
-    const [health, schedules, overview, channels, security, activity, accessRequests] = await Promise.all([
+    const [health, schedules, overview, channels, connectorPresets, security, activity, accessRequests] = await Promise.all([
       fetchJson("/admin/health"),
       hasAuthPermission("schedule.read") ? fetchJson("/admin/schedules") : Promise.resolve({ jobs: [] }),
       fetchJson("/admin/overview"),
       hasAuthPermission("channel.read") ? fetchJson("/admin/channels") : Promise.resolve({ channels: [] }),
+      hasAuthPermission("mcp.read") ? fetchJson("/admin/connectors/presets") : Promise.resolve({ presets: [] }),
       hasAuthPermission("security.read") ? fetchJson("/admin/security") : Promise.resolve({ findings: [] }),
       hasAuthPermission("activity.read") ? fetchJson("/admin/activity") : Promise.resolve({ events: [], count: 0 }),
       hasAuthPermission("access_request.review") ? fetchJson("/admin/access-requests") : Promise.resolve({ requests: [], count: 0 }),
@@ -6127,6 +6659,7 @@ async function loadDashboard() {
     state.schedules = schedules;
     state.overview = overview;
     state.channels = channels.channels;
+    state.connectorPresets = connectorPresets || { presets: [] };
     state.security = security;
     if (hasAuthPermission("security.read")) {
       await loadGlobalPolicy({ force: true, silent: true });

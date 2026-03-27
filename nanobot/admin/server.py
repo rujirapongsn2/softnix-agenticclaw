@@ -120,6 +120,9 @@ def resolve_admin_get(
                 "/admin/channels",
                 "/admin/providers",
                 "/admin/mcp/servers",
+                "/admin/connectors/presets",
+                "/admin/connectors/github/install",
+                "/admin/connectors/github/validate",
                 "/admin/security",
                 "/admin/security/policies/global",
                 "/admin/security/policies/global/hits",
@@ -215,6 +218,8 @@ def resolve_admin_get(
         return HTTPStatus.OK, service.list_providers(accessible_instance_ids=accessible_instance_ids)
     if path == "/admin/mcp/servers":
         return HTTPStatus.OK, service.list_mcp_servers(accessible_instance_ids=accessible_instance_ids)
+    if path == "/admin/connectors/presets":
+        return HTTPStatus.OK, service.list_connector_presets()
     if path == "/admin/security":
         return HTTPStatus.OK, service.get_security(accessible_instance_ids=accessible_instance_ids)
     if path == "/admin/security/policies/global":
@@ -805,6 +810,30 @@ def resolve_admin_post(
             instance_id = payload.get("instance_id") or "default"
             result = service.validate_mcp_server(instance_id=instance_id, server_name=server_name, accessible_instance_ids=accessible_instance_ids)
             return HTTPStatus.OK, result
+        if path == "/admin/connectors/github/install":
+            instance_id = payload.get("instance_id") or "default"
+            token = str(payload.get("token") or "")
+            result = service.install_github_connector(
+                instance_id=instance_id,
+                token=token,
+                default_repo=payload.get("default_repo"),
+                api_base=payload.get("api_base"),
+                server_name=payload.get("server_name"),
+                accessible_instance_ids=accessible_instance_ids,
+            )
+            return HTTPStatus.OK, result
+        if path == "/admin/connectors/github/validate":
+            instance_id = payload.get("instance_id") or "default"
+            token = str(payload.get("token") or "")
+            result = service.validate_github_connector(
+                instance_id=instance_id,
+                token=token,
+                default_repo=payload.get("default_repo"),
+                api_base=payload.get("api_base"),
+                server_name=payload.get("server_name"),
+                accessible_instance_ids=accessible_instance_ids,
+            )
+            return HTTPStatus.OK, result
         if path == "/admin/schedules":
             instance_id = payload.get("instance_id") or "default"
             schedule = payload.get("schedule")
@@ -927,6 +956,8 @@ def _match_permission(method: str, path: str) -> str | None:
             return "provider.read"
         if path == "/admin/mcp/servers":
             return "mcp.read"
+        if path == "/admin/connectors/presets":
+            return "mcp.read"
         if path == "/admin/security":
             return "security.read"
         if path.startswith("/admin/security/policies/global"):
@@ -991,6 +1022,10 @@ def _match_permission(method: str, path: str) -> str | None:
         if path.startswith("/admin/providers/") and path.endswith("/validate"):
             return "provider.read"
         if path.startswith("/admin/mcp/servers/") and path.endswith("/validate"):
+            return "mcp.read"
+        if path == "/admin/connectors/github/install":
+            return "mcp.update"
+        if path == "/admin/connectors/github/validate":
             return "mcp.read"
         if path == "/admin/schedules":
             return "schedule.update"

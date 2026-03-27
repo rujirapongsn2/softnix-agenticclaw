@@ -51,6 +51,12 @@ from nanobot.admin.auth import (
     verify_password,
 )
 from nanobot.admin.auth_store import AdminAuthStore
+from nanobot.admin.connectors import (
+    GITHUB_CONNECTOR_PRESET,
+    build_github_stdio_server_config,
+    get_connector_preset,
+    list_connector_presets as list_built_in_connector_presets,
+)
 from nanobot.admin.layout import (
     bootstrap_softnix_instance,
     delete_softnix_instance,
@@ -69,6 +75,7 @@ from nanobot.runtime.audit import runtime_audit_path
 from nanobot.security.policy import GlobalControlPolicyStore, PolicyValidationError, get_policy_catalog
 from nanobot.session.manager import SessionManager
 from nanobot.utils.helpers import sync_workspace_templates
+from nanobot.integrations.github_mcp_server import GitHubClient
 
 
 def _expand_path(value: str | Path | None) -> Path | None:
@@ -100,6 +107,19 @@ def _mask_secret(value: str, keep: int = 4) -> str:
     if len(value) <= keep:
         return "*" * len(value)
     return f"{'*' * max(len(value) - keep, 3)}{value[-keep:]}"
+
+
+def _github_connector_runtime_script_source() -> Path:
+    return Path(__file__).resolve().parent.parent / "integrations" / "github_mcp_server.py"
+
+
+def _ensure_github_connector_runtime_script(target: "InstanceTarget") -> Path:
+    instance_home = target.instance_home or target.config_path.expanduser().resolve().parent
+    runtime_dir = instance_home / "runtime"
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    runtime_script = runtime_dir / "github_mcp_server.py"
+    runtime_script.write_text(_github_connector_runtime_script_source().read_text(encoding="utf-8"), encoding="utf-8")
+    return runtime_script
 
 
 def _file_mode(path: Path) -> str | None:
@@ -1894,6 +1914,208 @@ class AdminService:
                 for item in instances
             ]
         }
+
+    def list_connector_presets(self) -> dict[str, Any]:
+        """List built-in connector presets available for installation."""
+        return {
+            "presets": [
+                {
+                    "name": preset.name,
+                    "display_name": preset.display_name,
+                    "description": preset.description,
+                    "skill_name": preset.skill_name,
+                    "server_name": preset.server_name,
+                }
+                for preset in list_built_in_connector_presets()
+            ]
+        }
+
+    def install_github_connector(
+        self,
+        *,
+        instance_id: str,
+        token: str,
+        default_repo: str | None = None,
+        api_base: str | None = None,
+        server_name: str | None = None,
+        accessible_instance_ids: set[str] | list[str] | tuple[str, ...] | None = None,
+    ) -> dict[str, Any]:
+        """Install the built-in GitHub connector preset into one instance."""
+        target = self._get_target(instance_id)
+        self._require_target_access(target, accessible_instance_ids)
+        preset = get_connector_preset(GITHUB_CONNECTOR_PRESET.name)
+        normalized_server_name = str(server_name or preset.server_name).strip() or preset.server_name
+        config = self._load_target_config(target)
+        existing_server = config.tools.mcp_servers.get(normalized_server_name)
+        existing_env = existing_server.env if existing_server is not None else {}
+        token_value = str(token or "").strip() or str(existing_env.get("GITHUB_TOKEN") or "").strip()
+        default_repo_value = str(default_repo or "").strip() or str(existing_env.get("GITHUB_DEFAULT_REPO") or "").strip() or None
+        api_base_value = str(api_base or "").strip() or str(existing_env.get("GITHUB_API_BASE") or "").strip() or None
+        if not token_value:
+            raise ValueError("GitHub token is required")
+        runtime_script = _ensure_github_connector_runtime_script(target)
+        config.tools.mcp_servers[normalized_server_name] = MCPServerConfig.model_validate(
+            build_github_stdio_server_config(
+                token=token_value,
+                default_repo=default_repo_value,
+                api_base=api_base_value,
+                script_path=str(runtime_script),
+            )
+        )
+        config.tools.mcp_servers[normalized_server_name].connector_status = "pending"
+        save_config(config, target.config_path)
+        workspace_path = target.workspace_path
+        if workspace_path.exists():
+            sync_workspace_templates(
+                workspace_path,
+                silent=True,
+                agent_name=target.name,
+                apply_identity=True,
+            )
+        self._append_audit_event(
+            instance_id=target.id,
+            event_type="connector.installed",
+            payload={
+                "connector": preset.name,
+                "server_name": normalized_server_name,
+                "skill_name": preset.skill_name,
+            },
+        )
+        return {
+            "instance": self._collect_instance(target),
+            "connector": preset.name,
+            "server_name": normalized_server_name,
+            "skill_name": preset.skill_name,
+        }
+
+    def validate_github_connector(
+        self,
+        *,
+        instance_id: str,
+        token: str,
+        default_repo: str | None = None,
+        api_base: str | None = None,
+        server_name: str | None = None,
+        accessible_instance_ids: set[str] | list[str] | tuple[str, ...] | None = None,
+    ) -> dict[str, Any]:
+        """Validate the GitHub connector credential and optional repository scope."""
+        target = self._get_target(instance_id)
+        self._require_target_access(target, accessible_instance_ids)
+        preset_server_name = str(server_name or GITHUB_CONNECTOR_PRESET.server_name).strip() or GITHUB_CONNECTOR_PRESET.server_name
+        token_value = str(token or "").strip()
+        config_defaults: dict[str, Any] = {}
+        if not token_value:
+            config = self._load_target_config(target)
+            server_config = config.tools.mcp_servers.get(preset_server_name)
+            if server_config is not None:
+                config_defaults = server_config.env or {}
+                token_value = str(config_defaults.get("GITHUB_TOKEN") or "").strip()
+                if not default_repo:
+                    default_repo = str(config_defaults.get("GITHUB_DEFAULT_REPO") or "").strip() or None
+                if not api_base:
+                    api_base = str(config_defaults.get("GITHUB_API_BASE") or "").strip() or None
+        if not token_value:
+            raise ValueError("GitHub token is required")
+
+        client = GitHubClient(
+            token=token_value,
+            api_base=str(api_base or "https://api.github.com").strip() or "https://api.github.com",
+            default_repo=default_repo,
+        )
+        findings: list[dict[str, Any]] = []
+        try:
+            user = client.whoami()
+            findings.append(
+                {
+                    "severity": "info",
+                    "code": "token_valid",
+                    "detail": f"Authenticated as {user.get('login') or user.get('name') or 'GitHub user'}.",
+                }
+            )
+        except httpx.HTTPStatusError as exc:
+            status = exc.response.status_code
+            if status in {401, 403}:
+                findings.append(
+                    {
+                        "severity": "error",
+                        "code": "invalid_token",
+                        "detail": "GitHub token was rejected by the API.",
+                    }
+                )
+            else:
+                findings.append(
+                    {
+                        "severity": "error",
+                        "code": "github_api_error",
+                        "detail": f"GitHub validation failed with HTTP {status}.",
+                    }
+                )
+        except Exception as exc:
+            findings.append(
+                {
+                    "severity": "error",
+                    "code": "github_api_unreachable",
+                    "detail": str(exc),
+                }
+            )
+
+        if default_repo and not any(item["severity"] == "error" for item in findings):
+            try:
+                repo = client.get_repository(default_repo)
+                findings.append(
+                    {
+                        "severity": "info",
+                        "code": "repository_visible",
+                        "detail": f"Repository {repo.get('full_name') or default_repo} is reachable.",
+                    }
+                )
+            except httpx.HTTPStatusError as exc:
+                status = exc.response.status_code
+                findings.append(
+                    {
+                        "severity": "warning" if status == 404 else "error",
+                        "code": "repository_unavailable" if status == 404 else "repository_probe_failed",
+                        "detail": f"Repository probe returned HTTP {status}.",
+                    }
+                )
+            except Exception as exc:
+                findings.append(
+                    {
+                        "severity": "error",
+                        "code": "repository_probe_failed",
+                        "detail": str(exc),
+                    }
+                )
+
+        status = "ok"
+        if any(item["severity"] == "error" for item in findings):
+            status = "error"
+        elif any(item["severity"] == "warning" for item in findings):
+            status = "warning"
+
+        response = {
+            "instance_id": target.id,
+            "connector": GITHUB_CONNECTOR_PRESET.name,
+            "status": status,
+            "findings": findings,
+        }
+        config = self._load_target_config(target)
+        server_config = config.tools.mcp_servers.get(preset_server_name)
+        if server_config is not None:
+            runtime_script = _ensure_github_connector_runtime_script(target)
+            server_config.command = "python3"
+            server_config.args = [str(runtime_script)]
+            server_config.connector_status = "connected" if status == "ok" else "error"
+            save_config(config, target.config_path)
+        self._append_audit_event(
+            instance_id=target.id,
+            event_type="connector.validated",
+            payload={
+                "connector": GITHUB_CONNECTOR_PRESET.name,
+                "status": status,
+            },
+        )
+        return response
 
     def get_security(
         self,
@@ -4864,13 +5086,8 @@ class AdminService:
             "telegram",
             "whatsapp",
             "discord",
-            "feishu",
-            "mochat",
-            "dingtalk",
             "email",
             "slack",
-            "qq",
-            "matrix",
         ):
             channel_cfg = getattr(config.channels, name)
             allow_list = getattr(channel_cfg, "allow_from", None)
@@ -4917,6 +5134,7 @@ class AdminService:
                     "url": server.url,
                     "headers": server.headers,
                     "tool_timeout": server.tool_timeout,
+                    "status": server.connector_status,
                 }
             )
         return {

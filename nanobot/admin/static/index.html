@@ -132,6 +132,7 @@
             <div id="instance-workspace-manage" class="instance-tab-panel"></div>
             <div id="instance-workspace-channels" class="instance-tab-panel is-hidden"></div>
             <div id="instance-workspace-providers" class="instance-tab-panel is-hidden"></div>
+            <div id="instance-workspace-connectors" class="instance-tab-panel is-hidden"></div>
             <div id="instance-workspace-memory" class="instance-tab-panel is-hidden"></div>
             <div id="instance-workspace-skills" class="instance-tab-panel is-hidden"></div>
             <div id="instance-workspace-schedules" class="instance-tab-panel is-hidden"></div>
@@ -307,6 +308,16 @@
         </div>
       </section>
     </main>
+  </div>
+
+  <div id="connector-modal" class="modal-overlay is-hidden" role="dialog" aria-modal="true">
+    <div class="modal-box connector-modal-box">
+      <div class="modal-header">
+        <h3 id="connector-modal-title">Connector Settings</h3>
+        <button class="modal-close" id="connector-modal-close" aria-label="Close">&times;</button>
+      </div>
+      <div class="modal-body" id="connector-modal-body"></div>
+    </div>
   </div>
 
   <script src="/static/app.js"></script>
