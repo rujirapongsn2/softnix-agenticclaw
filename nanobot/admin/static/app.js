@@ -776,27 +776,31 @@ function summarizeCommandResult(result) {
 }
 
 function setBanner(message, type = "warning") {
-  const banner = document.getElementById("alert-banner");
   const normalizedType = type === "error" || type === "success" ? type : "warning";
-  banner.textContent = message;
-  banner.classList.remove("is-hidden");
-  if (normalizedType === "error") {
-    banner.style.borderColor = "rgba(199,81,70,0.3)";
-    banner.style.background = "rgba(199,81,70,0.08)";
-    banner.style.color = "#9a3e36";
-  } else if (normalizedType === "success") {
-    banner.style.borderColor = "rgba(169,203,46,0.35)";
-    banner.style.background = "rgba(169,203,46,0.12)";
-    banner.style.color = "#5d6f1a";
-  } else {
-    banner.style.borderColor = "rgba(243,144,63,0.3)";
-    banner.style.background = "rgba(243,144,63,0.1)";
-    banner.style.color = "#8a4b16";
-  }
+  document.querySelectorAll("[data-alert-banner]").forEach((banner) => {
+    banner.textContent = message;
+    banner.classList.remove("is-hidden");
+    if (normalizedType === "error") {
+      banner.style.borderColor = "rgba(199,81,70,0.3)";
+      banner.style.background = "rgba(199,81,70,0.08)";
+      banner.style.color = "#9a3e36";
+    } else if (normalizedType === "success") {
+      banner.style.borderColor = "rgba(169,203,46,0.35)";
+      banner.style.background = "rgba(169,203,46,0.12)";
+      banner.style.color = "#5d6f1a";
+    } else {
+      banner.style.borderColor = "rgba(243,144,63,0.3)";
+      banner.style.background = "rgba(243,144,63,0.1)";
+      banner.style.color = "#8a4b16";
+    }
+  });
 }
 
 function clearBanner() {
-  document.getElementById("alert-banner").classList.add("is-hidden");
+  document.querySelectorAll("[data-alert-banner]").forEach((banner) => {
+    banner.classList.add("is-hidden");
+    banner.textContent = "";
+  });
 }
 
 function setRefreshButtonState(loading) {
@@ -2015,6 +2019,7 @@ function renderInstances() {
   const target = document.getElementById("instances-list-panel");
   if (!target) return;
   const canCreateInstance = hasAuthPermission("instance.create");
+  const canOpenManage = hasAuthPermission("instance.read");
   const canUpdateInstance = hasAuthPermission("instance.update");
   const canDeleteInstance = hasAuthPermission("instance.delete");
   const canControlInstance = hasAuthPermission("instance.control");
@@ -2061,7 +2066,7 @@ function renderInstances() {
                 const label = isThisActionBusy ? loadingLabels[action] : (action.charAt(0).toUpperCase() + action.slice(1));
                 return `<button class="${cssClass}" data-instance-action="${escapeHtml(key)}" ${disabled}>${spinner}${label}</button>`;
               }).join("")}
-              <button class="secondary-button is-small" data-instance-edit="${escapeHtml(instance.id)}" ${!canUpdateInstance ? "disabled" : ""}>Manage</button>
+              <button class="secondary-button is-small" data-instance-edit="${escapeHtml(instance.id)}" ${!canOpenManage ? "disabled" : ""}>Manage</button>
               <button class="secondary-button is-small" data-instance-delete="${escapeHtml(instance.id)}" ${!canDeleteInstance ? "disabled" : ""}>Delete</button>
             </div>
           </td>
@@ -3460,6 +3465,7 @@ function renderSelectedInstanceMemory(instance) {
   const target = document.getElementById("instance-workspace-memory");
   if (!target || !instance) return;
   const memoryState = getMemoryState(instance.id);
+  const canUpdateMemory = hasAuthPermission("memory.update");
   const viewMode = state.memoryViewModeByInstance[instance.id] || "edit";
   const files = Object.values(memoryState.files || {});
   const selectedPath = memoryState.selectedPath || "AGENTS.md";
@@ -3503,13 +3509,14 @@ function renderSelectedInstanceMemory(instance) {
             <h4>Edit · ${escapeHtml(selectedFile.path)}</h4>
             <span class="badge ${badgeClass(dirty ? "warning" : "ok")}">${dirty ? "Unsaved" : "Saved"}</span>
           </div>
+          ${!canUpdateMemory ? `<p class="meta">Memory editing is read-only for your current role.</p>` : `<p class="meta">Save becomes available after you edit the file.</p>`}
           <div class="field">
             <label for="memory-editor-${escapeHtml(instance.id)}">Content</label>
-            <textarea id="memory-editor-${escapeHtml(instance.id)}" class="memory-editor-textarea" data-memory-editor="${escapeHtml(instance.id)}:${escapeHtml(selectedFile.path)}" ${busy}>${escapeHtml(selectedFile.content)}</textarea>
+            <textarea id="memory-editor-${escapeHtml(instance.id)}" class="memory-editor-textarea" data-memory-editor="${escapeHtml(instance.id)}:${escapeHtml(selectedFile.path)}" ${busy || !canUpdateMemory ? "disabled" : ""}>${escapeHtml(selectedFile.content)}</textarea>
           </div>
           <div class="inline-actions">
-            <button class="primary-button is-small" data-memory-save="${escapeHtml(instance.id)}:${escapeHtml(selectedFile.path)}" ${busy || !dirty ? "disabled" : ""}>Save</button>
-            <button class="secondary-button is-small" data-memory-reset="${escapeHtml(instance.id)}:${escapeHtml(selectedFile.path)}" ${busy || !dirty ? "disabled" : ""}>Reset</button>
+            <button class="primary-button is-small" data-memory-save="${escapeHtml(instance.id)}:${escapeHtml(selectedFile.path)}" ${busy || !dirty || !canUpdateMemory ? "disabled" : ""}>Save</button>
+            <button class="secondary-button is-small" data-memory-reset="${escapeHtml(instance.id)}:${escapeHtml(selectedFile.path)}" ${busy || !dirty || !canUpdateMemory ? "disabled" : ""}>Reset</button>
             <button class="secondary-button is-small" data-memory-reload="${escapeHtml(instance.id)}" ${busy}>Reload files</button>
           </div>
         </div>
@@ -3567,12 +3574,17 @@ function renderSelectedInstanceMemory(instance) {
 function renderSelectedInstanceSchedules(instance) {
   const target = document.getElementById("instance-workspace-schedules");
   if (!target) return;
+  const canUpdateSchedules = hasAuthPermission("schedule.update");
+  const canRunSchedules = hasAuthPermission("schedule.run");
   const scheduleBucket = (state.schedules?.instances || []).find((item) => item.instance_id === instance.id);
   const jobs = (scheduleBucket?.jobs || [])
     .map((job) => {
       const toggleKey = `schedule-toggle:${instance.id}:${job.id}`;
       const runKey = `schedule-run:${instance.id}:${job.id}`;
       const deleteKey = `schedule-delete:${instance.id}:${job.id}`;
+      const disabledToggle = state.busyKey === toggleKey || !canUpdateSchedules ? "disabled" : "";
+      const disabledRun = state.busyKey === runKey || !canRunSchedules ? "disabled" : "";
+      const disabledDelete = state.busyKey === deleteKey || !canUpdateSchedules ? "disabled" : "";
       const scheduleLabel =
         job.schedule.kind === "every"
           ? `Every ${job.schedule.every_ms || 0} ms`
@@ -3588,15 +3600,18 @@ function renderSelectedInstanceSchedules(instance) {
           <p class="meta">${escapeHtml(scheduleLabel)}</p>
           <p class="meta">Next: ${escapeHtml(formatScheduleNextRun(job))}</p>
           <div class="inline-actions">
-            <button type="button" class="secondary-button is-small" data-schedule-toggle="${escapeHtml(toggleKey)}">${job.enabled ? "Disable" : "Enable"}</button>
-            <button type="button" class="primary-button is-small" data-schedule-run="${escapeHtml(runKey)}">Run Now</button>
-            <button type="button" class="secondary-button is-small" data-schedule-delete="${escapeHtml(deleteKey)}">Delete</button>
+            <button type="button" class="secondary-button is-small" data-schedule-toggle="${escapeHtml(toggleKey)}" ${disabledToggle}>${job.enabled ? "Disable" : "Enable"}</button>
+            <button type="button" class="primary-button is-small" data-schedule-run="${escapeHtml(runKey)}" ${disabledRun}>Run Now</button>
+            <button type="button" class="secondary-button is-small" data-schedule-delete="${escapeHtml(deleteKey)}" ${disabledDelete}>Delete</button>
           </div>
         </div>
       `;
     })
     .join("");
-  target.innerHTML = `<div class="stack">${jobs || `<div class="item-card"><p class="meta">No schedules for this instance.</p></div>`}</div>`;
+  target.innerHTML = `<div class="stack">
+    ${!canUpdateSchedules && !canRunSchedules ? `<div class="item-card"><p class="meta">Schedules are read-only for your current role.</p></div>` : ""}
+    ${jobs || `<div class="item-card"><p class="meta">No schedules for this instance.</p></div>`}
+  </div>`;
 }
 
 function ensureRuntimeAuditState(instanceId) {
@@ -4483,6 +4498,8 @@ function renderInstanceForm() {
     state.instanceEditor = defaultInstanceEditor();
   }
   const editor = state.instanceEditor;
+  const canCreateInstance = hasAuthPermission("instance.create");
+  const canUpdateInstance = hasAuthPermission("instance.update");
   const selected = selectedInstance();
   const derived = deriveInstanceValues(editor);
   const normalizedInstanceId = derived.instanceId.trim() || "<instance-id>";
@@ -4498,6 +4515,8 @@ function renderInstanceForm() {
   const runtimeCustom = isCustomRuntimeConfig(editor);
   const showRuntimeOverrideControls = editor.mode === "edit" || editor.advanced;
   const impact = runtimeImpactSummary(editor);
+  const canSaveInstance = editor.mode === "create" ? canCreateInstance : canUpdateInstance;
+  const formDisabled = !canSaveInstance ? "disabled" : busy;
   const target = document.getElementById("instance-workspace-manage");
   if (!target) return;
   if (!selected && editor.mode === "create" && !state.instanceCreateOpen) {
@@ -4530,13 +4549,14 @@ function renderInstanceForm() {
         <h4>${escapeHtml(modeLabel)}</h4>
         ${editor.mode === "create" ? `<span class="badge ${badgeClass("info")}">${editor.advanced ? "Advanced" : "Simple"}</span>` : `<span class="badge ${badgeClass("warning")}">Edit</span>`}
       </div>
+      ${!canSaveInstance ? `<p class="meta">This view is read-only for your current role.</p>` : ""}
       <div class="field">
         <label for="instance-form-name">Name</label>
-        <input id="instance-form-name" value="${escapeHtml(editor.name)}" ${busy}>
+        <input id="instance-form-name" value="${escapeHtml(editor.name)}" ${formDisabled}>
       </div>
       <div class="field">
         <label for="instance-form-env">Environment</label>
-        <select id="instance-form-env" ${busy}>
+        <select id="instance-form-env" ${formDisabled}>
           ${["prod", "uat", "staging", "dev"].map((value) => `<option value="${value}" ${derived.env === value ? "selected" : ""}>${value}</option>`).join("")}
         </select>
       </div>
@@ -4550,7 +4570,7 @@ function renderInstanceForm() {
         </div>
         <div class="field">
           <label for="instance-form-sandbox-profile">Runtime Profile</label>
-          <select id="instance-form-sandbox-profile" ${busy}>
+          <select id="instance-form-sandbox-profile" ${formDisabled}>
             <option value="balanced" ${editor.sandboxProfile === "balanced" ? "selected" : ""}>Connected</option>
             <option value="strict" ${editor.sandboxProfile === "strict" ? "selected" : ""}>Offline</option>
             <option value="fast" ${editor.sandboxProfile === "fast" ? "selected" : ""}>Max Capability</option>
@@ -4573,8 +4593,8 @@ function renderInstanceForm() {
         </div>
         ${showRuntimeOverrideControls ? `
         <div class="inline-actions">
-          <button id="instance-runtime-override-toggle" class="secondary-button is-small ${editor.runtimeOverrideOpen ? "is-active" : ""}" ${busy}>${editor.runtimeOverrideOpen ? "Hide Advanced Runtime" : "Advanced Runtime Override"}</button>
-          ${runtimeCustom ? `<button id="instance-runtime-reset" class="secondary-button is-small" ${busy}>Reset to Profile Defaults</button>` : ""}
+          <button id="instance-runtime-override-toggle" class="secondary-button is-small ${editor.runtimeOverrideOpen ? "is-active" : ""}" ${formDisabled}>${editor.runtimeOverrideOpen ? "Hide Advanced Runtime" : "Advanced Runtime Override"}</button>
+          ${runtimeCustom ? `<button id="instance-runtime-reset" class="secondary-button is-small" ${formDisabled}>Reset to Profile Defaults</button>` : ""}
         </div>` : ""}
       </div>
       <div class="instance-summary-card">
@@ -4623,23 +4643,23 @@ function renderInstanceForm() {
         <p class="eyebrow">Advanced Settings</p>
         <div class="field">
           <label for="instance-form-id">Instance ID Override</label>
-          <input id="instance-form-id" value="${escapeHtml(editor.instanceId)}" ${editor.mode === "edit" ? "disabled" : busy}>
+          <input id="instance-form-id" value="${escapeHtml(editor.instanceId)}" ${editor.mode === "edit" ? "disabled" : formDisabled}>
         </div>
         <div class="field">
           <label for="instance-form-owner">Owner Override</label>
-          <input id="instance-form-owner" value="${escapeHtml(editor.owner)}" ${busy}>
+          <input id="instance-form-owner" value="${escapeHtml(editor.owner)}" ${formDisabled}>
         </div>
         <div class="field">
           <label for="instance-form-repo-root">Repo Root</label>
-          <input id="instance-form-repo-root" value="${escapeHtml(editor.repoRoot)}" ${busy}>
+          <input id="instance-form-repo-root" value="${escapeHtml(editor.repoRoot)}" ${formDisabled}>
         </div>
         <div class="field">
           <label for="instance-form-nanobot-bin">nanobot Binary</label>
-          <input id="instance-form-nanobot-bin" value="${escapeHtml(editor.nanobotBin)}" ${busy}>
+          <input id="instance-form-nanobot-bin" value="${escapeHtml(editor.nanobotBin)}" ${formDisabled}>
         </div>
         <div class="field">
           <label for="instance-form-gateway-port">Gateway Port</label>
-          <input id="instance-form-gateway-port" type="number" min="1" max="65535" value="${escapeHtml(editor.gatewayPort || "")}" placeholder="Auto assign if empty" ${busy}>
+          <input id="instance-form-gateway-port" type="number" min="1" max="65535" value="${escapeHtml(editor.gatewayPort || "")}" placeholder="Auto assign if empty" ${formDisabled}>
         </div>
         ${editor.runtimeOverrideOpen ? `
         <div class="instance-summary-card">
@@ -4653,14 +4673,14 @@ function renderInstanceForm() {
           <p class="meta">Only change these values if the profile defaults are not enough. Incorrect combinations can reduce agent capability or break runtime behavior.</p>
           <div class="field">
             <label for="instance-form-runtime-mode">Runtime Mode</label>
-            <select id="instance-form-runtime-mode" ${busy}>
+            <select id="instance-form-runtime-mode" ${formDisabled}>
               <option value="sandbox" ${editor.runtimeMode === "sandbox" ? "selected" : ""}>sandbox</option>
               <option value="host" ${editor.runtimeMode === "host" ? "selected" : ""}>host</option>
             </select>
           </div>
           <div class="field">
             <label for="instance-form-sandbox-strategy">Sandbox Execution Strategy</label>
-            <select id="instance-form-sandbox-strategy" ${busy}>
+            <select id="instance-form-sandbox-strategy" ${formDisabled}>
               <option value="persistent" ${editor.sandboxExecutionStrategy === "persistent" ? "selected" : ""}>persistent</option>
               ${editor.runtimeMode !== "sandbox" ? `<option value="tool_ephemeral" ${editor.sandboxExecutionStrategy === "tool_ephemeral" ? "selected" : ""}>tool_ephemeral</option>` : ""}
             </select>
@@ -4668,27 +4688,27 @@ function renderInstanceForm() {
           ${showSandboxConfig ? `
         <div class="field">
           <label for="instance-form-sandbox-image">Sandbox Image</label>
-          <input id="instance-form-sandbox-image" value="${escapeHtml(editor.sandboxImage || "softnixclaw:latest")}" placeholder="softnixclaw:latest" ${busy}>
+          <input id="instance-form-sandbox-image" value="${escapeHtml(editor.sandboxImage || "softnixclaw:latest")}" placeholder="softnixclaw:latest" ${formDisabled}>
         </div>
         <div class="field">
           <label for="instance-form-sandbox-cpu">Sandbox CPU Limit</label>
-          <input id="instance-form-sandbox-cpu" value="${escapeHtml(editor.sandboxCpuLimit || "")}" placeholder="1.0" ${busy}>
+          <input id="instance-form-sandbox-cpu" value="${escapeHtml(editor.sandboxCpuLimit || "")}" placeholder="1.0" ${formDisabled}>
         </div>
         <div class="field">
           <label for="instance-form-sandbox-memory">Sandbox Memory Limit</label>
-          <input id="instance-form-sandbox-memory" value="${escapeHtml(editor.sandboxMemoryLimit || "")}" placeholder="1g" ${busy}>
+          <input id="instance-form-sandbox-memory" value="${escapeHtml(editor.sandboxMemoryLimit || "")}" placeholder="1g" ${formDisabled}>
         </div>
         <div class="field">
           <label for="instance-form-sandbox-pids">Sandbox PIDs Limit</label>
-          <input id="instance-form-sandbox-pids" type="number" min="1" value="${escapeHtml(editor.sandboxPidsLimit || "256")}" placeholder="256" ${busy}>
+          <input id="instance-form-sandbox-pids" type="number" min="1" value="${escapeHtml(editor.sandboxPidsLimit || "256")}" placeholder="256" ${formDisabled}>
         </div>
         <div class="field">
           <label for="instance-form-sandbox-tmpfs">Sandbox tmpfs Size (MB)</label>
-          <input id="instance-form-sandbox-tmpfs" type="number" min="1" value="${escapeHtml(editor.sandboxTmpfsSizeMb || "128")}" placeholder="128" ${busy}>
+          <input id="instance-form-sandbox-tmpfs" type="number" min="1" value="${escapeHtml(editor.sandboxTmpfsSizeMb || "128")}" placeholder="128" ${formDisabled}>
         </div>
         <div class="field">
           <label for="instance-form-sandbox-network">Sandbox Network Policy</label>
-          <select id="instance-form-sandbox-network" ${busy}>
+          <select id="instance-form-sandbox-network" ${formDisabled}>
             <option value="default" ${editor.sandboxNetworkPolicy === "default" ? "selected" : ""}>default</option>
             <option value="none" ${editor.sandboxNetworkPolicy === "none" ? "selected" : ""}>none</option>
           </select>
@@ -4696,19 +4716,19 @@ function renderInstanceForm() {
         </div>
         <div class="field">
           <label for="instance-form-sandbox-timeout">Sandbox Stop Timeout (seconds)</label>
-          <input id="instance-form-sandbox-timeout" type="number" min="1" value="${escapeHtml(editor.sandboxTimeoutSeconds || "30")}" placeholder="30" ${busy}>
+          <input id="instance-form-sandbox-timeout" type="number" min="1" value="${escapeHtml(editor.sandboxTimeoutSeconds || "30")}" placeholder="30" ${formDisabled}>
         </div>` : ""}
         </div>` : ""}
         ${editor.mode === "create" ? `
         <div class="field">
           <label for="instance-form-source-config">Source Config Override</label>
-          <input id="instance-form-source-config" value="${escapeHtml(editor.sourceConfig)}" placeholder="/Users/rujirapongair/.nanobot/config.json" ${busy}>
+          <input id="instance-form-source-config" value="${escapeHtml(editor.sourceConfig)}" placeholder="/Users/rujirapongair/.nanobot/config.json" ${formDisabled}>
           <p class="meta">Optional template config only. Leave empty to use default template behavior.</p>
         </div>` : ""}
       </div>
       ` : ""}
       <div class="inline-actions">
-        <button id="instance-form-save" class="primary-button" ${busy || duplicate ? "disabled" : ""}>${editor.mode === "edit" ? "Save Instance" : "Add Instance"}</button>
+        <button id="instance-form-save" class="primary-button" ${!canSaveInstance || busy || duplicate ? "disabled" : ""}>${editor.mode === "edit" ? "Save Instance" : "Add Instance"}</button>
       </div>
     </div>
     ${editor.mode === "edit" ? renderInstanceConfigEditor() : ""}
@@ -4811,6 +4831,9 @@ function syncInstanceEditorFromForm() {
 
 function refreshInstancePreview() {
   const editor = state.instanceEditor || defaultInstanceEditor();
+  const canSaveInstance = editor.mode === "create"
+    ? hasAuthPermission("instance.create")
+    : hasAuthPermission("instance.update");
   const derived = deriveInstanceValues(editor);
   const softnixHome = inferSoftnixHome();
   const targetInstanceHome = `${softnixHome}/instances/${derived.instanceId.trim() || "<instance-id>"}`;
@@ -4848,14 +4871,17 @@ function refreshInstancePreview() {
 
   const saveButton = document.getElementById("instance-form-save");
   if (saveButton) {
-    saveButton.disabled = duplicate || state.busyKey === "instance-form";
+    saveButton.disabled = !canSaveInstance || duplicate || state.busyKey === "instance-form";
   }
 }
 
 function renderInstanceConfigEditor() {
   const cfg = state.instanceConfig;
-  const loading = cfg.loading ? "disabled" : "";
-  const saveDisabled = state.busyKey === "instance-config" || cfg.loading || !cfg.dirty ? "disabled" : "";
+  const canReadConfig = hasAuthPermission("config.read");
+  const canUpdateConfig = hasAuthPermission("config.update");
+  const reloadDisabled = cfg.loading || !canReadConfig ? "disabled" : "";
+  const editorDisabled = cfg.loading || !canUpdateConfig ? "disabled" : "";
+  const saveDisabled = !canUpdateConfig || state.busyKey === "instance-config" || cfg.loading || !cfg.dirty ? "disabled" : "";
   return `
     <div class="instance-config-card">
       <div class="row-between">
@@ -4864,12 +4890,13 @@ function renderInstanceConfigEditor() {
           <h4>config.json</h4>
         </div>
         <div class="inline-actions">
-          <button id="instance-config-reload" class="secondary-button is-small" ${loading}>Reload</button>
+          <button id="instance-config-reload" class="secondary-button is-small" ${reloadDisabled}>Reload</button>
           <button id="instance-config-save" class="primary-button is-small" ${saveDisabled}>Save config.json</button>
         </div>
       </div>
+      ${!canUpdateConfig ? `<p class="meta">Config editing is read-only for your current role.</p>` : ""}
       <p class="meta">Direct JSON editor with schema validation on save.</p>
-      <textarea id="instance-config-editor" class="code-textarea" ${loading}>${escapeHtml(cfg.text || "{}")}</textarea>
+      <textarea id="instance-config-editor" class="code-textarea" ${editorDisabled}>${escapeHtml(cfg.text || "{}")}</textarea>
     </div>
   `;
 }
@@ -5163,14 +5190,15 @@ function renderSelectedInstanceSkills(instance) {
             <span class="badge ${badgeClass(dirty ? "warning" : "ok")}">${dirty ? "Unsaved" : "Saved"}</span>
           </div>
         </div>
+        ${!canUpdate ? `<p class="meta">Skill editing is read-only for your current role.</p>` : `<p class="meta">Save becomes available after you edit the file.</p>`}
         <div class="field">
           <label>Content</label>
-          <textarea class="memory-editor-textarea skill-editor-textarea" data-skill-editor="${escapeHtml(instance.id)}:${escapeHtml(selectedSkillName)}:${escapeHtml(selectedFileObj.path)}" ${busy}>${escapeHtml(selectedFileObj.content)}</textarea>
+          <textarea class="memory-editor-textarea skill-editor-textarea" data-skill-editor="${escapeHtml(instance.id)}:${escapeHtml(selectedSkillName)}:${escapeHtml(selectedFileObj.path)}" ${busy || !canUpdate ? "disabled" : ""}>${escapeHtml(selectedFileObj.content)}</textarea>
         </div>
-        ${canUpdate ? `<div class="inline-actions skill-editor-actions">
-          <button class="primary-button is-small" data-skill-save="${escapeHtml(instance.id)}:${escapeHtml(selectedSkillName)}:${escapeHtml(selectedFileObj.path)}" ${busy || !dirty ? "disabled" : ""}>Save</button>
-          <button class="secondary-button is-small" data-skill-reset="${escapeHtml(instance.id)}:${escapeHtml(selectedSkillName)}:${escapeHtml(selectedFileObj.path)}" ${busy || !dirty ? "disabled" : ""}>Reset</button>
-        </div>` : ""}
+        <div class="inline-actions skill-editor-actions">
+          <button class="primary-button is-small" data-skill-save="${escapeHtml(instance.id)}:${escapeHtml(selectedSkillName)}:${escapeHtml(selectedFileObj.path)}" ${busy || !dirty || !canUpdate ? "disabled" : ""}>Save</button>
+          <button class="secondary-button is-small" data-skill-reset="${escapeHtml(instance.id)}:${escapeHtml(selectedSkillName)}:${escapeHtml(selectedFileObj.path)}" ${busy || !dirty || !canUpdate ? "disabled" : ""}>Reset</button>
+        </div>
       </div>`;
     })()
     : selectedSkillName
@@ -5438,6 +5466,7 @@ function updateSkillEditorDirtyState(instanceId, skillName, path) {
   const skillState = getSkillState(instanceId);
   const file = skillState.files[path];
   if (!file) return;
+  const canUpdate = hasAuthPermission("skills.update");
   const dirty = file.content !== file.originalContent;
   const busyKey = `skill-save:${instanceId}:${skillName}:${path}`;
   const editorShell = target.querySelector(".skill-editor-shell");
@@ -5451,11 +5480,11 @@ function updateSkillEditorDirtyState(instanceId, skillName, path) {
   }
   target.querySelectorAll("[data-skill-save]").forEach((btn) => {
     if (btn.dataset.skillSave !== `${instanceId}:${skillName}:${path}`) return;
-    btn.disabled = state.busyKey === busyKey || !dirty;
+    btn.disabled = !canUpdate || state.busyKey === busyKey || !dirty;
   });
   target.querySelectorAll("[data-skill-reset]").forEach((btn) => {
     if (btn.dataset.skillReset !== `${instanceId}:${skillName}:${path}`) return;
-    btn.disabled = state.busyKey === busyKey || !dirty;
+    btn.disabled = !canUpdate || state.busyKey === busyKey || !dirty;
   });
   target.querySelectorAll("[data-skill-file]").forEach((btn) => {
     if (btn.dataset.skillFile !== `${instanceId}:${skillName}:${path}`) return;
@@ -5786,6 +5815,8 @@ function renderProviders() {
 
 function renderSchedules() {
   const target = document.getElementById("schedules-list");
+  const canUpdateSchedules = hasAuthPermission("schedule.update");
+  const canRunSchedules = hasAuthPermission("schedule.run");
   const instances = state.schedules?.instances || [];
   target.innerHTML = instances
     .map((instance) => {
@@ -5794,9 +5825,9 @@ function renderSchedules() {
           const toggleKey = `schedule-toggle:${instance.instance_id}:${job.id}`;
           const runKey = `schedule-run:${instance.instance_id}:${job.id}`;
           const deleteKey = `schedule-delete:${instance.instance_id}:${job.id}`;
-          const disabledToggle = state.busyKey === toggleKey ? "disabled" : "";
-          const disabledRun = state.busyKey === runKey ? "disabled" : "";
-          const disabledDelete = state.busyKey === deleteKey ? "disabled" : "";
+          const disabledToggle = state.busyKey === toggleKey || !canUpdateSchedules ? "disabled" : "";
+          const disabledRun = state.busyKey === runKey || !canRunSchedules ? "disabled" : "";
+          const disabledDelete = state.busyKey === deleteKey || !canUpdateSchedules ? "disabled" : "";
           const scheduleLabel =
             job.schedule.kind === "every"
               ? `Every ${job.schedule.every_ms || 0} ms`
@@ -5877,11 +5908,13 @@ function bindScheduleActionHandlers() {
 
 function renderScheduleCreateForm() {
   const target = document.getElementById("schedule-create-form");
+  const canUpdateSchedules = hasAuthPermission("schedule.update");
   const instanceOptions = (state.overview?.instances || [])
     .map((instance) => `<option value="${escapeHtml(instance.id)}">${escapeHtml(instance.name)}</option>`)
     .join("");
-  const disabled = state.busyKey === "schedule-create" ? "disabled" : "";
+  const disabled = state.busyKey === "schedule-create" || !canUpdateSchedules ? "disabled" : "";
   target.innerHTML = `
+    ${!canUpdateSchedules ? `<div class="item-card"><p class="meta">Schedule creation is read-only for your current role.</p></div>` : ""}
     <div class="field">
       <label for="schedule-instance">Instance</label>
       <select id="schedule-instance" ${disabled}>${instanceOptions}</select>
@@ -6642,18 +6675,18 @@ function auditLogCategoryBadgeClass(category) {
 
 function auditLogScopeLabel(scope) {
   if (scope === "mine") return "My events";
-  if (scope === "instances") return "My instances";
+  if (scope === "instances") return "Assigned instances";
   if (scope === "all") return "All accessible";
-  return "Accessible scope";
+  return "Accessible instances";
 }
 
 function auditLogScopeOptions() {
   const role = currentUserRole();
   if (role === "owner") {
     return [
-      { value: "accessible", label: "Accessible scope" },
+      { value: "accessible", label: "Accessible instances" },
       { value: "mine", label: "My events" },
-      { value: "instances", label: "My instances" },
+      { value: "instances", label: "Assigned instances" },
       { value: "all", label: "All accessible" },
     ];
   }
@@ -6661,9 +6694,9 @@ function auditLogScopeOptions() {
     ? state.auth.user.instance_ids.map((value) => String(value || "").trim()).filter(Boolean)
     : [];
   return [
-    { value: "accessible", label: instanceIds.length ? "My events + instances" : "My events" },
+    { value: "accessible", label: instanceIds.length ? "Accessible instances" : "Accessible instances" },
     { value: "mine", label: "My events" },
-    ...(instanceIds.length ? [{ value: "instances", label: "My instances" }] : []),
+    ...(instanceIds.length ? [{ value: "instances", label: "Assigned instances" }] : []),
   ];
 }
 
@@ -6709,9 +6742,9 @@ function auditLogScopeDescription() {
     return "Showing all audit events you can access.";
   }
   if (instanceIds.length === 0) {
-    return "Showing your own audit events only.";
+    return "No instance-scoped audit events are accessible for your account.";
   }
-  return `Showing your own events and activity for assigned instances: ${instanceIds.join(", ")}.`;
+  return `Showing activity for accessible instances: ${instanceIds.join(", ")}.`;
 }
 
 function renderAuditLog() {

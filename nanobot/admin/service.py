@@ -1403,8 +1403,6 @@ class AdminService:
             return bool(instance_ids.intersection(accessible_instance_ids))
         if accessible_instance_ids is None:
             return True
-        if current_user_id and str(actor.get("user_id") or "").strip() == current_user_id:
-            return True
         return bool(instance_ids.intersection(accessible_instance_ids))
 
     def has_admin_users(self) -> bool:

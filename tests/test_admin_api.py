@@ -665,9 +665,9 @@ def test_admin_service_scopes_auth_audit_log_to_user_and_instances(tmp_path) -> 
         accessible_instance_ids={"inst-a"},
     )
     restricted_event_types = {event["event_type"] for event in restricted["events"]}
-    assert "auth.login" in restricted_event_types
     assert "instance.updated" in restricted_event_types
     assert "security.policy_updated" in restricted_event_types
+    assert "auth.login" not in restricted_event_types
     assert "instance.deleted" not in restricted_event_types
 
     mine_only = service.get_auth_audit_log(
