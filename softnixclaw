@@ -499,7 +499,15 @@ EOF
     # 7. Verify service is running
     echo "7. Verifying service health..."
     sleep 5
-    if curl -s --max-time 10 "http://$ADMIN_HOST:$ADMIN_PORT/admin/health" > /dev/null 2>&1; then
+    local health_status=""
+    for _ in $(seq 1 6); do
+        health_status="$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "http://$ADMIN_HOST:$ADMIN_PORT/admin/health" 2>/dev/null || true)"
+        if [ "$health_status" = "200" ] || [ "$health_status" = "401" ]; then
+            break
+        fi
+        sleep 2
+    done
+    if [ "$health_status" = "200" ] || [ "$health_status" = "401" ]; then
         echo "✅ Update Complete! Service is healthy."
     else
         echo "⚠️ Update Complete but service health check failed. Check logs: $LOG_FILE"
