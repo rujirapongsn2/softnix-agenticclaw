@@ -25,13 +25,17 @@ GMAIL_WRITE_SCOPES = {
 }
 
 
-@dataclass(frozen=True)
+@dataclass
 class GmailClient:
     """Small Gmail REST API client used by the MCP server and validation flow."""
 
     token: str
     api_base: str = GMAIL_API_BASE_DEFAULT
     user_id: str = GMAIL_USER_ID_DEFAULT
+    refresh_token: str = ""
+    client_id: str = ""
+    client_secret: str = ""
+    token_uri: str = "https://oauth2.googleapis.com/token"
     transport: httpx.BaseTransport | None = None
 
     def _client(self) -> httpx.Client:
@@ -53,6 +57,7 @@ class GmailClient:
         *,
         params: dict[str, Any] | None = None,
         json_data: dict[str, Any] | None = None,
+        retry_on_auth_error: bool = True,
     ) -> Any:
         if not self.token:
             raise ValueError("Gmail access token is required")
@@ -61,6 +66,14 @@ class GmailClient:
             try:
                 response.raise_for_status()
             except httpx.HTTPStatusError as exc:
+                if retry_on_auth_error and response.status_code == 401 and self._refresh_access_token():
+                    return self._request(
+                        method,
+                        path,
+                        params=params,
+                        json_data=json_data,
+                        retry_on_auth_error=False,
+                    )
                 detail = _extract_response_detail(response)
                 if detail:
                     raise httpx.HTTPStatusError(
@@ -117,16 +130,78 @@ class GmailClient:
         return self._request("GET", f"/users/{self._resolve_user_id(user_id)}/labels")
 
     def token_scopes(self) -> set[str]:
+        data = self._tokeninfo()
+        scopes = str(data.get("scope") or "").split()
+        return {scope.strip() for scope in scopes if scope.strip()}
+
+    def _tokeninfo(self) -> dict[str, Any]:
         with httpx.Client(
             timeout=20.0,
             transport=self.transport,
             headers={"Accept": "application/json", "User-Agent": GMAIL_USER_AGENT},
         ) as client:
             response = client.get("https://oauth2.googleapis.com/tokeninfo", params={"access_token": self.token})
-            response.raise_for_status()
-            data = response.json()
-        scopes = str(data.get("scope") or "").split()
-        return {scope.strip() for scope in scopes if scope.strip()}
+            try:
+                response.raise_for_status()
+            except httpx.HTTPStatusError as exc:
+                if response.status_code == 401 and self._refresh_access_token():
+                    return self._tokeninfo()
+                detail = _extract_response_detail(response)
+                if detail:
+                    raise httpx.HTTPStatusError(
+                        f"{exc}: {detail}",
+                        request=exc.request,
+                        response=exc.response,
+                    ) from exc
+                raise
+            return response.json()
+
+    def _refresh_access_token(self) -> bool:
+        refresh_token = str(self.refresh_token or "").strip()
+        client_id = str(self.client_id or "").strip()
+        client_secret = str(self.client_secret or "").strip()
+        token_uri = str(self.token_uri or "").strip() or "https://oauth2.googleapis.com/token"
+        if not (refresh_token and client_id):
+            return False
+        form_data: dict[str, str] = {
+            "grant_type": "refresh_token",
+            "refresh_token": refresh_token,
+            "client_id": client_id,
+        }
+        if client_secret:
+            form_data["client_secret"] = client_secret
+        with httpx.Client(
+            timeout=20.0,
+            transport=self.transport,
+            headers={"Accept": "application/json", "User-Agent": GMAIL_USER_AGENT},
+        ) as client:
+            response = client.post(
+                token_uri,
+                data=form_data,
+            )
+            try:
+                response.raise_for_status()
+            except httpx.HTTPStatusError as exc:
+                detail = _extract_response_detail(response)
+                if detail:
+                    raise httpx.HTTPStatusError(
+                        f"{exc}: {detail}",
+                        request=exc.request,
+                        response=exc.response,
+                    ) from exc
+                raise
+            payload = response.json()
+        new_token = str(payload.get("access_token") or "").strip()
+        if not new_token:
+            raise ValueError("Gmail token refresh did not return an access token")
+        self.token = new_token
+        returned_refresh = str(payload.get("refresh_token") or "").strip()
+        if returned_refresh:
+            self.refresh_token = returned_refresh
+        return True
+
+    def has_refresh_credentials(self) -> bool:
+        return bool(str(self.refresh_token or "").strip() and str(self.client_id or "").strip())
 
     def ensure_write_scope(self) -> set[str]:
         scopes = self.token_scopes()
@@ -295,6 +370,10 @@ def _client_from_env() -> GmailClient:
         token=str(os.environ.get("GMAIL_TOKEN") or "").strip(),
         api_base=str(os.environ.get("GMAIL_API_BASE") or GMAIL_API_BASE_DEFAULT).strip() or GMAIL_API_BASE_DEFAULT,
         user_id=str(os.environ.get("GMAIL_USER_ID") or GMAIL_USER_ID_DEFAULT).strip() or GMAIL_USER_ID_DEFAULT,
+        refresh_token=str(os.environ.get("GMAIL_REFRESH_TOKEN") or "").strip(),
+        client_id=str(os.environ.get("GMAIL_CLIENT_ID") or "").strip(),
+        client_secret=str(os.environ.get("GMAIL_CLIENT_SECRET") or "").strip(),
+        token_uri=str(os.environ.get("GMAIL_TOKEN_URI") or "https://oauth2.googleapis.com/token").strip() or "https://oauth2.googleapis.com/token",
     )
 
 
@@ -303,8 +382,11 @@ def _connector_context() -> dict[str, Any]:
     return {
         "api_base": str(os.environ.get("GMAIL_API_BASE") or GMAIL_API_BASE_DEFAULT).strip() or GMAIL_API_BASE_DEFAULT,
         "has_token": bool(str(os.environ.get("GMAIL_TOKEN") or "").strip()),
+        "has_refresh_token": bool(str(os.environ.get("GMAIL_REFRESH_TOKEN") or "").strip()),
+        "has_client_id": bool(str(os.environ.get("GMAIL_CLIENT_ID") or "").strip()),
         "default_user_id": default_user_id,
         "effective_user_id": default_user_id,
+        "token_uri": str(os.environ.get("GMAIL_TOKEN_URI") or "https://oauth2.googleapis.com/token").strip() or "https://oauth2.googleapis.com/token",
         "capabilities": ["read", "draft", "send"],
     }
 

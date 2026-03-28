@@ -1,6 +1,8 @@
 from nanobot.admin.connectors import (
+    GMAIL_CONNECTOR_PRESET,
     GITHUB_CONNECTOR_PRESET,
     NOTION_CONNECTOR_PRESET,
+    build_gmail_stdio_server_config,
     build_github_stdio_server_config,
     build_notion_stdio_server_config,
     get_connector_preset,
@@ -14,6 +16,8 @@ def test_github_connector_preset_is_registered() -> None:
     assert get_connector_preset("github") == GITHUB_CONNECTOR_PRESET
     assert any(preset.name == "notion" for preset in presets)
     assert get_connector_preset("notion") == NOTION_CONNECTOR_PRESET
+    assert any(preset.name == "gmail" for preset in presets)
+    assert get_connector_preset("gmail") == GMAIL_CONNECTOR_PRESET
 
 
 def test_github_stdio_server_config_uses_portable_python3_command() -> None:
@@ -57,3 +61,36 @@ def test_notion_stdio_server_config_accepts_runtime_script_path() -> None:
     assert config["env"]["NOTION_DEFAULT_PAGE_ID"] == "page-123"
     assert config["env"]["NOTION_API_BASE"] == "https://api.notion.com/v1"
     assert config["env"]["NOTION_VERSION"] == "2026-03-11"
+
+
+def test_gmail_stdio_server_config_accepts_runtime_script_path() -> None:
+    config = build_gmail_stdio_server_config(
+        token="ya29.example",
+        user_id="me",
+        api_base="https://gmail.googleapis.com/gmail/v1",
+        script_path="/tmp/gmail_mcp_server.py",
+    )
+
+    assert config["type"] == "stdio"
+    assert config["command"] == "python3"
+    assert config["args"] == ["/tmp/gmail_mcp_server.py"]
+    assert config["env"]["GMAIL_TOKEN"] == "ya29.example"
+    assert config["env"]["GMAIL_USER_ID"] == "me"
+    assert config["env"]["GMAIL_API_BASE"] == "https://gmail.googleapis.com/gmail/v1"
+
+
+def test_gmail_stdio_server_config_includes_refresh_credentials_when_present() -> None:
+    config = build_gmail_stdio_server_config(
+        token="ya29.example",
+        user_id="me",
+        api_base="https://gmail.googleapis.com/gmail/v1",
+        refresh_token="1//refresh",
+        client_id="client-id",
+        client_secret="client-secret",
+        token_uri="https://oauth2.googleapis.com/token",
+    )
+
+    assert config["env"]["GMAIL_REFRESH_TOKEN"] == "1//refresh"
+    assert config["env"]["GMAIL_CLIENT_ID"] == "client-id"
+    assert config["env"]["GMAIL_CLIENT_SECRET"] == "client-secret"
+    assert config["env"]["GMAIL_TOKEN_URI"] == "https://oauth2.googleapis.com/token"

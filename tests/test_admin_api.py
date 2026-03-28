@@ -1719,6 +1719,61 @@ def test_admin_server_resolves_post_validation_routes(tmp_path) -> None:
     assert mcp_payload["status"] == "ok"
 
 
+def test_admin_server_forwards_gmail_refresh_credentials() -> None:
+    calls: list[tuple[str, dict]] = []
+
+    class StubService:
+        def install_gmail_connector(self, **kwargs):
+            calls.append(("install", kwargs))
+            return {"ok": True}
+
+        def validate_gmail_connector(self, **kwargs):
+            calls.append(("validate", kwargs))
+            return {"ok": True}
+
+    status, payload = resolve_admin_post(
+        StubService(),
+        "/admin/connectors/gmail/install",
+        {
+            "instance_id": "default",
+            "token": "ya29_access",
+            "user_id": "me",
+            "api_base": "https://gmail.googleapis.com/gmail/v1",
+            "refresh_token": "refresh-token",
+            "client_id": "client-id",
+            "client_secret": "client-secret",
+            "token_uri": "https://oauth2.googleapis.com/token",
+        },
+    )
+    assert status == HTTPStatus.OK
+    assert payload == {"ok": True}
+
+    status, payload = resolve_admin_post(
+        StubService(),
+        "/admin/connectors/gmail/validate",
+        {
+            "instance_id": "default",
+            "token": "ya29_access",
+            "user_id": "me",
+            "api_base": "https://gmail.googleapis.com/gmail/v1",
+            "refresh_token": "refresh-token",
+            "client_id": "client-id",
+            "client_secret": "client-secret",
+            "token_uri": "https://oauth2.googleapis.com/token",
+        },
+    )
+    assert status == HTTPStatus.OK
+    assert payload == {"ok": True}
+
+    install_call = next(call for call in calls if call[0] == "install")[1]
+    validate_call = next(call for call in calls if call[0] == "validate")[1]
+    for call in (install_call, validate_call):
+        assert call["refresh_token"] == "refresh-token"
+        assert call["client_id"] == "client-id"
+        assert call["client_secret"] == "client-secret"
+        assert call["token_uri"] == "https://oauth2.googleapis.com/token"
+
+
 def test_admin_server_resolves_post_instance_lifecycle(tmp_path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()

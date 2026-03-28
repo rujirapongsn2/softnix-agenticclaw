@@ -872,6 +872,10 @@ def resolve_admin_post(
                 token=token,
                 user_id=payload.get("user_id"),
                 api_base=payload.get("api_base"),
+                refresh_token=payload.get("refresh_token"),
+                client_id=payload.get("client_id"),
+                client_secret=payload.get("client_secret"),
+                token_uri=payload.get("token_uri"),
                 server_name=payload.get("server_name"),
                 accessible_instance_ids=accessible_instance_ids,
             )
@@ -884,6 +888,10 @@ def resolve_admin_post(
                 token=token,
                 user_id=payload.get("user_id"),
                 api_base=payload.get("api_base"),
+                refresh_token=payload.get("refresh_token"),
+                client_id=payload.get("client_id"),
+                client_secret=payload.get("client_secret"),
+                token_uri=payload.get("token_uri"),
                 server_name=payload.get("server_name"),
                 accessible_instance_ids=accessible_instance_ids,
             )

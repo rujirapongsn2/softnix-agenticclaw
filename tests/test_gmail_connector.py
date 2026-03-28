@@ -94,6 +94,54 @@ def test_gmail_client_requires_write_scope_for_draft_and_send() -> None:
         raise AssertionError("Expected send_message to require a Gmail write scope")
 
 
+def test_gmail_client_refreshes_expired_access_token_and_retries() -> None:
+    requests: list[tuple[str, str, str | None]] = []
+    tokeninfo_tokens: list[str | None] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        auth_header = request.headers.get("authorization")
+        requests.append((request.method, request.url.path, auth_header))
+        if request.url.host == "oauth2.googleapis.com" and request.url.path == "/tokeninfo":
+            token = request.url.params.get("access_token")
+            tokeninfo_tokens.append(token)
+            if token == "expired-access-token":
+                return httpx.Response(401, json={"error": {"message": "invalid_token"}})
+            return httpx.Response(200, json={"scope": "https://www.googleapis.com/auth/gmail.compose"})
+        if request.url.host == "oauth2.googleapis.com" and request.url.path == "/token":
+            body = request.content.decode("utf-8")
+            assert "grant_type=refresh_token" in body
+            assert "refresh_token=refresh-token" in body
+            assert "client_id=client-id" in body
+            assert "client_secret=client-secret" in body
+            return httpx.Response(200, json={"access_token": "fresh-access-token", "expires_in": 3600})
+        if request.url.path == "/gmail/v1/users/me/profile":
+            if auth_header == "Bearer expired-access-token":
+                return httpx.Response(401, json={"error": {"message": "invalid_token"}})
+            return httpx.Response(200, json={"emailAddress": "owner@example.com"})
+        if request.method == "POST" and request.url.path == "/gmail/v1/users/me/drafts":
+            payload = json.loads(request.content.decode("utf-8"))
+            raw = payload["message"]["raw"]
+            message_text = base64.urlsafe_b64decode(_pad_base64(raw)).decode("utf-8")
+            assert "From: owner@example.com" in message_text
+            return httpx.Response(200, json={"id": "draft-1"})
+        return httpx.Response(404, json={"message": "not found"})
+
+    client = GmailClient(
+        token="expired-access-token",
+        refresh_token="refresh-token",
+        client_id="client-id",
+        client_secret="client-secret",
+        user_id="me",
+        transport=httpx.MockTransport(handler),
+    )
+
+    assert client.create_draft(to="receiver@example.com", subject="Draft subject", body="Draft body")["id"] == "draft-1"
+    assert client.token == "fresh-access-token"
+    assert tokeninfo_tokens == ["fresh-access-token"]
+    assert any(header == "Bearer expired-access-token" for _, path, header in requests if path == "/gmail/v1/users/me/profile")
+    assert any(header == "Bearer fresh-access-token" for _, path, header in requests if path == "/gmail/v1/users/me/profile")
+
+
 def test_admin_service_installs_gmail_connector(tmp_path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -129,6 +177,34 @@ def test_admin_service_installs_gmail_connector(tmp_path) -> None:
     assert (config_path.parent / "runtime" / "gmail_mcp_server.py").exists()
 
 
+def test_admin_service_installs_gmail_connector_with_refresh_credentials(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    config_path = tmp_path / "config.json"
+
+    config = Config()
+    config.agents.defaults.workspace = str(workspace)
+    save_config(config, config_path)
+
+    service = AdminService(config_path=config_path)
+    service.install_gmail_connector(
+        instance_id="default",
+        token="ya29_example",
+        user_id="me",
+        refresh_token="refresh-token",
+        client_id="client-id",
+        client_secret="client-secret",
+        token_uri="https://oauth2.googleapis.com/token",
+    )
+
+    saved = load_config(config_path)
+    env = saved.tools.mcp_servers["gmail"].env
+    assert env["GMAIL_REFRESH_TOKEN"] == "refresh-token"
+    assert env["GMAIL_CLIENT_ID"] == "client-id"
+    assert env["GMAIL_CLIENT_SECRET"] == "client-secret"
+    assert env["GMAIL_TOKEN_URI"] == "https://oauth2.googleapis.com/token"
+
+
 def test_admin_service_validates_gmail_connector(tmp_path, monkeypatch) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -139,7 +215,17 @@ def test_admin_service_validates_gmail_connector(tmp_path, monkeypatch) -> None:
     save_config(config, config_path)
 
     class DummyGmailClient:
-        def __init__(self, *, token: str, api_base: str, user_id: str) -> None:
+        def __init__(
+            self,
+            *,
+            token: str,
+            api_base: str,
+            user_id: str,
+            refresh_token: str = "",
+            client_id: str = "",
+            client_secret: str = "",
+            token_uri: str = "",
+        ) -> None:
             self.token = token
             self.api_base = api_base
             self.user_id = user_id
@@ -184,7 +270,17 @@ def test_admin_service_marks_gmail_connector_error_on_failed_validation(tmp_path
     save_config(config, config_path)
 
     class DummyGmailClient:
-        def __init__(self, *, token: str, api_base: str, user_id: str) -> None:
+        def __init__(
+            self,
+            *,
+            token: str,
+            api_base: str,
+            user_id: str,
+            refresh_token: str = "",
+            client_id: str = "",
+            client_secret: str = "",
+            token_uri: str = "",
+        ) -> None:
             self.token = token
             self.api_base = api_base
             self.user_id = user_id

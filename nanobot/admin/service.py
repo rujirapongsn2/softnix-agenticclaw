@@ -2359,6 +2359,10 @@ class AdminService:
         token: str,
         user_id: str | None = None,
         api_base: str | None = None,
+        refresh_token: str | None = None,
+        client_id: str | None = None,
+        client_secret: str | None = None,
+        token_uri: str | None = None,
         server_name: str | None = None,
         accessible_instance_ids: set[str] | list[str] | tuple[str, ...] | None = None,
     ) -> dict[str, Any]:
@@ -2373,6 +2377,10 @@ class AdminService:
         token_value = str(token or "").strip() or str(existing_env.get("GMAIL_TOKEN") or "").strip()
         user_id_value = str(user_id or "").strip() or str(existing_env.get("GMAIL_USER_ID") or "").strip() or "me"
         api_base_value = str(api_base or "").strip() or str(existing_env.get("GMAIL_API_BASE") or "").strip() or GMAIL_API_BASE_DEFAULT
+        refresh_token_value = str(refresh_token or "").strip() or str(existing_env.get("GMAIL_REFRESH_TOKEN") or "").strip()
+        client_id_value = str(client_id or "").strip() or str(existing_env.get("GMAIL_CLIENT_ID") or "").strip()
+        client_secret_value = str(client_secret or "").strip() or str(existing_env.get("GMAIL_CLIENT_SECRET") or "").strip()
+        token_uri_value = str(token_uri or "").strip() or str(existing_env.get("GMAIL_TOKEN_URI") or "").strip() or "https://oauth2.googleapis.com/token"
         if not token_value:
             raise ValueError("Gmail access token is required")
         runtime_script = _ensure_gmail_connector_runtime_script(target)
@@ -2381,6 +2389,10 @@ class AdminService:
                 token=token_value,
                 user_id=user_id_value,
                 api_base=api_base_value,
+                refresh_token=refresh_token_value or None,
+                client_id=client_id_value or None,
+                client_secret=client_secret_value or None,
+                token_uri=token_uri_value,
                 script_path=str(runtime_script),
             )
         )
@@ -2417,6 +2429,10 @@ class AdminService:
         token: str,
         user_id: str | None = None,
         api_base: str | None = None,
+        refresh_token: str | None = None,
+        client_id: str | None = None,
+        client_secret: str | None = None,
+        token_uri: str | None = None,
         server_name: str | None = None,
         accessible_instance_ids: set[str] | list[str] | tuple[str, ...] | None = None,
     ) -> dict[str, Any]:
@@ -2435,6 +2451,14 @@ class AdminService:
                     user_id = str(config_defaults.get("GMAIL_USER_ID") or "").strip() or "me"
                 if not api_base:
                     api_base = str(config_defaults.get("GMAIL_API_BASE") or "").strip() or GMAIL_API_BASE_DEFAULT
+                if not refresh_token:
+                    refresh_token = str(config_defaults.get("GMAIL_REFRESH_TOKEN") or "").strip()
+                if not client_id:
+                    client_id = str(config_defaults.get("GMAIL_CLIENT_ID") or "").strip()
+                if not client_secret:
+                    client_secret = str(config_defaults.get("GMAIL_CLIENT_SECRET") or "").strip()
+                if not token_uri:
+                    token_uri = str(config_defaults.get("GMAIL_TOKEN_URI") or "").strip() or "https://oauth2.googleapis.com/token"
         if not token_value:
             raise ValueError("Gmail access token is required")
         user_id_value = str(user_id or "me").strip() or "me"
@@ -2443,6 +2467,10 @@ class AdminService:
             token=token_value,
             api_base=str(api_base or GMAIL_API_BASE_DEFAULT).strip() or GMAIL_API_BASE_DEFAULT,
             user_id=user_id_value,
+            refresh_token=str(refresh_token or "").strip(),
+            client_id=str(client_id or "").strip(),
+            client_secret=str(client_secret or "").strip(),
+            token_uri=str(token_uri or "https://oauth2.googleapis.com/token").strip() or "https://oauth2.googleapis.com/token",
         )
         findings: list[dict[str, Any]] = []
         try:
@@ -2457,11 +2485,17 @@ class AdminService:
         except httpx.HTTPStatusError as exc:
             status = exc.response.status_code
             if status in {401, 403}:
+                detail = "Gmail access token was rejected by the API."
+                if getattr(client, "has_refresh_credentials", None) and callable(client.has_refresh_credentials):
+                    if client.has_refresh_credentials():
+                        detail += " The connector has refresh credentials, so try importing a fresh token.json or re-running Google quickstart if the access token is revoked."
+                    else:
+                        detail += " Import a token.json that includes refresh_token and client_id so the connector can renew expired access tokens."
                 findings.append(
                     {
                         "severity": "error",
                         "code": "invalid_token",
-                        "detail": "Gmail access token was rejected by the API.",
+                        "detail": detail,
                     }
                 )
             else:

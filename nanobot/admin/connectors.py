@@ -109,6 +109,10 @@ def build_gmail_stdio_server_config(
     token: str,
     user_id: str | None = None,
     api_base: str | None = None,
+    refresh_token: str | None = None,
+    client_id: str | None = None,
+    client_secret: str | None = None,
+    token_uri: str | None = None,
     tool_timeout: int = 30,
     script_path: str | None = None,
 ) -> dict[str, Any]:
@@ -117,6 +121,10 @@ def build_gmail_stdio_server_config(
         "GMAIL_TOKEN": str(token or "").strip(),
         "GMAIL_USER_ID": str(user_id or "me").strip() or "me",
         "GMAIL_API_BASE": str(api_base or "https://gmail.googleapis.com/gmail/v1").strip() or "https://gmail.googleapis.com/gmail/v1",
+        "GMAIL_REFRESH_TOKEN": str(refresh_token or "").strip(),
+        "GMAIL_CLIENT_ID": str(client_id or "").strip(),
+        "GMAIL_CLIENT_SECRET": str(client_secret or "").strip(),
+        "GMAIL_TOKEN_URI": str(token_uri or "https://oauth2.googleapis.com/token").strip() or "https://oauth2.googleapis.com/token",
     }
     return {
         "type": "stdio",

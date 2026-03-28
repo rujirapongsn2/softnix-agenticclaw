@@ -18,6 +18,7 @@ Use the Gmail connector when the task is about reading Gmail, searching messages
 - Use `mcp_gmail_create_draft` when the user wants a draft or review step before sending.
 - Use `mcp_gmail_send_message` only when the user explicitly wants the email sent now.
 - Draft and send require a Gmail write scope such as `gmail.compose` or `gmail.send`; a read-only token is not enough.
+- For long-running instances, prefer a refreshable OAuth setup. If the connector has refresh credentials, it can recover automatically from an expired access token.
 - If the user asks to send mail and the token lacks permission, report the validation failure plainly.
 
 ## Common Patterns

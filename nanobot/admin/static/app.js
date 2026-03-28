@@ -3024,6 +3024,32 @@ function buildGmailConnectorPayload(instanceId) {
     token: document.getElementById("connector-gmail-token")?.value ?? "",
     user_id: document.getElementById("connector-gmail-user-id")?.value ?? "",
     api_base: document.getElementById("connector-gmail-api-base")?.value ?? "",
+    refresh_token: document.getElementById("connector-gmail-refresh-token")?.value ?? "",
+    client_id: document.getElementById("connector-gmail-client-id")?.value ?? "",
+    client_secret: document.getElementById("connector-gmail-client-secret")?.value ?? "",
+    token_uri: document.getElementById("connector-gmail-token-uri")?.value ?? "",
+  };
+}
+
+function parseGmailTokenJson(rawText) {
+  const text = String(rawText || "").trim();
+  if (!text) {
+    throw new Error("token.json is empty");
+  }
+  const data = JSON.parse(text);
+  if (!data || typeof data !== "object") {
+    throw new Error("token.json must contain a JSON object");
+  }
+  const accessToken = String(data.access_token || data.token || "").trim();
+  if (!accessToken) {
+    throw new Error("token.json does not contain an access token");
+  }
+  return {
+    token: accessToken,
+    refreshToken: String(data.refresh_token || "").trim(),
+    clientId: String(data.client_id || "").trim(),
+    clientSecret: String(data.client_secret || "").trim(),
+    tokenUri: String(data.token_uri || "https://oauth2.googleapis.com/token").trim() || "https://oauth2.googleapis.com/token",
   };
 }
 
@@ -3217,10 +3243,15 @@ function renderConnectorModal() {
         <details class="connector-guide-accordion">
           <summary>4. Copy the access token</summary>
           <div class="connector-guide-accordion-body">
-            Open <code>token.json</code> and copy only the <code>access_token</code> value. Paste that value into <em>Gmail Access Token</em> below.
+            Open <code>token.json</code> and copy only the <code>access_token</code> value if you just need a short-lived token.
+            For long-running agents, copy the <code>refresh_token</code>, <code>client_id</code>, and <code>client_secret</code> values from <code>token.json</code> as well so the connector can refresh automatically after the access token expires.
           </div>
         </details>
-        <p class="meta connector-guide-note">Leave <code>Mailbox User ID</code> as <code>me</code> and <code>API Base</code> as <code>https://gmail.googleapis.com/gmail/v1</code> unless you specifically need another value.</p>
+        <div class="inline-actions" style="justify-content:flex-start">
+          <button class="secondary-button is-small" id="connector-gmail-import-token-btn">Import token.json</button>
+          <input id="connector-gmail-import-input" type="file" accept=".json,application/json" style="display:none">
+        </div>
+        <p class="meta connector-guide-note">Leave <code>Mailbox User ID</code> as <code>me</code> and <code>API Base</code> as <code>https://gmail.googleapis.com/gmail/v1</code> unless you specifically need another value. If you paste refresh credentials, the connector can recover from <code>401 Unauthorized</code> without manual re-login.</p>
         <div class="field">
           <label for="connector-gmail-token">Gmail Access Token</label>
           <input id="connector-gmail-token" type="password" autocomplete="off" placeholder="${escapeHtml(connectorMaskGmailToken(instance) || "ya29....")}" value="">
@@ -3233,6 +3264,28 @@ function renderConnectorModal() {
           <label for="connector-gmail-api-base">API Base</label>
           <input id="connector-gmail-api-base" type="text" placeholder="https://gmail.googleapis.com/gmail/v1" value="${escapeHtml(currentEnv.GMAIL_API_BASE || "https://gmail.googleapis.com/gmail/v1")}">
         </div>
+        <details class="connector-guide-accordion">
+          <summary>Advanced refresh support</summary>
+          <div class="connector-guide-accordion-body">
+            <p class="meta" style="margin:0 0 10px">Optional, but recommended for long-running agents. Copy these values from <code>token.json</code> so the connector can refresh expired access tokens automatically.</p>
+            <div class="field">
+              <label for="connector-gmail-refresh-token">Refresh Token</label>
+              <input id="connector-gmail-refresh-token" type="password" autocomplete="off" placeholder="1//0g..." value="${escapeHtml(currentEnv.GMAIL_REFRESH_TOKEN || "")}">
+            </div>
+            <div class="field">
+              <label for="connector-gmail-client-id">Client ID</label>
+              <input id="connector-gmail-client-id" type="text" autocomplete="off" placeholder="1234567890-....apps.googleusercontent.com" value="${escapeHtml(currentEnv.GMAIL_CLIENT_ID || "")}">
+            </div>
+            <div class="field">
+              <label for="connector-gmail-client-secret">Client Secret</label>
+              <input id="connector-gmail-client-secret" type="password" autocomplete="off" placeholder="GOCSPX-..." value="${escapeHtml(currentEnv.GMAIL_CLIENT_SECRET || "")}">
+            </div>
+            <div class="field">
+              <label for="connector-gmail-token-uri">Token URI</label>
+              <input id="connector-gmail-token-uri" type="text" autocomplete="off" placeholder="https://oauth2.googleapis.com/token" value="${escapeHtml(currentEnv.GMAIL_TOKEN_URI || "https://oauth2.googleapis.com/token")}">
+            </div>
+          </div>
+        </details>
         <p class="meta">Leave token blank to keep the current saved token.</p>
         <div class="modal-footer-actions">
           <div class="inline-actions" style="margin-left:auto">
@@ -3246,6 +3299,33 @@ function renderConnectorModal() {
     document.getElementById("connector-modal-cancel-btn")?.addEventListener("click", closeConnectorSettings);
     document.getElementById("connector-modal-save-btn")?.addEventListener("click", () => void handleGmailConnectorInstall(instanceId));
     document.getElementById("connector-modal-validate-btn")?.addEventListener("click", () => void handleGmailConnectorValidate(instanceId));
+    document.getElementById("connector-gmail-import-token-btn")?.addEventListener("click", () => {
+      document.getElementById("connector-gmail-import-input")?.click();
+    });
+    document.getElementById("connector-gmail-import-input")?.addEventListener("change", async (event) => {
+      const input = event.currentTarget;
+      const file = input?.files?.[0];
+      if (!file) return;
+      try {
+        const text = await file.text();
+        const parsed = parseGmailTokenJson(text);
+        const tokenInput = document.getElementById("connector-gmail-token");
+        const refreshInput = document.getElementById("connector-gmail-refresh-token");
+        const clientIdInput = document.getElementById("connector-gmail-client-id");
+        const clientSecretInput = document.getElementById("connector-gmail-client-secret");
+        const tokenUriInput = document.getElementById("connector-gmail-token-uri");
+        if (tokenInput) tokenInput.value = parsed.token;
+        if (refreshInput && parsed.refreshToken) refreshInput.value = parsed.refreshToken;
+        if (clientIdInput && parsed.clientId) clientIdInput.value = parsed.clientId;
+        if (clientSecretInput && parsed.clientSecret) clientSecretInput.value = parsed.clientSecret;
+        if (tokenUriInput && parsed.tokenUri) tokenUriInput.value = parsed.tokenUri;
+        setConnectorModalStatus("Imported token.json and filled the Gmail connector fields.", "success");
+      } catch (error) {
+        setConnectorModalStatus(`Unable to import token.json: ${error.message}`, "error");
+      } finally {
+        input.value = "";
+      }
+    });
     return;
   }
   titleEl.textContent = "Custom MCP Settings";
