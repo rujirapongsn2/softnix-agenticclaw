@@ -112,6 +112,25 @@ const CONNECTOR_ICON_MARKUP = {
   custom: `<svg viewBox="0 0 24 24" aria-hidden="true" fill="none"><path d="M12 2.7 19 6.8v8.4L12 19.3 5 15.2V6.8L12 2.7Z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M12 7.3v9.4M7.9 9.6l4.1-2.3 4.1 2.3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
 };
 
+const CONNECTOR_IMAGE_ASSET_MAP = {
+  github: "/docs/images/connectors/icons8-github-logo-48.png",
+  gmail: "/docs/images/connectors/icons8-gmail-logo-48.png",
+  notion: "/docs/images/connectors/icons8-notion-48.png",
+  instagram: "/docs/images/connectors/icons8-instagram-logo-48.png",
+  calendar: "/docs/images/connectors/icons8-google-calendar-48.png",
+  drive: "/docs/images/connectors/icons8-google-drive-48.png",
+  youtube: "/docs/images/connectors/icons8-youtube-logo-48.png",
+  tiktok: "/docs/images/connectors/icons8-tiktok-logo-48.png",
+};
+
+function renderConnectorIconMarkup(key, label) {
+  const src = CONNECTOR_IMAGE_ASSET_MAP[key];
+  if (src) {
+    return `<img src="${escapeHtml(src)}" alt="${escapeHtml(label || key)} icon" loading="lazy" decoding="async">`;
+  }
+  return CONNECTOR_ICON_MARKUP[key] || CONNECTOR_ICON_MARKUP.custom;
+}
+
 const EXECUTION_ZOOM_MIN = 0.4;
 const EXECUTION_ZOOM_MAX = 3.0;
 const EXECUTION_ZOOM_STEP = 1.2;
@@ -432,6 +451,46 @@ function badgeClass(severity) {
   if (severity === "ok") return "is-lime";
   if (severity === "error") return "is-red";
   return "is-gray";
+}
+
+const CHANNEL_ICON_MAP = {
+  softnix_app: { src: "/docs/images/Logo%20Softnix.png", label: "Softnix" },
+  telegram: { src: "/docs/images/icons8-telegram-logo.gif", label: "Telegram" },
+  whatsapp: { src: "/docs/images/icons8-whatsapp.gif", label: "WhatsApp" },
+  discord: { src: "/docs/images/icons8-discord-48.png", label: "Discord" },
+  email: { src: "/docs/images/icons8-email-48.png", label: "Email" },
+  slack: { src: "/docs/images/icons8-slack-48.png", label: "Slack" },
+};
+
+function getChannelDisplayName(channelName) {
+  const value = String(channelName || "").trim();
+  if (!value) return "Channel";
+  if (value === "softnix_app") return "Softnix Mobile";
+  return value.charAt(0).toUpperCase() + value.slice(1);
+}
+
+function getChannelIcon(channelName) {
+  const value = String(channelName || "").trim();
+  return CHANNEL_ICON_MAP[value] || null;
+}
+
+function renderChannelBadge(channelName, options = {}) {
+  const compact = Boolean(options.compact);
+  const icon = getChannelIcon(channelName);
+  const label = getChannelDisplayName(channelName);
+  const iconHtml = icon
+    ? `<span class="channel-icon"><img src="${escapeHtml(icon.src)}" alt="${escapeHtml(icon.label || label)} icon" loading="lazy" decoding="async"></span>`
+    : `<span class="channel-icon channel-icon-fallback" aria-hidden="true">${escapeHtml(label.slice(0, 2).toUpperCase())}</span>`;
+  const subtitleHtml = compact ? "" : `<div class="channel-badge-subtitle">${escapeHtml(channelName)}</div>`;
+  return `
+    <div class="channel-badge ${compact ? "is-compact" : ""}">
+      ${iconHtml}
+      <div class="channel-badge-copy">
+        <div class="channel-badge-title">${escapeHtml(label)}</div>
+        ${subtitleHtml}
+      </div>
+    </div>
+  `;
 }
 
 const POLICY_SCOPE_OPTIONS = [
@@ -2248,7 +2307,7 @@ function renderSelectedInstanceChannels(instance) {
         class="console-tab ${channel.name === selectedChannel.name ? "is-active" : ""}"
         data-channel-focus="${escapeHtml(instance.id)}:${escapeHtml(channel.name)}"
       >
-        ${escapeHtml(channel.name === "softnix_app" ? "Softnix" : channel.name)}
+        ${renderChannelBadge(channel.name, { compact: true })}
       </button>
     `)
     .join("");
@@ -2355,7 +2414,9 @@ function renderSelectedInstanceChannels(instance) {
       </div>
       <div class="item-card">
         <div class="row-between">
-          <h4>${escapeHtml(selectedChannel.name === "softnix_app" ? "Softnix" : selectedChannel.name)}</h4>
+          <div class="channel-title-wrap">
+            ${renderChannelBadge(selectedChannel.name)}
+          </div>
           <span class="badge ${badgeClass(selectedChannel.enabled ? "ok" : "neutral")}">${selectedChannel.enabled ? "Enabled" : "Disabled"}</span>
         </div>
         <div class="field">
@@ -2749,7 +2810,7 @@ function renderSelectedInstanceConnectors(instance) {
       status: githubConnected ? "Connected" : "Not Connected",
       connected: githubConnected,
       available: true,
-      iconMarkup: CONNECTOR_ICON_MARKUP.github,
+      iconMarkup: renderConnectorIconMarkup("github", "GitHub"),
       accentClass: "connector-mark-github",
     },
     {
@@ -2759,7 +2820,7 @@ function renderSelectedInstanceConnectors(instance) {
       status: notionConnected ? "Connected" : "Not Connected",
       connected: notionConnected,
       available: true,
-      iconMarkup: CONNECTOR_ICON_MARKUP.notion,
+      iconMarkup: renderConnectorIconMarkup("notion", "Notion"),
       accentClass: "connector-mark-notion",
     },
     {
@@ -2769,7 +2830,7 @@ function renderSelectedInstanceConnectors(instance) {
       status: gmailConnected ? "Connected" : "Not Connected",
       connected: gmailConnected,
       available: true,
-      iconMarkup: CONNECTOR_ICON_MARKUP.gmail,
+      iconMarkup: renderConnectorIconMarkup("gmail", "Gmail"),
       accentClass: "connector-mark-gmail",
     },
     {
@@ -2789,7 +2850,7 @@ function renderSelectedInstanceConnectors(instance) {
       status: "Coming Soon",
       connected: false,
       available: false,
-      iconMarkup: CONNECTOR_ICON_MARKUP.instagram,
+      iconMarkup: renderConnectorIconMarkup("instagram", "Instagram"),
       accentClass: "connector-mark-instagram",
     },
     {
@@ -2799,7 +2860,7 @@ function renderSelectedInstanceConnectors(instance) {
       status: "Coming Soon",
       connected: false,
       available: false,
-      iconMarkup: CONNECTOR_ICON_MARKUP.calendar,
+      iconMarkup: renderConnectorIconMarkup("calendar", "Google Calendar"),
       accentClass: "connector-mark-calendar",
     },
     {
@@ -2809,7 +2870,7 @@ function renderSelectedInstanceConnectors(instance) {
       status: "Coming Soon",
       connected: false,
       available: false,
-      iconMarkup: CONNECTOR_ICON_MARKUP.drive,
+      iconMarkup: renderConnectorIconMarkup("drive", "Google Drive"),
       accentClass: "connector-mark-drive",
     },
     {
@@ -2819,7 +2880,7 @@ function renderSelectedInstanceConnectors(instance) {
       status: "Coming Soon",
       connected: false,
       available: false,
-      iconMarkup: CONNECTOR_ICON_MARKUP.youtube,
+      iconMarkup: renderConnectorIconMarkup("youtube", "YouTube"),
       accentClass: "connector-mark-youtube",
     },
     {
@@ -2839,7 +2900,7 @@ function renderSelectedInstanceConnectors(instance) {
       status: "Coming Soon",
       connected: false,
       available: false,
-      iconMarkup: CONNECTOR_ICON_MARKUP.tiktok,
+      iconMarkup: renderConnectorIconMarkup("tiktok", "TikTok"),
       accentClass: "connector-mark-tiktok",
     },
     {
@@ -6143,7 +6204,7 @@ function renderChannels() {
   target.innerHTML = state.overview.instances
     .map((instance) => {
       const channels = instance.channels
-        .map((channel) => {
+    .map((channel) => {
           const key = `${instance.id}:${channel.name}`;
           const allowList = channel.allow_from_mode === "deny_all" ? "" : "";
           const originalChannel = state.channels.find(
@@ -6151,7 +6212,6 @@ function renderChannels() {
           );
           const disabled = state.busyKey === key ? "disabled" : "";
           const isSoftnix = channel.name === "softnix_app";
-          const displayName = isSoftnix ? "Softnix Mobile" : channel.name;
           const placeholder = isSoftnix ? "One Device ID per line" : "One user identifier per line";
           const currentAllow =
             originalChannel && Array.isArray(originalChannel.allow_from)
@@ -6159,9 +6219,9 @@ function renderChannels() {
               : "";
           return `
             <div class="item-card">
-              <div class="row-between">
-                <div>
-                  <h4>${escapeHtml(displayName)}</h4>
+              <div class="row-between channel-card-header">
+                <div class="channel-card-title-group">
+                  ${renderChannelBadge(channel.name)}
                   <p class="meta">Access mode: ${escapeHtml(channel.allow_from_mode)}</p>
                 </div>
                 <span class="badge ${badgeClass(channel.enabled ? "ok" : "neutral")}">${channel.enabled ? "Enabled" : "Disabled"}</span>

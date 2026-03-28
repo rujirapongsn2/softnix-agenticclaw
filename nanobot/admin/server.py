@@ -8,7 +8,7 @@ from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 from loguru import logger
 
@@ -948,6 +948,25 @@ def resolve_static_asset(raw_path: str) -> tuple[Path | None, str]:
         return SOFTNIX_LOGIN_LOGO, "image/png"
     if path == "/static/softnix-logo-white.png":
         return SOFTNIX_WHITE_LOGO, "image/png"
+    if path.startswith("/docs/images/"):
+        subpath = unquote(path[len("/docs/images/"):]).strip("/")
+        if subpath:
+            base = (PROJECT_ROOT / "docs" / "images").resolve()
+            asset = (base / Path(subpath)).resolve()
+            try:
+                asset.relative_to(base)
+            except ValueError:
+                return None, ""
+            if asset.is_file():
+                ext = asset.suffix.lower().lstrip(".")
+                content_type = {
+                    "png": "image/png",
+                    "gif": "image/gif",
+                    "jpg": "image/jpeg",
+                    "jpeg": "image/jpeg",
+                    "webp": "image/webp",
+                }.get(ext, "application/octet-stream")
+                return asset, content_type
     if path == "/favicon.ico":
         return STATIC_DIR / "mobile" / "apple-touch-icon.png", "image/png"
     if path == "/.well-known/security.txt":
