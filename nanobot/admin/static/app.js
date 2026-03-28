@@ -113,14 +113,14 @@ const CONNECTOR_ICON_MARKUP = {
 };
 
 const CONNECTOR_IMAGE_ASSET_MAP = {
-  github: "/docs/images/connectors/icons8-github-logo-48.png",
-  gmail: "/docs/images/connectors/icons8-gmail-logo-48.png",
-  notion: "/docs/images/connectors/icons8-notion-48.png",
-  instagram: "/docs/images/connectors/icons8-instagram-logo-48.png",
-  calendar: "/docs/images/connectors/icons8-google-calendar-48.png",
-  drive: "/docs/images/connectors/icons8-google-drive-48.png",
-  youtube: "/docs/images/connectors/icons8-youtube-logo-48.png",
-  tiktok: "/docs/images/connectors/icons8-tiktok-logo-48.png",
+  github: "/docs/images/Connectors/icons8-github-logo-48.png",
+  gmail: "/docs/images/Connectors/icons8-gmail-logo-48.png",
+  notion: "/docs/images/Connectors/icons8-notion-48.png",
+  instagram: "/docs/images/Connectors/icons8-instagram-logo-48.png",
+  calendar: "/docs/images/Connectors/icons8-google-calendar-48.png",
+  drive: "/docs/images/Connectors/icons8-google-drive-48.png",
+  youtube: "/docs/images/Connectors/icons8-youtube-logo-48.png",
+  tiktok: "/docs/images/Connectors/icons8-tiktok-logo-48.png",
 };
 
 function renderConnectorIconMarkup(key, label) {

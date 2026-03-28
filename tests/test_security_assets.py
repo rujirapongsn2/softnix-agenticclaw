@@ -14,8 +14,8 @@ def test_favicon_matches_mobile_app_icon() -> None:
 
 
 def test_docs_images_route_serves_nested_connector_icons() -> None:
-    path, content_type = resolve_static_asset("/docs/images/connectors/icons8-github-logo-48.png")
-    assert path == PROJECT_ROOT / "docs" / "images" / "connectors" / "icons8-github-logo-48.png"
+    path, content_type = resolve_static_asset("/docs/images/Connectors/icons8-github-logo-48.png")
+    assert path == PROJECT_ROOT / "docs" / "images" / "Connectors" / "icons8-github-logo-48.png"
     assert content_type == "image/png"
 
 
