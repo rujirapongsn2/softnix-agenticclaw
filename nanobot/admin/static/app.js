@@ -48,6 +48,8 @@ const state = {
   connectorSearchByInstance: {},
   connectorModal: { open: false, instanceId: null, connectorId: null },
   connectorStatusByInstance: {},
+  skillsBankModal: { open: false, instanceId: null },
+  skillsBankByInstance: {},
   memoryByInstance: {},
   memoryViewModeByInstance: {},
   skillsByInstance: {},
@@ -334,6 +336,26 @@ function getSkillState(instanceId) {
   return state.skillsByInstance[instanceId];
 }
 
+function defaultSkillsBankState() {
+  return {
+    loading: false,
+    open: false,
+    instanceId: null,
+    searchQuery: "",
+    categories: [],
+    loadedForInstanceId: "",
+    importingSkillId: "",
+    status: { type: "", message: "" },
+  };
+}
+
+function getSkillsBankState(instanceId) {
+  if (!state.skillsBankByInstance[instanceId]) {
+    state.skillsBankByInstance[instanceId] = defaultSkillsBankState();
+  }
+  return state.skillsBankByInstance[instanceId];
+}
+
 function defaultMemoryState() {
   return {
     loading: false,
@@ -351,6 +373,51 @@ function getMemoryState(instanceId) {
 
 function normalizeSkillSearch(value) {
   return String(value || "").trim().toLowerCase();
+}
+
+function countSkillsBankEntries(categories) {
+  return (categories || []).reduce((total, category) => total + (category.skills?.length || 0), 0);
+}
+
+function updateSkillsBankSearchResults(instanceId) {
+  const bankState = getSkillsBankState(instanceId);
+  if (bankState.loading && !bankState.categories.length) return;
+  const modal = document.getElementById("skills-bank-modal");
+  if (!modal) return;
+  const query = normalizeSkillSearch(bankState.searchQuery);
+  let visibleSkills = 0;
+  const categories = modal.querySelectorAll("[data-skills-bank-category], .skills-bank-category");
+  categories.forEach((category) => {
+    let categoryVisible = 0;
+    category.querySelectorAll("[data-skills-bank-item]").forEach((card) => {
+      const searchable = normalizeSkillSearch(card.dataset.skillsBankSearchText || card.textContent || "");
+      const isVisible = !query || searchable.includes(query);
+      card.classList.toggle("is-hidden", !isVisible);
+      if (isVisible) {
+        visibleSkills += 1;
+        categoryVisible += 1;
+      }
+    });
+    category.classList.toggle("is-hidden", categoryVisible === 0);
+    const countEl = category.querySelector("[data-skills-bank-category-count]");
+    if (countEl) {
+      countEl.textContent = categoryVisible === 1 ? "1 skill" : `${categoryVisible} skills`;
+    }
+  });
+  const summaryEl = modal.querySelector("[data-skills-bank-summary]");
+  if (summaryEl) {
+    summaryEl.textContent = query ? `${visibleSkills} matching skills` : `${countSkillsBankEntries(bankState.categories)} curated skills`;
+  }
+  const emptyState = modal.querySelector("[data-skills-bank-empty-state]");
+  if (emptyState) {
+    const hasVisibleContent = visibleSkills > 0;
+    emptyState.classList.toggle("is-hidden", hasVisibleContent);
+    if (query) {
+      emptyState.textContent = hasVisibleContent ? "" : "No curated skills match this search.";
+    } else {
+      emptyState.textContent = hasVisibleContent ? "" : "No curated skills available.";
+    }
+  }
 }
 
 function sortSkillFilePaths(paths) {
@@ -5385,6 +5452,7 @@ function renderSelectedInstanceSkills(instance) {
             <p class="meta">All skills are installed locally in workspace/skills/. Click a card to edit its files.</p>
           </div>
           <div class="inline-actions">
+            ${canUpdate ? `<button class="secondary-button is-small" data-skills-bank-open="${escapeHtml(instance.id)}">Skills Bank</button>` : ""}
             ${canUpdate ? `<button class="secondary-button is-small" data-skill-upload="${escapeHtml(instance.id)}" ${skillState.uploading ? "disabled" : ""}>Upload</button>` : ""}
             <button class="secondary-button is-small" data-skills-reload="${escapeHtml(instance.id)}" ${skillState.loading ? "disabled" : ""}>Refresh</button>
           </div>
@@ -5476,6 +5544,9 @@ function renderSelectedInstanceSkills(instance) {
       input?.click();
     });
   });
+  target.querySelectorAll("[data-skills-bank-open]").forEach((btn) => {
+    btn.addEventListener("click", () => void openSkillsBankModal(btn.dataset.skillsBankOpen));
+  });
   target.querySelectorAll("[data-skill-upload-input]").forEach((input) => {
     input.addEventListener("change", () => {
       const file = input.files?.[0];
@@ -5537,6 +5608,251 @@ async function handleSkillUpload(instanceId, file) {
     skillState.uploading = false;
     state.busyKey = "";
     renderSelectedInstanceSkills(selectedInstance());
+  }
+}
+
+function closeSkillsBankModal() {
+  const modal = document.getElementById("skills-bank-modal");
+  if (modal) {
+    modal.classList.add("is-hidden");
+  }
+  if (state.skillsBankModal) {
+    state.skillsBankModal.open = false;
+    state.skillsBankModal.instanceId = null;
+  }
+}
+
+function setSkillsBankStatus(instanceId, type, message) {
+  const bankState = getSkillsBankState(instanceId);
+  bankState.status = { type, message };
+  const statusEl = document.getElementById("skills-bank-modal-status");
+  if (!statusEl) return;
+  if (!type || !message) {
+    statusEl.className = "skills-bank-modal-status is-hidden";
+    statusEl.textContent = "";
+    return;
+  }
+  statusEl.className = `skills-bank-modal-status is-${type}`;
+  statusEl.textContent = message;
+}
+
+function setSkillsBankBusy(instanceId, isBusy) {
+  const modal = document.getElementById("skills-bank-modal");
+  if (!modal) return;
+  modal.dataset.busy = isBusy ? "true" : "false";
+  modal.querySelectorAll("button, input").forEach((element) => {
+    if (element.id === "skills-bank-modal-close") return;
+    if (element.dataset.skillsBankImport) {
+      element.disabled = isBusy || element.dataset.skillsBankImportBusy === "true";
+      return;
+    }
+    if (element.dataset.skillsBankSearch) {
+      element.disabled = isBusy;
+      return;
+    }
+    if (element.dataset.skillsBankReload) {
+      element.disabled = isBusy;
+      return;
+    }
+    element.disabled = isBusy;
+  });
+  const bankState = getSkillsBankState(instanceId);
+  bankState.loading = isBusy;
+}
+
+function renderSkillsBankModal(instanceId) {
+  const modal = document.getElementById("skills-bank-modal");
+  if (!modal) return;
+  const titleEl = document.getElementById("skills-bank-modal-title");
+  const body = document.getElementById("skills-bank-modal-body");
+  if (!titleEl || !body) return;
+  const bankState = getSkillsBankState(instanceId);
+  bankState.instanceId = instanceId;
+  const query = normalizeSkillSearch(bankState.searchQuery);
+  const categories = bankState.categories || [];
+  const filteredCategories = categories
+    .map((category) => {
+      const skills = (category.skills || []).filter((skill) => {
+        if (!query) return true;
+        const haystack = [
+          skill.display_name,
+          skill.description,
+          skill.vibe,
+          skill.category_label,
+        ]
+          .map((value) => normalizeSkillSearch(value))
+          .join(" ");
+        return haystack.includes(query);
+      });
+      return { ...category, skills };
+    })
+    .filter((category) => category.skills.length > 0);
+
+  titleEl.textContent = "Skills Bank";
+  const loadingEmpty = bankState.loading && !categories.length;
+  const status = bankState.status?.message
+    ? `<div id="skills-bank-modal-status" class="skills-bank-modal-status is-${escapeHtml(bankState.status.type || "info")}">${escapeHtml(bankState.status.message)}</div>`
+    : `<div id="skills-bank-modal-status" class="skills-bank-modal-status is-hidden"></div>`;
+  const searchValue = escapeHtml(bankState.searchQuery || "");
+  const summary = categories.length ? `${countSkillsBankEntries(categories)} curated skills` : "Loading curated skills...";
+  const bodyContent = loadingEmpty
+    ? `<p class="meta">Loading curated skills bank…</p>`
+    : categories.length
+      ? filteredCategories.map((category) => {
+        const count = category.skills.length;
+        return `<section class="skills-bank-category" data-skills-bank-category="${escapeHtml(category.category || category.category_label || "other")}">
+          <div class="skills-bank-category-header">
+            <div>
+              <h4>${escapeHtml(category.category_label || category.category || "Other")}</h4>
+              <p class="meta" data-skills-bank-category-count>${escapeHtml(count === 1 ? "1 skill" : `${count} skills`)}</p>
+            </div>
+          </div>
+          <div class="skills-bank-grid">
+            ${category.skills.map((skill) => {
+              const importKey = `${instanceId}:${skill.bank_id}`;
+              const busyImport = state.busyKey === `skills-bank-import:${importKey}` ? "disabled" : "";
+              const importLabel = skill.installed ? "Reimport Skill" : "Import Skill";
+              const installedBadge = skill.installed ? `<span class="badge is-ok">Installed</span>` : `<span class="badge is-blue">Ready</span>`;
+              const emoji = skill.emoji ? `<span class="skills-bank-emoji" aria-hidden="true">${escapeHtml(skill.emoji)}</span>` : "";
+              const vibe = skill.vibe ? `<p class="meta skills-bank-vibe">${escapeHtml(skill.vibe)}</p>` : "";
+              const searchText = [
+                skill.display_name,
+                skill.description,
+                skill.vibe,
+                skill.category_label,
+                skill.bank_id,
+              ]
+                .map((value) => normalizeSkillSearch(value))
+                .join(" ");
+              return `<article class="item-card skills-bank-card ${skill.installed ? "is-installed" : ""}" data-skills-bank-item="${escapeHtml(importKey)}" data-skills-bank-search-text="${escapeHtml(searchText)}">
+                <div class="skills-bank-card-head">
+                  ${emoji}
+                  <div class="skills-bank-card-copy">
+                    <h4>${escapeHtml(skill.display_name || skill.bank_id)}</h4>
+                    <p class="meta">${escapeHtml(skill.description || "Ready-to-use skill from the bank.")}</p>
+                  </div>
+                </div>
+                ${vibe}
+                <div class="skills-bank-card-foot">
+                  <div class="skills-bank-card-badges">
+                    <span class="badge">${escapeHtml(skill.category_label || "General")}</span>
+                    ${installedBadge}
+                  </div>
+                  <button class="primary-button is-small" data-skills-bank-import="${escapeHtml(importKey)}" data-skills-bank-import-busy="${skill.installed ? "false" : "false"}" ${busyImport}>${escapeHtml(importLabel)}</button>
+                </div>
+              </article>`;
+            }).join("")}
+          </div>
+        </section>`;
+      }).join("")
+      : `<p class="meta">${query ? "No curated skills match this search." : "No curated skills available."}</p>`;
+
+  body.innerHTML = `
+    <div class="stack skills-bank-modal-stack">
+      ${status}
+      <p class="meta">Curated skill templates from <code>docs/skillsbank/agency-agents</code>. Import one into this instance, then use it like any other local skill.</p>
+      <div class="skills-bank-toolbar">
+        <label class="skills-bank-search">
+          <span>Search skills</span>
+          <input type="search" placeholder="Search skill name, category, description…" value="${searchValue}" data-skills-bank-search="${escapeHtml(instanceId)}">
+        </label>
+        <div class="skills-bank-summary">
+          <span class="badge is-blue" data-skills-bank-summary>${escapeHtml(summary)}</span>
+          <button class="secondary-button is-small" data-skills-bank-reload="${escapeHtml(instanceId)}">Refresh</button>
+        </div>
+      </div>
+      ${bodyContent}
+      <p class="meta skills-bank-empty-state is-hidden" data-skills-bank-empty-state></p>
+    </div>
+  `;
+
+  body.querySelectorAll("[data-skills-bank-search]").forEach((input) => {
+    input.addEventListener("input", () => {
+      const nextState = getSkillsBankState(input.dataset.skillsBankSearch);
+      nextState.searchQuery = input.value || "";
+      updateSkillsBankSearchResults(instanceId);
+    });
+  });
+  body.querySelectorAll("[data-skills-bank-reload]").forEach((btn) => {
+    btn.addEventListener("click", () => void loadSkillsBankCatalog(btn.dataset.skillsBankReload, { force: true }));
+  });
+  body.querySelectorAll("[data-skills-bank-import]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const [nextInstanceId, bankSkillId] = btn.dataset.skillsBankImport.split(":");
+      void handleSkillsBankImport(nextInstanceId, bankSkillId);
+    });
+  });
+  setSkillsBankBusy(instanceId, bankState.loading);
+  updateSkillsBankSearchResults(instanceId);
+}
+
+async function loadSkillsBankCatalog(instanceId, { force = false } = {}) {
+  if (!instanceId) return;
+  const bankState = getSkillsBankState(instanceId);
+  if (bankState.loading || (bankState.categories.length && bankState.loadedForInstanceId === instanceId && !force)) return;
+  bankState.loading = true;
+  bankState.instanceId = instanceId;
+  renderSkillsBankModal(instanceId);
+  try {
+    const payload = await fetchJson(`/admin/skills-bank?instance_id=${encodeURIComponent(instanceId)}`);
+    bankState.categories = payload.categories || [];
+    bankState.loadedForInstanceId = instanceId;
+    setSkillsBankStatus(instanceId, "success", `Loaded ${payload.total || 0} curated skills.`);
+  } catch (error) {
+    setSkillsBankStatus(instanceId, "error", `Unable to load Skills Bank: ${error.message}`);
+  } finally {
+    bankState.loading = false;
+    renderSkillsBankModal(instanceId);
+  }
+}
+
+async function openSkillsBankModal(instanceId) {
+  if (!instanceId) return;
+  const bankState = getSkillsBankState(instanceId);
+  bankState.open = true;
+  bankState.instanceId = instanceId;
+  bankState.status = { type: "", message: "" };
+  state.skillsBankModal = { open: true, instanceId };
+  const modal = document.getElementById("skills-bank-modal");
+  if (!modal) return;
+  modal.classList.remove("is-hidden");
+  modal.onclick = (event) => {
+    if (event.target === modal) {
+      closeSkillsBankModal();
+    }
+  };
+  document.getElementById("skills-bank-modal-close")?.addEventListener("click", closeSkillsBankModal, { once: true });
+  renderSkillsBankModal(instanceId);
+  await loadSkillsBankCatalog(instanceId);
+}
+
+async function handleSkillsBankImport(instanceId, bankSkillId) {
+  if (!instanceId || !bankSkillId) return;
+  const bankState = getSkillsBankState(instanceId);
+  const busyKey = `skills-bank-import:${instanceId}:${bankSkillId}`;
+  state.busyKey = busyKey;
+  bankState.importingSkillId = bankSkillId;
+  setSkillsBankStatus(instanceId, "info", "Importing selected skill…");
+  renderSkillsBankModal(instanceId);
+  try {
+    const result = await postJson(`/admin/instances/${encodeURIComponent(instanceId)}/skills/bank/import`, {
+      bank_skill_id: bankSkillId,
+    });
+    await loadInstanceSkills(instanceId, { force: true });
+    if (result.skill_name) {
+      handleSkillSelect(instanceId, result.skill_name);
+    }
+    await loadSkillsBankCatalog(instanceId, { force: true });
+    setSkillsBankStatus(instanceId, "success", `${result.display_name || result.skill_name} imported into this instance.`);
+    renderSkillsBankModal(instanceId);
+    clearBanner();
+  } catch (error) {
+    setSkillsBankStatus(instanceId, "error", `Unable to import skill: ${error.message}`);
+  } finally {
+    bankState.importingSkillId = "";
+    state.busyKey = "";
+    renderSelectedInstanceSkills(selectedInstance());
+    renderSkillsBankModal(instanceId);
   }
 }
 
