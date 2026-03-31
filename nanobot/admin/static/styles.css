@@ -719,6 +719,11 @@ button {
   display: block;
 }
 
+.connector-mark-insightdoc img {
+  width: 38px;
+  height: auto;
+}
+
 .connector-mark-github {
   background: rgba(17, 24, 39, 0.06);
   color: #111827;
@@ -742,6 +747,14 @@ button {
 .connector-mark-insightdoc {
   background: rgba(39, 134, 194, 0.08);
   color: var(--brand-blue);
+}
+
+.connector-title-insight {
+  color: var(--fg-primary);
+}
+
+.connector-title-doc {
+  color: #f3903f;
 }
 
 .connector-mark-linkedin {
@@ -797,6 +810,10 @@ button {
 .connector-card-heading h4 {
   margin: 0;
   font-size: 18px;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0;
+  letter-spacing: -0.02em;
 }
 
 .connector-card-meta p {

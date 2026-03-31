@@ -118,6 +118,7 @@ const CONNECTOR_ICON_MARKUP = {
 const CONNECTOR_IMAGE_ASSET_MAP = {
   github: "/docs/images/Connectors/icons8-github-logo-48.png",
   gmail: "/docs/images/Connectors/icons8-gmail-logo-48.png",
+  insightdoc: "/docs/images/Logo Softnix.png",
   notion: "/docs/images/Connectors/icons8-notion-48.png",
   instagram: "/docs/images/Connectors/icons8-instagram-logo-48.png",
   calendar: "/docs/images/Connectors/icons8-google-calendar-48.png",
@@ -2919,6 +2920,7 @@ function renderSelectedInstanceConnectors(instance) {
     {
       id: "insightdoc",
       name: insightdocPreset.display_name || "InsightDOC",
+      titleMarkup: '<span class="connector-title-insight">Insight</span><span class="connector-title-doc">DOC</span>',
       description: insightdocPreset.description || "Install an InsightDOC connector preset.",
       status: insightdocConnected ? "Connected" : "Not Connected",
       connected: insightdocConnected,
@@ -3020,7 +3022,7 @@ function renderSelectedInstanceConnectors(instance) {
           <div class="connector-mark ${connector.accentClass}" aria-hidden="true">${connector.iconMarkup || escapeHtml(connector.icon || "")}</div>
           <div class="connector-card-meta">
             <div class="row-between connector-card-heading">
-              <h4>${escapeHtml(connector.name)}</h4>
+              <h4>${connector.titleMarkup || escapeHtml(connector.name)}</h4>
               <span class="connector-status ${connector.connected ? "is-connected" : connector.available ? "is-disconnected" : "is-coming-soon"}">
                 <span class="connector-status-dot"></span>
                 ${escapeHtml(connector.status)}
