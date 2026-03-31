@@ -6,6 +6,7 @@ import json
 import shutil
 import re
 import socket
+import subprocess
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -170,6 +171,18 @@ def _collect_known_gateway_ports(
     return used
 
 
+def _is_tcp_port_available(port: int) -> bool:
+    """Return True when a TCP port can be bound on this host."""
+    port = _validate_gateway_port(port)
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            sock.bind(("0.0.0.0", port))
+    except OSError:
+        return False
+    return True
+
+
 def _normalize_runtime_mode(value: str | None, *, default: str = "sandbox") -> str:
     normalized = str(value or default).strip().lower()
     if normalized not in {"host", "sandbox"}:
@@ -302,7 +315,7 @@ def _instance_container_name(instance_id: str) -> str:
 
 def _next_available_gateway_port(used_ports: set[int], start: int = _DEFAULT_GATEWAY_PORT) -> int:
     candidate = max(start, 1)
-    while candidate <= 65535 and candidate in used_ports:
+    while candidate <= 65535 and (candidate in used_ports or not _is_tcp_port_available(candidate)):
         candidate += 1
     if candidate > 65535:
         raise ValueError("No available Gateway Port found in range 1-65535")
@@ -313,7 +326,7 @@ def _resolve_gateway_port(*, desired: int | None, used_ports: set[int], strict: 
     if desired is None:
         desired = _DEFAULT_GATEWAY_PORT
     port = _validate_gateway_port(desired)
-    if port not in used_ports:
+    if port not in used_ports and _is_tcp_port_available(port):
         return port
     if strict:
         raise ValueError(f"Gateway Port {port} is already used by another instance")
@@ -710,8 +723,17 @@ def delete_softnix_instance(
         raise ValueError(f"Unknown instance '{instance_id}'")
 
     instance_home = Path(entry.get("instance_home") or "").expanduser()
+    container_name = _instance_container_name(instance_id)
     registry["instances"] = [item for item in registry["instances"] if item.get("id") != instance_id]
     save_instances_registry(registry_path, registry)
+
+    if shutil.which("docker"):
+        subprocess.run(
+            ["docker", "rm", "-f", container_name],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
 
     if purge_files and instance_home.exists():
         shutil.rmtree(instance_home)

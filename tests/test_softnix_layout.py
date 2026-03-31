@@ -5,6 +5,7 @@ import pytest
 
 from nanobot.admin.layout import (
     bootstrap_softnix_instance,
+    delete_softnix_instance,
     get_softnix_registry_path,
     update_softnix_instance,
 )
@@ -290,6 +291,75 @@ def test_bootstrap_softnix_instance_skips_ports_bound_by_other_processes(tmp_pat
 
     start_script = (result["instance_home"] / "scripts" / "start.sh").read_text(encoding="utf-8")
     assert 'PORT="18791"' in start_script
+
+
+def test_update_softnix_instance_skips_ports_bound_by_other_processes(tmp_path, monkeypatch) -> None:
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    base_dir = tmp_path / ".softnix"
+
+    result = bootstrap_softnix_instance(
+        instance_id="acme-prod",
+        name="Acme Production",
+        owner="acme",
+        env="prod",
+        nanobot_bin="/opt/anaconda3/bin/nanobot",
+        repo_root=repo_root,
+        base_dir=base_dir,
+    )
+
+    from nanobot.admin import layout as layout_module
+
+    monkeypatch.setattr(
+        layout_module,
+        "_is_tcp_port_available",
+        lambda port: port != 18791,
+    )
+
+    updated = update_softnix_instance(
+        registry_path=result["registry_path"],
+        instance_id="acme-prod",
+        gateway_port=18791,
+    )
+
+    assert updated["gateway_port"] == 18792
+    config = json.loads((result["instance_home"] / "config.json").read_text(encoding="utf-8"))
+    assert config["gateway"]["port"] == 18792
+
+
+def test_delete_softnix_instance_removes_stale_sandbox_container(tmp_path, monkeypatch) -> None:
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    base_dir = tmp_path / ".softnix"
+
+    result = bootstrap_softnix_instance(
+        instance_id="acme-prod",
+        name="Acme Production",
+        owner="acme",
+        env="prod",
+        nanobot_bin="/opt/anaconda3/bin/nanobot",
+        repo_root=repo_root,
+        base_dir=base_dir,
+    )
+
+    from nanobot.admin import layout as layout_module
+
+    calls: list[list[str]] = []
+
+    monkeypatch.setattr(layout_module.shutil, "which", lambda name: "/usr/bin/docker" if name == "docker" else None)
+
+    def _fake_run(args, **kwargs):
+        calls.append(list(args))
+        return None
+
+    monkeypatch.setattr(layout_module.subprocess, "run", _fake_run)
+
+    delete_softnix_instance(
+        registry_path=result["registry_path"],
+        instance_id="acme-prod",
+    )
+
+    assert calls == [["docker", "rm", "-f", "softnix-acme-prod-gateway"]]
 
 
 def test_bootstrap_softnix_instance_rejects_source_config_equal_to_target(tmp_path) -> None:
