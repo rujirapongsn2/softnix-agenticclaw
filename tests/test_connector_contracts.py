@@ -7,7 +7,7 @@ from typing import Any, Callable
 import httpx
 import pytest
 
-from nanobot.admin.connectors import build_gmail_stdio_server_config, get_connector_preset, list_connector_presets
+from nanobot.admin.connectors import build_gmail_stdio_server_config, build_insightdoc_stdio_server_config, get_connector_preset, list_connector_presets
 from nanobot.admin.service import AdminService
 from nanobot.config.loader import load_config, save_config
 from nanobot.config.schema import Config, MCPServerConfig
@@ -189,7 +189,17 @@ def _gmail_seed_saved_config(config_path: Path) -> None:
 
 def _patch_gmail_validate_success(monkeypatch: pytest.MonkeyPatch) -> None:
     class DummyGmailClient:
-        def __init__(self, *, token: str, api_base: str, user_id: str) -> None:
+        def __init__(
+            self,
+            *,
+            token: str,
+            api_base: str,
+            user_id: str,
+            refresh_token: str = "",
+            client_id: str = "",
+            client_secret: str = "",
+            token_uri: str = "",
+        ) -> None:
             self.token = token
             self.api_base = api_base
             self.user_id = user_id
@@ -208,7 +218,17 @@ def _patch_gmail_validate_success(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def _patch_gmail_validate_failure(monkeypatch: pytest.MonkeyPatch) -> None:
     class DummyGmailClient:
-        def __init__(self, *, token: str, api_base: str, user_id: str) -> None:
+        def __init__(
+            self,
+            *,
+            token: str,
+            api_base: str,
+            user_id: str,
+            refresh_token: str = "",
+            client_id: str = "",
+            client_secret: str = "",
+            token_uri: str = "",
+        ) -> None:
             self.token = token
             self.api_base = api_base
             self.user_id = user_id
@@ -225,6 +245,106 @@ def _patch_gmail_validate_failure(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def _gmail_validate(service: AdminService) -> dict[str, Any]:
     return service.validate_gmail_connector(
+        instance_id="default",
+        token="",
+    )
+
+
+def _insightdoc_install(service: AdminService) -> dict[str, Any]:
+    return service.install_insightdoc_connector(
+        instance_id="default",
+        token="sid_pat_example",
+        api_base_url="https://127.0.0.1/api/v1",
+        external_base_url="https://127.0.0.1/api/v1/external",
+        default_job_name="Invoice Batch",
+        default_schema_id="schema-1",
+        default_integration_name="Comply TOR",
+        curl_insecure=True,
+    )
+
+
+def _insightdoc_seed_saved_config(config_path: Path) -> None:
+    config = load_config(config_path)
+    config.tools.mcp_servers["insightdoc"] = MCPServerConfig.model_validate(
+        build_insightdoc_stdio_server_config(
+            token="sid_pat_saved",
+            api_base_url="https://127.0.0.1/api/v1",
+            external_base_url="https://127.0.0.1/api/v1/external",
+            default_job_name="Invoice Batch",
+            default_schema_id="schema-1",
+            default_integration_name="Comply TOR",
+            curl_insecure=True,
+        )
+    )
+    save_config(config, config_path)
+
+
+def _patch_insightdoc_validate_success(monkeypatch: pytest.MonkeyPatch) -> None:
+    class DummyInsightDOCClient:
+        def __init__(
+            self,
+            *,
+            token: str,
+            api_base: str,
+            external_base_url: str,
+            default_job_name: str,
+            default_schema_id: str,
+            default_integration_name: str,
+            curl_insecure: bool,
+        ) -> None:
+            self.token = token
+            self.api_base = api_base
+            self.external_base_url = external_base_url
+            self.default_job_name = default_job_name
+            self.default_schema_id = default_schema_id
+            self.default_integration_name = default_integration_name
+            self.curl_insecure = curl_insecure
+
+        def list_jobs(self) -> dict[str, list[dict[str, str]]]:
+            return {"jobs": [{"id": "job-1"}]}
+
+        def list_schemas(self) -> dict[str, list[dict[str, str]]]:
+            return {"schemas": [{"id": "schema-1", "name": "Invoice Batch"}]}
+
+        def list_integrations(self) -> dict[str, list[dict[str, str]]]:
+            return {"integrations": [{"id": "integration-1", "name": "Comply TOR"}]}
+
+    monkeypatch.setattr("nanobot.admin.service.InsightDOCClient", DummyInsightDOCClient)
+
+
+def _patch_insightdoc_validate_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    class DummyInsightDOCClient:
+        def __init__(
+            self,
+            *,
+            token: str,
+            api_base: str,
+            external_base_url: str,
+            default_job_name: str,
+            default_schema_id: str,
+            default_integration_name: str,
+            curl_insecure: bool,
+        ) -> None:
+            self.token = token
+            self.api_base = api_base
+            self.external_base_url = external_base_url
+            self.default_job_name = default_job_name
+            self.default_schema_id = default_schema_id
+            self.default_integration_name = default_integration_name
+            self.curl_insecure = curl_insecure
+
+        def list_jobs(self) -> dict[str, list[dict[str, str]]]:
+            raise httpx.HTTPStatusError(
+                "unauthorized",
+                request=httpx.Request("GET", "https://127.0.0.1/api/v1/external/jobs"),
+                response=httpx.Response(401),
+            )
+
+    monkeypatch.setattr("nanobot.admin.service.InsightDOCClient", DummyInsightDOCClient)
+
+
+def _insightdoc_validate(service: AdminService) -> dict[str, Any]:
+    return service.validate_insightdoc_connector(
         instance_id="default",
         token="",
     )
@@ -260,6 +380,24 @@ CONNECTOR_CONTRACTS: tuple[ConnectorContract, ...] = (
         patch_validate_success=_patch_gmail_validate_success,
         patch_validate_failure=_patch_gmail_validate_failure,
         validate=_gmail_validate,
+    ),
+    ConnectorContract(
+        name="insightdoc",
+        runtime_script_name="insightdoc_mcp_server.py",
+        expected_env_keys=(
+            "INSIGHTOCR_API_TOKEN",
+            "INSIGHTOCR_API_BASE_URL",
+            "INSIGHTOCR_EXTERNAL_BASE_URL",
+            "INSIGHTOCR_DEFAULT_JOB_NAME",
+            "INSIGHTOCR_DEFAULT_SCHEMA_ID",
+            "INSIGHTOCR_DEFAULT_INTEGRATION_NAME",
+            "CURL_INSECURE",
+        ),
+        install=_insightdoc_install,
+        seed_saved_config=_insightdoc_seed_saved_config,
+        patch_validate_success=_patch_insightdoc_validate_success,
+        patch_validate_failure=_patch_insightdoc_validate_failure,
+        validate=_insightdoc_validate,
     ),
 )
 

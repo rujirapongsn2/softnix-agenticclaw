@@ -111,6 +111,7 @@ const CONNECTOR_ICON_MARKUP = {
   reddit: `<svg viewBox="0 0 24 24" aria-hidden="true" fill="none"><path d="M20.2 12.8c0 3.7-3.7 6.7-8.2 6.7s-8.2-3-8.2-6.7S7.5 6.1 12 6.1s8.2 3 8.2 6.7Z" stroke="currentColor" stroke-width="1.7"/><path d="M8.8 13.7c.5.4 1.2.7 3.2.7s2.7-.3 3.2-.7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><circle cx="9.3" cy="11.3" r="1" fill="currentColor"/><circle cx="14.7" cy="11.3" r="1" fill="currentColor"/><path d="M14.4 8.2 15 5.8l2.7.7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><circle cx="18.2" cy="6.2" r="1" fill="currentColor"/></svg>`,
   tiktok: `<svg viewBox="0 0 24 24" aria-hidden="true" fill="currentColor"><path d="M15.1 3.5c.7 1.7 2 2.9 3.7 3.1v3.1c-1.3 0-2.7-.4-3.7-1.1v5.3c0 3.3-2.6 6-5.9 6-2.1 0-4-1.1-5.1-2.9-.7-1.1-1-2.3-1-3.6 0-3.8 3-6.8 6.8-6.8.3 0 .6 0 .9.1v3.3c-.2-.1-.5-.1-.8-.1-1.9 0-3.5 1.5-3.5 3.4 0 .7.2 1.4.6 2 .6 1 1.7 1.6 2.9 1.6 1.8 0 3.3-1.5 3.3-3.3V3.5h2.8Z"/></svg>`,
   x: `<svg viewBox="0 0 24 24" aria-hidden="true" fill="currentColor"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>`,
+  insightdoc: `<svg viewBox="0 0 24 24" aria-hidden="true" fill="none"><path d="M6 4.75h8.2L18 8.55v10.7H6V4.75Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M14.2 4.75v3.8H18" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M8.2 11h7.6M8.2 14h7.6M8.2 17h5.1" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>`,
   custom: `<svg viewBox="0 0 24 24" aria-hidden="true" fill="none"><path d="M12 2.7 19 6.8v8.4L12 19.3 5 15.2V6.8L12 2.7Z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M12 7.3v9.4M7.9 9.6l4.1-2.3 4.1 2.3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
 };
 
@@ -2843,9 +2844,17 @@ function renderSelectedInstanceConnectors(instance) {
     skill_name: "gmail-connector",
     server_name: "gmail",
   };
+  const insightdocPreset = getConnectorPreset("insightdoc") || {
+    name: "insightdoc",
+    display_name: "InsightDOC",
+    description: "Install an InsightDOC connector preset.",
+    skill_name: "insightdoc-connector",
+    server_name: "insightdoc",
+  };
   const githubServer = servers.find((server) => server.name === githubPreset.server_name || server.name === githubPreset.name) || null;
   const notionServer = servers.find((server) => server.name === notionPreset.server_name || server.name === notionPreset.name) || null;
   const gmailServer = servers.find((server) => server.name === gmailPreset.server_name || server.name === gmailPreset.name) || null;
+  const insightdocServer = servers.find((server) => server.name === insightdocPreset.server_name || server.name === insightdocPreset.name) || null;
   const githubStatus = String(
     state.connectorStatusByInstance[`${instance.id}:github`]
       || githubServer?.status
@@ -2864,9 +2873,16 @@ function renderSelectedInstanceConnectors(instance) {
       || gmailServer?.connector_status
       || "",
   ).trim() || "pending";
+  const insightdocStatus = String(
+    state.connectorStatusByInstance[`${instance.id}:insightdoc`]
+      || insightdocServer?.status
+      || insightdocServer?.connector_status
+      || "",
+  ).trim() || "pending";
   const githubConnected = githubStatus === "connected";
   const notionConnected = notionStatus === "connected";
   const gmailConnected = gmailStatus === "connected";
+  const insightdocConnected = insightdocStatus === "connected";
   const searchValue = state.connectorSearchByInstance[instance.id] || "";
   const searchTerm = searchValue.trim().toLowerCase();
   const connectorCatalog = [
@@ -2899,6 +2915,16 @@ function renderSelectedInstanceConnectors(instance) {
       available: true,
       iconMarkup: renderConnectorIconMarkup("gmail", "Gmail"),
       accentClass: "connector-mark-gmail",
+    },
+    {
+      id: "insightdoc",
+      name: insightdocPreset.display_name || "InsightDOC",
+      description: insightdocPreset.description || "Install an InsightDOC connector preset.",
+      status: insightdocConnected ? "Connected" : "Not Connected",
+      connected: insightdocConnected,
+      available: true,
+      iconMarkup: renderConnectorIconMarkup("insightdoc", "InsightDOC"),
+      accentClass: "connector-mark-insightdoc",
     },
     {
       id: "linkedin",
@@ -3098,6 +3124,19 @@ function buildGmailConnectorPayload(instanceId) {
   };
 }
 
+function buildInsightdocConnectorPayload(instanceId) {
+  return {
+    instance_id: instanceId,
+    token: document.getElementById("connector-insightdoc-token")?.value ?? "",
+    api_base_url: document.getElementById("connector-insightdoc-api-base-url")?.value ?? "",
+    external_base_url: document.getElementById("connector-insightdoc-external-base-url")?.value ?? "",
+    default_job_name: document.getElementById("connector-insightdoc-default-job-name")?.value ?? "",
+    default_schema_id: document.getElementById("connector-insightdoc-default-schema-id")?.value ?? "",
+    default_integration_name: document.getElementById("connector-insightdoc-default-integration-name")?.value ?? "",
+    curl_insecure: document.getElementById("connector-insightdoc-curl-insecure")?.checked ?? false,
+  };
+}
+
 function parseGmailTokenJson(rawText) {
   const text = String(rawText || "").trim();
   if (!text) {
@@ -3186,6 +3225,11 @@ function connectorMaskNotionToken(instance) {
 function connectorMaskGmailToken(instance) {
   const env = instance?.mcp?.servers?.find((server) => server.name === "gmail")?.env || {};
   return env.GMAIL_TOKEN ? `••••${String(env.GMAIL_TOKEN).slice(-4)}` : "";
+}
+
+function connectorMaskInsightdocToken(instance) {
+  const env = instance?.mcp?.servers?.find((server) => server.name === "insightdoc")?.env || {};
+  return env.INSIGHTOCR_API_TOKEN ? `••••${String(env.INSIGHTOCR_API_TOKEN).slice(-4)}` : "";
 }
 
 function renderConnectorModal() {
@@ -3395,6 +3439,66 @@ function renderConnectorModal() {
     });
     return;
   }
+  if (connectorId === "insightdoc") {
+    const insightdocServer = instance?.mcp?.servers?.find((server) => server.name === "insightdoc") || null;
+    const currentEnv = insightdocServer?.env || {};
+    titleEl.textContent = "InsightDOC Connector Settings";
+    body.innerHTML = `
+      <div class="stack connector-modal-stack">
+        <p class="meta">Configure the InsightDOC connector for instance <strong>${escapeHtml(instance?.name || instanceId)}</strong>.</p>
+        <div id="connector-modal-status" class="connector-modal-status is-hidden" role="status" aria-live="polite"></div>
+        <p class="meta connector-guide-note">
+          Use the default API values unless your InsightDOC deployment runs elsewhere. The connector uses the external workflow API for jobs, documents, OCR, review, and integration dispatch.
+        </p>
+        <div class="field">
+          <label for="connector-insightdoc-token">InsightDOC API Token</label>
+          <input id="connector-insightdoc-token" type="password" autocomplete="off" placeholder="${escapeHtml(connectorMaskInsightdocToken(instance) || "sid_pat_...")}" value="">
+        </div>
+        <div class="field">
+          <label for="connector-insightdoc-api-base-url">API Base URL</label>
+          <input id="connector-insightdoc-api-base-url" type="text" placeholder="https://127.0.0.1/api/v1" value="${escapeHtml(currentEnv.INSIGHTOCR_API_BASE_URL || "https://127.0.0.1/api/v1")}">
+        </div>
+        <div class="field">
+          <label for="connector-insightdoc-external-base-url">External API Base URL</label>
+          <input id="connector-insightdoc-external-base-url" type="text" placeholder="https://127.0.0.1/api/v1/external" value="${escapeHtml(currentEnv.INSIGHTOCR_EXTERNAL_BASE_URL || "https://127.0.0.1/api/v1/external")}">
+        </div>
+        <details class="connector-guide-accordion">
+          <summary>Advanced defaults</summary>
+          <div class="connector-guide-accordion-body">
+            <p class="meta" style="margin:0 0 10px">Optional defaults used when the agent omits a job, schema, or integration name.</p>
+            <div class="field">
+              <label for="connector-insightdoc-default-job-name">Default Job Name</label>
+              <input id="connector-insightdoc-default-job-name" type="text" autocomplete="off" placeholder="Agent Batch" value="${escapeHtml(currentEnv.INSIGHTOCR_DEFAULT_JOB_NAME || "")}">
+            </div>
+            <div class="field">
+              <label for="connector-insightdoc-default-schema-id">Default Schema ID</label>
+              <input id="connector-insightdoc-default-schema-id" type="text" autocomplete="off" placeholder="schema-id" value="${escapeHtml(currentEnv.INSIGHTOCR_DEFAULT_SCHEMA_ID || "")}">
+            </div>
+            <div class="field">
+              <label for="connector-insightdoc-default-integration-name">Default Integration Name</label>
+              <input id="connector-insightdoc-default-integration-name" type="text" autocomplete="off" placeholder="Integration Name" value="${escapeHtml(currentEnv.INSIGHTOCR_DEFAULT_INTEGRATION_NAME || "")}">
+            </div>
+            <label class="field field-inline">
+              <input id="connector-insightdoc-curl-insecure" type="checkbox" ${String(currentEnv.CURL_INSECURE || "true").toLowerCase() !== "false" ? "checked" : ""}>
+              <span>Allow insecure TLS for localhost or self-signed certificates</span>
+            </label>
+          </div>
+        </details>
+        <p class="meta">Leave token blank to keep the current saved token.</p>
+        <div class="modal-footer-actions">
+          <div class="inline-actions" style="margin-left:auto">
+            <button class="secondary-button" id="connector-modal-cancel-btn" ${busy ? "disabled" : ""}>Cancel</button>
+            <button class="secondary-button" id="connector-modal-validate-btn" ${busy ? "disabled" : ""}>Validate</button>
+            <button class="primary-button" id="connector-modal-save-btn" ${busy ? "disabled" : ""}>Save</button>
+          </div>
+        </div>
+      </div>
+    `;
+    document.getElementById("connector-modal-cancel-btn")?.addEventListener("click", closeConnectorSettings);
+    document.getElementById("connector-modal-save-btn")?.addEventListener("click", () => void handleInsightdocConnectorInstall(instanceId));
+    document.getElementById("connector-modal-validate-btn")?.addEventListener("click", () => void handleInsightdocConnectorValidate(instanceId));
+    return;
+  }
   titleEl.textContent = "Custom MCP Settings";
   const server = instance?.mcp?.servers?.[0] || {};
   const serverArgs = Array.isArray(server.args) ? server.args : [];
@@ -3464,6 +3568,10 @@ async function handleConnectorModalSave() {
     await handleGmailConnectorInstall(ctx.instanceId);
     return;
   }
+  if (ctx.connectorId === "insightdoc") {
+    await handleInsightdocConnectorInstall(ctx.instanceId);
+    return;
+  }
   await handleConnectorModalMcpSave(ctx.instanceId);
 }
 
@@ -3480,6 +3588,10 @@ async function handleConnectorModalValidate() {
   }
   if (ctx.connectorId === "gmail") {
     await handleGmailConnectorValidate(ctx.instanceId);
+    return;
+  }
+  if (ctx.connectorId === "insightdoc") {
+    await handleInsightdocConnectorValidate(ctx.instanceId);
     return;
   }
   await handleConnectorModalMcpValidate(ctx.instanceId);
@@ -3600,6 +3712,46 @@ async function handleGmailConnectorValidate(instanceId) {
   } catch (error) {
     state.connectorStatusByInstance[`${instanceId}:gmail`] = "error";
     setConnectorModalStatus(`Unable to validate Gmail connector: ${error.message}`, "error");
+  } finally {
+    setConnectorModalBusy(false);
+  }
+}
+
+async function handleInsightdocConnectorInstall(instanceId) {
+  const payload = buildInsightdocConnectorPayload(instanceId);
+  setConnectorModalBusy(true);
+  try {
+    const installResult = await postJson("/admin/connectors/insightdoc/install", payload);
+    const validationResult = await postJson("/admin/connectors/insightdoc/validate", payload);
+    state.connectorStatusByInstance[`${instanceId}:insightdoc`] = validationResult.status === "ok" ? "connected" : "error";
+    setConnectorModalStatus(formatValidationMessage("InsightDOC connector", validationResult), validationResult.status === "ok" ? "success" : "error");
+    await loadDashboard();
+    if (validationResult.status === "ok") {
+      await promptConnectorRestartAfterSave(installResult.instance || selectedInstance(), "InsightDOC connector", `Server '${installResult.server_name || "insightdoc"}' is ready.`);
+    }
+  } catch (error) {
+    setBanner(`Unable to install InsightDOC connector: ${error.message}`, "error");
+  } finally {
+    setConnectorModalBusy(false);
+  }
+}
+
+async function handleInsightdocConnectorValidate(instanceId) {
+  const payload = buildInsightdocConnectorPayload(instanceId);
+  setConnectorModalBusy(true);
+  try {
+    const result = await postJson("/admin/connectors/insightdoc/validate", payload);
+    const bannerType = result.status === "error" ? "error" : result.status === "warning" ? "warning" : "success";
+    setConnectorModalStatus(formatValidationMessage("InsightDOC connector", result), bannerType);
+    state.connectorStatusByInstance[`${instanceId}:insightdoc`] = result.status === "ok" ? "connected" : "error";
+    await loadDashboard();
+    const selected = selectedInstance();
+    if (selected && selected.id === instanceId) {
+      renderSelectedInstanceConnectors(selected);
+    }
+  } catch (error) {
+    state.connectorStatusByInstance[`${instanceId}:insightdoc`] = "error";
+    setConnectorModalStatus(`Unable to validate InsightDOC connector: ${error.message}`, "error");
   } finally {
     setConnectorModalBusy(false);
   }

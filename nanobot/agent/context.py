@@ -62,8 +62,17 @@ Skills with available="false" need dependencies installed first - you can try in
         available = set(self.skills.get_always_skills())
         routing_lines = ["# Connector Routing", ""]
         has_any = False
+        if "insightdoc-connector" in available:
+            routing_lines.append("- Use the InsightDOC connector for job, document upload, OCR, review, confirmation, rejection, and integration dispatch tasks.")
+            routing_lines.append("- If the task is about document workflows, InsightDOC wins even if GitHub, Gmail, or Notion are also installed.")
+            has_any = True
         if "notion-connector" in available:
             routing_lines.append("- Use the Notion connector for any Notion page, database, workspace, or content-reading question.")
+            has_any = True
+        if "gmail-connector" in available:
+            routing_lines.append("- Use the Gmail connector for any email, inbox search, message, thread, attachment, sender, recipient, label, or mailbox question.")
+            routing_lines.append("- If the task is about email, Gmail wins even if GitHub or Notion are also installed.")
+            routing_lines.append("- Never route email or inbox questions to the GitHub connector.")
             has_any = True
         if "github-connector" in available:
             routing_lines.append("- Use the GitHub connector for any repository, issue, pull request, workflow, or commit question.")

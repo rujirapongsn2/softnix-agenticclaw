@@ -47,8 +47,12 @@ def test_system_prompt_includes_connector_routing_rules(tmp_path) -> None:
     prompt = builder.build_system_prompt()
 
     assert "# Connector Routing" in prompt
+    assert "Use the InsightDOC connector" in prompt
     assert "Use the Notion connector" in prompt
     assert "Use the GitHub connector" in prompt
+    assert "Use the Gmail connector" in prompt
+    assert "Gmail wins" in prompt
+    assert "Never route email or inbox questions to the GitHub connector." in prompt
 
 
 def test_runtime_context_is_separate_untrusted_user_message(tmp_path) -> None:

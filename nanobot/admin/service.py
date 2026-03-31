@@ -54,12 +54,19 @@ from nanobot.admin.auth_store import AdminAuthStore
 from nanobot.admin.connectors import (
     GMAIL_CONNECTOR_PRESET,
     GITHUB_CONNECTOR_PRESET,
+    INSIGHTDOC_CONNECTOR_PRESET,
     NOTION_CONNECTOR_PRESET,
     build_gmail_stdio_server_config,
     build_github_stdio_server_config,
+    build_insightdoc_stdio_server_config,
     build_notion_stdio_server_config,
     get_connector_preset,
     list_connector_presets as list_built_in_connector_presets,
+)
+from nanobot.admin.skills_bank import (
+    build_skill_bank_archive,
+    list_skill_bank_catalog,
+    resolve_skill_bank_entry,
 )
 from nanobot.admin.layout import (
     bootstrap_softnix_instance,
@@ -81,6 +88,11 @@ from nanobot.session.manager import SessionManager
 from nanobot.utils.helpers import sync_workspace_templates
 from nanobot.integrations.github_mcp_server import GitHubClient
 from nanobot.integrations.gmail_mcp_server import GMAIL_API_BASE_DEFAULT, GMAIL_WRITE_SCOPES, GmailClient
+from nanobot.integrations.insightdoc_mcp_server import (
+    INSIGHTDOC_API_BASE_DEFAULT,
+    INSIGHTDOC_EXTERNAL_BASE_DEFAULT,
+    InsightDOCClient,
+)
 from nanobot.integrations.notion_mcp_server import NOTION_API_BASE_DEFAULT, NotionClient, normalize_notion_target_id
 
 
@@ -140,6 +152,10 @@ def _ensure_gmail_connector_runtime_script(target: "InstanceTarget") -> Path:
     return _ensure_connector_runtime_script(target, "gmail_mcp_server.py")
 
 
+def _ensure_insightdoc_connector_runtime_script(target: "InstanceTarget") -> Path:
+    return _ensure_connector_runtime_script(target, "insightdoc_mcp_server.py")
+
+
 def _file_mode(path: Path) -> str | None:
     try:
         return oct(path.stat().st_mode & 0o777)
@@ -162,6 +178,35 @@ def _normalize_optional_int(value: Any, *, field_name: str) -> int | None:
         return int(value)
     except (TypeError, ValueError) as exc:
         raise ValueError(f"{field_name} must be an integer") from exc
+
+
+def _extract_list_items(payload: Any, keys: tuple[str, ...]) -> list[dict[str, Any]]:
+    if isinstance(payload, list):
+        return [item for item in payload if isinstance(item, dict)]
+    if isinstance(payload, dict):
+        for key in keys:
+            value = payload.get(key)
+            if isinstance(value, list):
+                return [item for item in value if isinstance(item, dict)]
+    return []
+
+
+def _find_named_item(
+    payload: Any,
+    needle: str,
+    *,
+    list_keys: tuple[str, ...],
+    field_keys: tuple[str, ...],
+) -> dict[str, Any] | None:
+    normalized = str(needle or "").strip().lower()
+    if not normalized:
+        return None
+    for item in _extract_list_items(payload, list_keys):
+        for key in field_keys:
+            candidate = str(item.get(key) or "").strip().lower()
+            if candidate and candidate == normalized:
+                return item
+    return None
 
 
 def _truncate_text(value: Any, limit: int = 500) -> str:
@@ -2603,6 +2648,309 @@ class AdminService:
         )
         return response
 
+    def install_insightdoc_connector(
+        self,
+        *,
+        instance_id: str,
+        token: str,
+        api_base_url: str | None = None,
+        external_base_url: str | None = None,
+        default_job_name: str | None = None,
+        default_schema_id: str | None = None,
+        default_integration_name: str | None = None,
+        curl_insecure: bool | None = None,
+        server_name: str | None = None,
+        accessible_instance_ids: set[str] | list[str] | tuple[str, ...] | None = None,
+    ) -> dict[str, Any]:
+        """Install the built-in InsightDOC connector preset into one instance."""
+        target = self._get_target(instance_id)
+        self._require_target_access(target, accessible_instance_ids)
+        preset = get_connector_preset(INSIGHTDOC_CONNECTOR_PRESET.name)
+        normalized_server_name = str(server_name or preset.server_name).strip() or preset.server_name
+        config = self._load_target_config(target)
+        existing_server = config.tools.mcp_servers.get(normalized_server_name)
+        existing_env = existing_server.env if existing_server is not None else {}
+        token_value = str(token or "").strip() or str(existing_env.get("INSIGHTOCR_API_TOKEN") or "").strip()
+        api_base_value = str(api_base_url or "").strip() or str(existing_env.get("INSIGHTOCR_API_BASE_URL") or "").strip() or INSIGHTDOC_API_BASE_DEFAULT
+        external_base_value = str(external_base_url or "").strip() or str(existing_env.get("INSIGHTOCR_EXTERNAL_BASE_URL") or "").strip() or INSIGHTDOC_EXTERNAL_BASE_DEFAULT
+        default_job_name_value = str(default_job_name or "").strip() or str(existing_env.get("INSIGHTOCR_DEFAULT_JOB_NAME") or "").strip()
+        default_schema_id_value = str(default_schema_id or "").strip() or str(existing_env.get("INSIGHTOCR_DEFAULT_SCHEMA_ID") or "").strip()
+        default_integration_name_value = str(default_integration_name or "").strip() or str(existing_env.get("INSIGHTOCR_DEFAULT_INTEGRATION_NAME") or "").strip()
+        curl_insecure_value = curl_insecure if curl_insecure is not None else str(existing_env.get("CURL_INSECURE") or "").strip().lower() in {"1", "true", "yes", "on"}
+        if not token_value:
+            raise ValueError("InsightDOC API token is required")
+        runtime_script = _ensure_insightdoc_connector_runtime_script(target)
+        config.tools.mcp_servers[normalized_server_name] = MCPServerConfig.model_validate(
+            build_insightdoc_stdio_server_config(
+                token=token_value,
+                api_base_url=api_base_value,
+                external_base_url=external_base_value,
+                default_job_name=default_job_name_value or None,
+                default_schema_id=default_schema_id_value or None,
+                default_integration_name=default_integration_name_value or None,
+                curl_insecure=curl_insecure_value,
+                script_path=str(runtime_script),
+            )
+        )
+        config.tools.mcp_servers[normalized_server_name].connector_status = "pending"
+        save_config(config, target.config_path)
+        workspace_path = target.workspace_path
+        if workspace_path.exists():
+            sync_workspace_templates(
+                workspace_path,
+                silent=True,
+                agent_name=target.name,
+                apply_identity=True,
+            )
+        self._append_audit_event(
+            instance_id=target.id,
+            event_type="connector.installed",
+            payload={
+                "connector": preset.name,
+                "server_name": normalized_server_name,
+                "skill_name": preset.skill_name,
+            },
+        )
+        return {
+            "instance": self._collect_instance(target),
+            "connector": preset.name,
+            "server_name": normalized_server_name,
+            "skill_name": preset.skill_name,
+        }
+
+    def validate_insightdoc_connector(
+        self,
+        *,
+        instance_id: str,
+        token: str,
+        api_base_url: str | None = None,
+        external_base_url: str | None = None,
+        default_job_name: str | None = None,
+        default_schema_id: str | None = None,
+        default_integration_name: str | None = None,
+        curl_insecure: bool | None = None,
+        server_name: str | None = None,
+        accessible_instance_ids: set[str] | list[str] | tuple[str, ...] | None = None,
+    ) -> dict[str, Any]:
+        """Validate the InsightDOC connector credential and optional defaults."""
+        target = self._get_target(instance_id)
+        self._require_target_access(target, accessible_instance_ids)
+        preset_server_name = str(server_name or INSIGHTDOC_CONNECTOR_PRESET.server_name).strip() or INSIGHTDOC_CONNECTOR_PRESET.server_name
+        token_value = str(token or "").strip()
+        if not token_value:
+            config = self._load_target_config(target)
+            server_config = config.tools.mcp_servers.get(preset_server_name)
+            if server_config is not None:
+                config_defaults = server_config.env or {}
+                token_value = str(config_defaults.get("INSIGHTOCR_API_TOKEN") or "").strip()
+                if not api_base_url:
+                    api_base_url = str(config_defaults.get("INSIGHTOCR_API_BASE_URL") or "").strip() or INSIGHTDOC_API_BASE_DEFAULT
+                if not external_base_url:
+                    external_base_url = str(config_defaults.get("INSIGHTOCR_EXTERNAL_BASE_URL") or "").strip() or INSIGHTDOC_EXTERNAL_BASE_DEFAULT
+                if not default_job_name:
+                    default_job_name = str(config_defaults.get("INSIGHTOCR_DEFAULT_JOB_NAME") or "").strip() or None
+                if not default_schema_id:
+                    default_schema_id = str(config_defaults.get("INSIGHTOCR_DEFAULT_SCHEMA_ID") or "").strip() or None
+                if not default_integration_name:
+                    default_integration_name = str(config_defaults.get("INSIGHTOCR_DEFAULT_INTEGRATION_NAME") or "").strip() or None
+                if curl_insecure is None:
+                    curl_insecure = str(config_defaults.get("CURL_INSECURE") or "").strip().lower() in {"1", "true", "yes", "on"}
+        if not token_value:
+            raise ValueError("InsightDOC API token is required")
+
+        client = InsightDOCClient(
+            token=token_value,
+            api_base=str(api_base_url or INSIGHTDOC_API_BASE_DEFAULT).strip() or INSIGHTDOC_API_BASE_DEFAULT,
+            external_base_url=str(external_base_url or INSIGHTDOC_EXTERNAL_BASE_DEFAULT).strip() or INSIGHTDOC_EXTERNAL_BASE_DEFAULT,
+            default_job_name=str(default_job_name or "").strip(),
+            default_schema_id=str(default_schema_id or "").strip(),
+            default_integration_name=str(default_integration_name or "").strip(),
+            curl_insecure=bool(curl_insecure),
+        )
+        findings: list[dict[str, Any]] = []
+        jobs_payload: Any | None = None
+        schemas_payload: Any | None = None
+        integrations_payload: Any | None = None
+
+        try:
+            jobs_payload = client.list_jobs()
+            job_count = len(_extract_list_items(jobs_payload, ("jobs", "items", "results")))
+            findings.append(
+                {
+                    "severity": "info",
+                    "code": "token_valid",
+                    "detail": f"Authenticated and {job_count} job record(s) are reachable.",
+                }
+            )
+        except httpx.HTTPStatusError as exc:
+            status = exc.response.status_code
+            if status in {401, 403}:
+                findings.append(
+                    {
+                        "severity": "error",
+                        "code": "invalid_token",
+                        "detail": "InsightDOC API token was rejected by the API.",
+                    }
+                )
+            else:
+                findings.append(
+                    {
+                        "severity": "error",
+                        "code": "insightdoc_api_error",
+                        "detail": f"InsightDOC validation failed with HTTP {status}.",
+                    }
+                )
+        except Exception as exc:
+            findings.append(
+                {
+                    "severity": "error",
+                    "code": "insightdoc_api_unreachable",
+                    "detail": str(exc),
+                }
+            )
+
+        if not any(item["severity"] == "error" for item in findings):
+            try:
+                schemas_payload = client.list_schemas()
+                schema_count = len(_extract_list_items(schemas_payload, ("schemas", "items", "results")))
+                findings.append(
+                    {
+                        "severity": "info",
+                        "code": "schemas_visible",
+                        "detail": f"{schema_count} schema(s) are reachable.",
+                    }
+                )
+            except httpx.HTTPStatusError as exc:
+                status = exc.response.status_code
+                findings.append(
+                    {
+                        "severity": "warning" if status == 404 else "error",
+                        "code": "schemas_unavailable" if status == 404 else "schemas_probe_failed",
+                        "detail": f"Schemas probe returned HTTP {status}.",
+                    }
+                )
+            except Exception as exc:
+                findings.append(
+                    {
+                        "severity": "error",
+                        "code": "schemas_probe_failed",
+                        "detail": str(exc),
+                    }
+                )
+
+        if not any(item["severity"] == "error" for item in findings):
+            try:
+                integrations_payload = client.list_integrations()
+                integration_count = len(_extract_list_items(integrations_payload, ("integrations", "items", "results")))
+                findings.append(
+                    {
+                        "severity": "info",
+                        "code": "integrations_visible",
+                        "detail": f"{integration_count} integration(s) are reachable.",
+                    }
+                )
+            except httpx.HTTPStatusError as exc:
+                status = exc.response.status_code
+                findings.append(
+                    {
+                        "severity": "warning" if status == 404 else "error",
+                        "code": "integrations_unavailable" if status == 404 else "integrations_probe_failed",
+                        "detail": f"Integrations probe returned HTTP {status}.",
+                    }
+                )
+            except Exception as exc:
+                findings.append(
+                    {
+                        "severity": "error",
+                        "code": "integrations_probe_failed",
+                        "detail": str(exc),
+                    }
+                )
+
+        if default_schema_id and not any(item["severity"] == "error" for item in findings):
+            schema_match = _find_named_item(
+                schemas_payload,
+                default_schema_id,
+                list_keys=("schemas", "items", "results"),
+                field_keys=("id", "name", "title", "code"),
+            )
+            if schema_match is not None:
+                findings.append(
+                    {
+                        "severity": "info",
+                        "code": "default_schema_visible",
+                        "detail": f"Schema {default_schema_id} is reachable.",
+                    }
+                )
+            else:
+                findings.append(
+                    {
+                        "severity": "warning",
+                        "code": "default_schema_unavailable",
+                        "detail": f"Schema {default_schema_id} was not found in the schemas list. Confirm it is valid and accessible.",
+                    }
+                )
+
+        if default_integration_name and not any(item["severity"] == "error" for item in findings):
+            integration_match = _find_named_item(
+                integrations_payload,
+                default_integration_name,
+                list_keys=("integrations", "items", "results"),
+                field_keys=("id", "name", "title", "label"),
+            )
+            if integration_match is not None:
+                findings.append(
+                    {
+                        "severity": "info",
+                        "code": "default_integration_visible",
+                        "detail": f"Integration {default_integration_name} is reachable.",
+                    }
+                )
+            else:
+                findings.append(
+                    {
+                        "severity": "warning",
+                        "code": "default_integration_unavailable",
+                        "detail": f"Integration {default_integration_name} was not found in the integrations list. Confirm it is valid and accessible.",
+                    }
+                )
+
+        status = "ok"
+        if any(item["severity"] == "error" for item in findings):
+            status = "error"
+        elif any(item["severity"] == "warning" for item in findings):
+            status = "warning"
+
+        response = {
+            "instance_id": target.id,
+            "connector": INSIGHTDOC_CONNECTOR_PRESET.name,
+            "status": status,
+            "findings": findings,
+        }
+        config = self._load_target_config(target)
+        server_config = config.tools.mcp_servers.get(preset_server_name)
+        if server_config is not None:
+            runtime_script = _ensure_insightdoc_connector_runtime_script(target)
+            server_config.command = "python3"
+            server_config.args = [str(runtime_script)]
+            if default_job_name:
+                server_config.env["INSIGHTOCR_DEFAULT_JOB_NAME"] = default_job_name
+            if default_schema_id:
+                server_config.env["INSIGHTOCR_DEFAULT_SCHEMA_ID"] = default_schema_id
+            if default_integration_name:
+                server_config.env["INSIGHTOCR_DEFAULT_INTEGRATION_NAME"] = default_integration_name
+            server_config.connector_status = "connected" if status == "ok" else "error"
+            save_config(config, target.config_path)
+        self._append_audit_event(
+            instance_id=target.id,
+            event_type="connector.validated",
+            payload={
+                "connector": INSIGHTDOC_CONNECTOR_PRESET.name,
+                "status": status,
+            },
+        )
+        return response
+
     def get_security(
         self,
         *,
@@ -3183,6 +3531,72 @@ class AdminService:
                 "has_skill_md": skill_md.exists(),
             })
         return {"instance_id": target.id, "skills": skills}
+
+    def list_skill_bank(
+        self,
+        *,
+        instance_id: str | None = None,
+        accessible_instance_ids: set[str] | list[str] | tuple[str, ...] | None = None,
+    ) -> dict[str, Any]:
+        """List the curated skills bank grouped by category."""
+        installed_names: set[str] | None = None
+        if instance_id:
+            target = self._get_target(instance_id)
+            self._require_target_access(target, accessible_instance_ids)
+            installed_names = {
+                str(item.get("skill_name") or "").strip()
+                for item in self.list_instance_skills(
+                    instance_id=instance_id,
+                    accessible_instance_ids=accessible_instance_ids,
+                ).get("skills", [])
+                if str(item.get("skill_name") or "").strip()
+            }
+        catalog = list_skill_bank_catalog(installed_skill_names=installed_names)
+        return {
+            "instance_id": instance_id,
+            "source_root": catalog["source_root"],
+            "total": catalog["total"],
+            "categories": catalog["categories"],
+        }
+
+    def import_skill_bank_entry(
+        self,
+        *,
+        instance_id: str,
+        bank_skill_id: str,
+        accessible_instance_ids: set[str] | list[str] | tuple[str, ...] | None = None,
+    ) -> dict[str, Any]:
+        """Import one curated skills bank entry into an instance."""
+        target = self._get_target(instance_id)
+        self._require_target_access(target, accessible_instance_ids)
+        entry = resolve_skill_bank_entry(bank_skill_id)
+        archive_name, archive_base64 = build_skill_bank_archive(entry)
+        result = self.import_instance_skill_archive(
+            instance_id=instance_id,
+            archive_name=archive_name,
+            archive_base64=archive_base64,
+            skill_name=entry.import_skill_name,
+            accessible_instance_ids=accessible_instance_ids,
+        )
+        self._append_audit_event(
+            instance_id=target.id,
+            event_type="instance.skill_bank_imported",
+            payload={
+                "skill_name": result["skill_name"],
+                "bank_skill_id": entry.bank_id,
+                "source_path": entry.source_relative_path,
+                "category": entry.category,
+            },
+        )
+        return {
+            **result,
+            "bank_skill_id": entry.bank_id,
+            "display_name": entry.display_name,
+            "description": entry.description,
+            "category": entry.category,
+            "category_label": entry.category_label,
+            "source_path": entry.source_relative_path,
+        }
 
     def get_instance_skill(
         self,

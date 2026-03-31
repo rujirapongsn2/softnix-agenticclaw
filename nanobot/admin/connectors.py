@@ -41,10 +41,18 @@ GMAIL_CONNECTOR_PRESET = ConnectorPreset(
     server_name="gmail",
 )
 
+INSIGHTDOC_CONNECTOR_PRESET = ConnectorPreset(
+    name="insightdoc",
+    display_name="InsightDOC",
+    description="Install an InsightDOC MCP server and companion skill for job, document, OCR, review, and integration workflows.",
+    skill_name="insightdoc-connector",
+    server_name="insightdoc",
+)
+
 
 def list_connector_presets() -> list[ConnectorPreset]:
     """Return the built-in connector presets."""
-    return [GITHUB_CONNECTOR_PRESET, NOTION_CONNECTOR_PRESET, GMAIL_CONNECTOR_PRESET]
+    return [GITHUB_CONNECTOR_PRESET, NOTION_CONNECTOR_PRESET, GMAIL_CONNECTOR_PRESET, INSIGHTDOC_CONNECTOR_PRESET]
 
 
 def get_connector_preset(name: str) -> ConnectorPreset:
@@ -130,6 +138,37 @@ def build_gmail_stdio_server_config(
         "type": "stdio",
         "command": "python3",
         "args": [str(script_path).strip()] if str(script_path or "").strip() else ["-m", "nanobot.integrations.gmail_mcp_server"],
+        "env": {key: value for key, value in env.items() if value},
+        "tool_timeout": int(tool_timeout),
+    }
+
+
+def build_insightdoc_stdio_server_config(
+    *,
+    token: str,
+    api_base_url: str | None = None,
+    external_base_url: str | None = None,
+    default_job_name: str | None = None,
+    default_schema_id: str | None = None,
+    default_integration_name: str | None = None,
+    curl_insecure: bool | None = None,
+    tool_timeout: int = 30,
+    script_path: str | None = None,
+) -> dict[str, Any]:
+    """Build the MCP server config payload for the InsightDOC connector."""
+    env = {
+        "INSIGHTOCR_API_TOKEN": str(token or "").strip(),
+        "INSIGHTOCR_API_BASE_URL": str(api_base_url or "https://127.0.0.1/api/v1").strip() or "https://127.0.0.1/api/v1",
+        "INSIGHTOCR_EXTERNAL_BASE_URL": str(external_base_url or "https://127.0.0.1/api/v1/external").strip() or "https://127.0.0.1/api/v1/external",
+        "INSIGHTOCR_DEFAULT_JOB_NAME": str(default_job_name or "").strip(),
+        "INSIGHTOCR_DEFAULT_SCHEMA_ID": str(default_schema_id or "").strip(),
+        "INSIGHTOCR_DEFAULT_INTEGRATION_NAME": str(default_integration_name or "").strip(),
+        "CURL_INSECURE": "true" if curl_insecure is not False else "",
+    }
+    return {
+        "type": "stdio",
+        "command": "python3",
+        "args": [str(script_path).strip()] if str(script_path or "").strip() else ["-m", "nanobot.integrations.insightdoc_mcp_server"],
         "env": {key: value for key, value in env.items() if value},
         "tool_timeout": int(tool_timeout),
     }

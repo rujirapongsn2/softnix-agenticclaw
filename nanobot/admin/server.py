@@ -121,12 +121,15 @@ def resolve_admin_get(
                 "/admin/providers",
                 "/admin/mcp/servers",
                 "/admin/connectors/presets",
+                "/admin/skills-bank",
                 "/admin/connectors/github/install",
                 "/admin/connectors/github/validate",
                 "/admin/connectors/notion/install",
                 "/admin/connectors/notion/validate",
                 "/admin/connectors/gmail/install",
                 "/admin/connectors/gmail/validate",
+                "/admin/connectors/insightdoc/install",
+                "/admin/connectors/insightdoc/validate",
                 "/admin/security",
                 "/admin/security/policies/global",
                 "/admin/security/policies/global/hits",
@@ -165,6 +168,13 @@ def resolve_admin_get(
         return HTTPStatus.OK, service.list_schedules(accessible_instance_ids=accessible_instance_ids)
     if path == "/admin/users":
         return HTTPStatus.OK, service.list_admin_users(accessible_instance_ids=accessible_instance_ids)
+    if path == "/admin/skills-bank":
+        query = parse_qs(parsed.query)
+        instance_id = (query.get("instance_id") or [None])[0]
+        return HTTPStatus.OK, service.list_skill_bank(
+            instance_id=instance_id,
+            accessible_instance_ids=accessible_instance_ids,
+        )
     if path.startswith("/admin/instances/") and path.endswith("/memory-files"):
         instance_id = path.split("/")[-2]
         try:
@@ -634,6 +644,23 @@ def resolve_admin_post(
                 )
             except ValueError as exc:
                 return HTTPStatus.BAD_REQUEST, {"error": str(exc)}
+        if path.startswith("/admin/instances/") and path.endswith("/skills/bank/import"):
+            parts = path.split("/")
+            try:
+                instance_id = parts[3]
+            except IndexError:
+                return HTTPStatus.BAD_REQUEST, {"error": "Invalid skills path"}
+            bank_skill_id = str(payload.get("bank_skill_id") or payload.get("skill_name") or "").strip()
+            if not bank_skill_id:
+                return HTTPStatus.BAD_REQUEST, {"error": "bank_skill_id is required"}
+            try:
+                return HTTPStatus.OK, service.import_skill_bank_entry(
+                    instance_id=instance_id,
+                    bank_skill_id=bank_skill_id,
+                    accessible_instance_ids=accessible_instance_ids,
+                )
+            except ValueError as exc:
+                return HTTPStatus.BAD_REQUEST, {"error": str(exc)}
 
         # Mobile API (No heavy auth check here for initial pairing/registration)
         if path == "/admin/mobile/pair":
@@ -896,6 +923,38 @@ def resolve_admin_post(
                 accessible_instance_ids=accessible_instance_ids,
             )
             return HTTPStatus.OK, result
+        if path == "/admin/connectors/insightdoc/install":
+            instance_id = payload.get("instance_id") or "default"
+            token = str(payload.get("token") or "")
+            result = service.install_insightdoc_connector(
+                instance_id=instance_id,
+                token=token,
+                api_base_url=payload.get("api_base_url"),
+                external_base_url=payload.get("external_base_url"),
+                default_job_name=payload.get("default_job_name"),
+                default_schema_id=payload.get("default_schema_id"),
+                default_integration_name=payload.get("default_integration_name"),
+                curl_insecure=payload.get("curl_insecure"),
+                server_name=payload.get("server_name"),
+                accessible_instance_ids=accessible_instance_ids,
+            )
+            return HTTPStatus.OK, result
+        if path == "/admin/connectors/insightdoc/validate":
+            instance_id = payload.get("instance_id") or "default"
+            token = str(payload.get("token") or "")
+            result = service.validate_insightdoc_connector(
+                instance_id=instance_id,
+                token=token,
+                api_base_url=payload.get("api_base_url"),
+                external_base_url=payload.get("external_base_url"),
+                default_job_name=payload.get("default_job_name"),
+                default_schema_id=payload.get("default_schema_id"),
+                default_integration_name=payload.get("default_integration_name"),
+                curl_insecure=payload.get("curl_insecure"),
+                server_name=payload.get("server_name"),
+                accessible_instance_ids=accessible_instance_ids,
+            )
+            return HTTPStatus.OK, result
         if path == "/admin/schedules":
             instance_id = payload.get("instance_id") or "default"
             schedule = payload.get("schedule")
@@ -1116,6 +1175,12 @@ def _match_permission(method: str, path: str) -> str | None:
             return "mcp.update"
         if path == "/admin/connectors/gmail/validate":
             return "mcp.read"
+        if path == "/admin/connectors/insightdoc/install":
+            return "mcp.update"
+        if path == "/admin/connectors/insightdoc/validate":
+            return "mcp.read"
+        if path == "/admin/skills-bank":
+            return "skills.read"
         if path == "/admin/schedules":
             return "schedule.update"
         if path.startswith("/admin/schedules/") and path.endswith("/run"):
@@ -1125,6 +1190,8 @@ def _match_permission(method: str, path: str) -> str | None:
         if path in {"/admin/access-requests/approve", "/admin/access-requests/reject"}:
             return "access_request.review"
         if path.startswith("/admin/instances/") and path.endswith("/skills/import"):
+            return "skills.update"
+        if path.startswith("/admin/instances/") and path.endswith("/skills/bank/import"):
             return "skills.update"
     if method == "DELETE":
         if path.startswith("/admin/instances/"):

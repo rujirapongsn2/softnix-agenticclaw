@@ -397,6 +397,30 @@ def test_admin_server_resolves_skill_import_route(tmp_path) -> None:
     assert payload["archive_name"] == "demo.zip"
 
 
+def test_admin_server_resolves_skill_bank_routes(tmp_path) -> None:
+    class DummyService:
+        def list_skill_bank(self, **kwargs):  # noqa: ANN003
+            return kwargs
+
+        def import_skill_bank_entry(self, **kwargs):  # noqa: ANN003
+            return kwargs
+
+    status, payload = resolve_admin_get(DummyService(), "/admin/skills-bank?instance_id=prod")
+
+    assert status == HTTPStatus.OK
+    assert payload["instance_id"] == "prod"
+
+    status, payload = resolve_admin_post(
+        DummyService(),
+        "/admin/instances/prod/skills/bank/import",
+        {"bank_skill_id": "engineering-frontend-developer"},
+    )
+
+    assert status == HTTPStatus.OK
+    assert payload["instance_id"] == "prod"
+    assert payload["bank_skill_id"] == "engineering-frontend-developer"
+
+
 def test_admin_service_reports_security_findings(tmp_path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -1772,6 +1796,63 @@ def test_admin_server_forwards_gmail_refresh_credentials() -> None:
         assert call["client_id"] == "client-id"
         assert call["client_secret"] == "client-secret"
         assert call["token_uri"] == "https://oauth2.googleapis.com/token"
+
+
+def test_admin_server_forwards_insightdoc_connector_settings() -> None:
+    calls: list[tuple[str, dict]] = []
+
+    class StubService:
+        def install_insightdoc_connector(self, **kwargs):
+            calls.append(("install", kwargs))
+            return {"ok": True}
+
+        def validate_insightdoc_connector(self, **kwargs):
+            calls.append(("validate", kwargs))
+            return {"ok": True}
+
+    status, payload = resolve_admin_post(
+        StubService(),
+        "/admin/connectors/insightdoc/install",
+        {
+            "instance_id": "default",
+            "token": "sid_pat_access",
+            "api_base_url": "https://127.0.0.1/api/v1",
+            "external_base_url": "https://127.0.0.1/api/v1/external",
+            "default_job_name": "Invoice Batch",
+            "default_schema_id": "schema-1",
+            "default_integration_name": "Comply TOR",
+            "curl_insecure": True,
+        },
+    )
+    assert status == HTTPStatus.OK
+    assert payload == {"ok": True}
+
+    status, payload = resolve_admin_post(
+        StubService(),
+        "/admin/connectors/insightdoc/validate",
+        {
+            "instance_id": "default",
+            "token": "sid_pat_access",
+            "api_base_url": "https://127.0.0.1/api/v1",
+            "external_base_url": "https://127.0.0.1/api/v1/external",
+            "default_job_name": "Invoice Batch",
+            "default_schema_id": "schema-1",
+            "default_integration_name": "Comply TOR",
+            "curl_insecure": True,
+        },
+    )
+    assert status == HTTPStatus.OK
+    assert payload == {"ok": True}
+
+    install_call = next(call for call in calls if call[0] == "install")[1]
+    validate_call = next(call for call in calls if call[0] == "validate")[1]
+    for call in (install_call, validate_call):
+        assert call["api_base_url"] == "https://127.0.0.1/api/v1"
+        assert call["external_base_url"] == "https://127.0.0.1/api/v1/external"
+        assert call["default_job_name"] == "Invoice Batch"
+        assert call["default_schema_id"] == "schema-1"
+        assert call["default_integration_name"] == "Comply TOR"
+        assert call["curl_insecure"] is True
 
 
 def test_admin_server_resolves_post_instance_lifecycle(tmp_path) -> None:
