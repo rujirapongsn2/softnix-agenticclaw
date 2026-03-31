@@ -48,6 +48,9 @@ class AgentLoop:
     """
 
     _TOOL_RESULT_MAX_CHARS = 500
+    _ASSISTANT_CONTENT_MAX_CHARS = 4000
+    _TOOL_CALL_ARGS_MAX_CHARS = 800
+    _HISTORY_MAX_PAYLOAD_CHARS = 24000
     _GENERIC_ERROR_PATTERNS = (
         "sorry, i encountered an error",
         "error calling the ai model",
@@ -588,7 +591,10 @@ class AgentLoop:
             )
             session = self.sessions.get_or_create(key)
             self._set_tool_context(channel, chat_id, msg.metadata.get("message_id"))
-            history = session.get_history(max_messages=self.memory_window)
+            history = session.get_history(
+                max_messages=self.memory_window,
+                max_payload_chars=self._HISTORY_MAX_PAYLOAD_CHARS,
+            )
             messages = self.context.build_messages(
                 history=history,
                 current_message=msg.content, channel=channel, chat_id=chat_id,
@@ -709,7 +715,10 @@ class AgentLoop:
             if isinstance(message_tool, MessageTool):
                 message_tool.start_turn()
 
-        history = session.get_history(max_messages=self.memory_window)
+        history = session.get_history(
+            max_messages=self.memory_window,
+            max_payload_chars=self._HISTORY_MAX_PAYLOAD_CHARS,
+        )
         initial_messages = self.context.build_messages(
             history=history,
             current_message=incoming_content,
@@ -843,6 +852,34 @@ class AgentLoop:
             role, content = entry.get("role"), entry.get("content")
             if role == "assistant" and not content and not entry.get("tool_calls"):
                 continue  # skip empty assistant messages — they poison session context
+            if role == "assistant":
+                if isinstance(content, str) and len(content) > self._ASSISTANT_CONTENT_MAX_CHARS:
+                    entry["content"] = content[:self._ASSISTANT_CONTENT_MAX_CHARS] + "\n... (truncated)"
+                tool_calls = entry.get("tool_calls")
+                if isinstance(tool_calls, list):
+                    compacted_calls = []
+                    for tool_call in tool_calls:
+                        if not isinstance(tool_call, dict):
+                            compacted_calls.append(tool_call)
+                            continue
+                        compacted = dict(tool_call)
+                        function = compacted.get("function")
+                        if isinstance(function, dict):
+                            compacted_function = dict(function)
+                            args = compacted_function.get("arguments")
+                            if args is not None:
+                                args_text = args if isinstance(args, str) else json.dumps(args, ensure_ascii=False)
+                                if len(args_text) > self._TOOL_CALL_ARGS_MAX_CHARS:
+                                    compacted_function["arguments"] = json.dumps(
+                                        {
+                                            "_truncated": True,
+                                            "preview": args_text[:self._TOOL_CALL_ARGS_MAX_CHARS],
+                                        },
+                                        ensure_ascii=False,
+                                    )
+                            compacted["function"] = compacted_function
+                        compacted_calls.append(compacted)
+                    entry["tool_calls"] = compacted_calls
             if role == "tool" and isinstance(content, str) and len(content) > self._TOOL_RESULT_MAX_CHARS:
                 entry["content"] = content[:self._TOOL_RESULT_MAX_CHARS] + "\n... (truncated)"
             elif role == "user":

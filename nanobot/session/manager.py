@@ -31,6 +31,27 @@ class Session:
     metadata: dict[str, Any] = field(default_factory=dict)
     last_consolidated: int = 0  # Number of messages already consolidated to files
 
+    @staticmethod
+    def _estimate_payload_size(value: Any) -> int:
+        """Estimate serialized payload size for history budgeting."""
+        if value is None:
+            return 0
+        if isinstance(value, str):
+            return len(value)
+        try:
+            return len(json.dumps(value, ensure_ascii=False, default=str))
+        except Exception:
+            return len(str(value))
+
+    @classmethod
+    def _estimate_message_size(cls, message: dict[str, Any]) -> int:
+        """Estimate one message's contribution to the prompt payload."""
+        size = cls._estimate_payload_size(message.get("role"))
+        size += cls._estimate_payload_size(message.get("content"))
+        for key in ("tool_calls", "tool_call_id", "name"):
+            size += cls._estimate_payload_size(message.get(key))
+        return size
+
     def add_message(self, role: str, content: str, **kwargs: Any) -> None:
         """Add a message to the session."""
         msg = {
@@ -42,16 +63,29 @@ class Session:
         self.messages.append(msg)
         self.updated_at = datetime.now()
 
-    def get_history(self, max_messages: int = 500) -> list[dict[str, Any]]:
+    def get_history(self, max_messages: int = 500, max_payload_chars: int | None = None) -> list[dict[str, Any]]:
         """Return unconsolidated messages for LLM input, aligned to a user turn."""
         unconsolidated = self.messages[self.last_consolidated:]
         sliced = unconsolidated[-max_messages:]
+
+        if max_payload_chars and max_payload_chars > 0:
+            budget = 0
+            kept: list[dict[str, Any]] = []
+            for message in reversed(sliced):
+                message_size = max(1, self._estimate_message_size(message))
+                if kept and budget + message_size > max_payload_chars:
+                    break
+                kept.append(message)
+                budget += message_size
+            sliced = list(reversed(kept))
 
         # Drop leading non-user messages to avoid orphaned tool_result blocks
         for i, m in enumerate(sliced):
             if m.get("role") == "user":
                 sliced = sliced[i:]
                 break
+        else:
+            sliced = []
 
         out: list[dict[str, Any]] = []
         for m in sliced:

@@ -128,6 +128,18 @@ class TestSessionImmutableHistory:
         history2 = session.get_history(max_messages=10)
         assert history1 == history2
 
+    def test_get_history_respects_payload_budget(self) -> None:
+        """Test get_history trims by payload size, not just message count."""
+        session = Session(key="test:payload-budget")
+        session.add_message("user", "short-user")
+        session.add_message("assistant", "x" * 5000)
+        session.add_message("user", "recent-user")
+        session.add_message("assistant", "recent-reply")
+
+        history = session.get_history(max_messages=10, max_payload_chars=200)
+
+        assert [item["content"] for item in history] == ["recent-user", "recent-reply"]
+
     def test_messages_list_never_modified(self) -> None:
         """Test that messages list is never modified after creation."""
         session = create_session_with_messages("test:immutable", 5)

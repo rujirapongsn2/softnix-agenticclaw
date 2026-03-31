@@ -36,12 +36,21 @@ class ChannelManager:
     def _init_channels(self) -> None:
         """Initialize channels based on config."""
 
+        channels_config = self.config.channels
+
+        def channel_config(name: str) -> Any | None:
+            return getattr(channels_config, name, None)
+
+        def channel_enabled(name: str) -> bool:
+            cfg = channel_config(name)
+            return bool(cfg and getattr(cfg, "enabled", False))
+
         # Telegram channel
-        if self.config.channels.telegram.enabled:
+        if channel_enabled("telegram"):
             try:
                 from nanobot.channels.telegram import TelegramChannel
                 self.channels["telegram"] = TelegramChannel(
-                    self.config.channels.telegram,
+                    channel_config("telegram"),
                     self.bus,
                     groq_api_key=self.config.providers.groq.api_key,
                 )
@@ -51,11 +60,11 @@ class ChannelManager:
                 logger.warning("Telegram channel not available: {}", e)
 
         # WhatsApp channel
-        if self.config.channels.whatsapp.enabled:
+        if channel_enabled("whatsapp"):
             try:
                 from nanobot.channels.whatsapp import WhatsAppChannel
                 self.channels["whatsapp"] = WhatsAppChannel(
-                    self.config.channels.whatsapp, self.bus
+                    channel_config("whatsapp"), self.bus
                 )
                 self.channels["whatsapp"]._access_request_store = self._access_request_store
                 logger.info("WhatsApp channel enabled")
@@ -63,11 +72,11 @@ class ChannelManager:
                 logger.warning("WhatsApp channel not available: {}", e)
 
         # Discord channel
-        if self.config.channels.discord.enabled:
+        if channel_enabled("discord"):
             try:
                 from nanobot.channels.discord import DiscordChannel
                 self.channels["discord"] = DiscordChannel(
-                    self.config.channels.discord, self.bus
+                    channel_config("discord"), self.bus
                 )
                 self.channels["discord"]._access_request_store = self._access_request_store
                 logger.info("Discord channel enabled")
@@ -75,11 +84,11 @@ class ChannelManager:
                 logger.warning("Discord channel not available: {}", e)
 
         # Feishu channel
-        if self.config.channels.feishu.enabled:
+        if channel_enabled("feishu"):
             try:
                 from nanobot.channels.feishu import FeishuChannel
                 self.channels["feishu"] = FeishuChannel(
-                    self.config.channels.feishu, self.bus
+                    channel_config("feishu"), self.bus
                 )
                 self.channels["feishu"]._access_request_store = self._access_request_store
                 logger.info("Feishu channel enabled")
@@ -87,12 +96,12 @@ class ChannelManager:
                 logger.warning("Feishu channel not available: {}", e)
 
         # Mochat channel
-        if self.config.channels.mochat.enabled:
+        if channel_enabled("mochat"):
             try:
                 from nanobot.channels.mochat import MochatChannel
 
                 self.channels["mochat"] = MochatChannel(
-                    self.config.channels.mochat, self.bus
+                    channel_config("mochat"), self.bus
                 )
                 self.channels["mochat"]._access_request_store = self._access_request_store
                 logger.info("Mochat channel enabled")
@@ -100,11 +109,11 @@ class ChannelManager:
                 logger.warning("Mochat channel not available: {}", e)
 
         # DingTalk channel
-        if self.config.channels.dingtalk.enabled:
+        if channel_enabled("dingtalk"):
             try:
                 from nanobot.channels.dingtalk import DingTalkChannel
                 self.channels["dingtalk"] = DingTalkChannel(
-                    self.config.channels.dingtalk, self.bus
+                    channel_config("dingtalk"), self.bus
                 )
                 self.channels["dingtalk"]._access_request_store = self._access_request_store
                 logger.info("DingTalk channel enabled")
@@ -112,11 +121,11 @@ class ChannelManager:
                 logger.warning("DingTalk channel not available: {}", e)
 
         # Email channel
-        if self.config.channels.email.enabled:
+        if channel_enabled("email"):
             try:
                 from nanobot.channels.email import EmailChannel
                 self.channels["email"] = EmailChannel(
-                    self.config.channels.email, self.bus
+                    channel_config("email"), self.bus
                 )
                 self.channels["email"]._access_request_store = self._access_request_store
                 logger.info("Email channel enabled")
@@ -124,11 +133,11 @@ class ChannelManager:
                 logger.warning("Email channel not available: {}", e)
 
         # Slack channel
-        if self.config.channels.slack.enabled:
+        if channel_enabled("slack"):
             try:
                 from nanobot.channels.slack import SlackChannel
                 self.channels["slack"] = SlackChannel(
-                    self.config.channels.slack, self.bus
+                    channel_config("slack"), self.bus
                 )
                 self.channels["slack"]._access_request_store = self._access_request_store
                 logger.info("Slack channel enabled")
@@ -136,11 +145,11 @@ class ChannelManager:
                 logger.warning("Slack channel not available: {}", e)
 
         # QQ channel
-        if self.config.channels.qq.enabled:
+        if channel_enabled("qq"):
             try:
                 from nanobot.channels.qq import QQChannel
                 self.channels["qq"] = QQChannel(
-                    self.config.channels.qq,
+                    channel_config("qq"),
                     self.bus,
                 )
                 self.channels["qq"]._access_request_store = self._access_request_store
@@ -149,11 +158,11 @@ class ChannelManager:
                 logger.warning("QQ channel not available: {}", e)
 
         # Matrix channel
-        if self.config.channels.matrix.enabled:
+        if channel_enabled("matrix"):
             try:
                 from nanobot.channels.matrix import MatrixChannel
                 self.channels["matrix"] = MatrixChannel(
-                    self.config.channels.matrix,
+                    channel_config("matrix"),
                     self.bus,
                 )
                 self.channels["matrix"]._access_request_store = self._access_request_store
@@ -162,12 +171,12 @@ class ChannelManager:
                 logger.warning("Matrix channel not available: {}", e)
 
         # Softnix Mobile App channel
-        if self.config.channels.softnix_app.enabled:
+        if channel_enabled("softnix_app"):
             try:
                 from nanobot.channels.softnix_app import SoftnixAppChannel
 
                 self.channels["softnix_app"] = SoftnixAppChannel(
-                    self.config.channels.softnix_app, 
+                    channel_config("softnix_app"),
                     self.bus,
                     workspace_path=self.config.workspace_path
                 )
