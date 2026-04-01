@@ -67,6 +67,17 @@ def _mask_token(value: str | None, keep: int = 4) -> str:
     return f"{'*' * max(len(raw) - keep, 3)}{raw[-keep:]}"
 
 
+def _decode_path_param(path: str, prefix: str, *, suffix: str = "") -> str:
+    if not path.startswith(prefix):
+        return ""
+    tail = path[len(prefix):]
+    if suffix:
+        if not tail.endswith(suffix):
+            return ""
+        tail = tail[: -len(suffix)]
+    return unquote(tail)
+
+
 def _allows_unauthenticated_admin_access(method: str, path: str) -> bool:
     if path in {"/admin/auth/me", "/admin/auth/login", "/admin/auth/logout", "/admin/auth/bootstrap", "/admin/auth/bootstrap-status"}:
         return True
@@ -596,7 +607,7 @@ def resolve_admin_delete(
             result = service.delete_schedule(instance_id=instance_id, job_id=job_id, accessible_instance_ids=accessible_instance_ids)
             return HTTPStatus.OK, result
         if path.startswith("/admin/mcp/servers/"):
-            server_name = path.rsplit("/", 1)[-1]
+            server_name = _decode_path_param(path, "/admin/mcp/servers/")
             instance_id = payload.get("instance_id") or "default"
             instance = service.delete_mcp_server(instance_id=instance_id, server_name=server_name, accessible_instance_ids=accessible_instance_ids)
             return HTTPStatus.OK, {"instance": instance}
@@ -837,7 +848,7 @@ def resolve_admin_post(
             result = service.validate_provider(instance_id=instance_id, provider_name=provider_name, accessible_instance_ids=accessible_instance_ids)
             return HTTPStatus.OK, result
         if path.startswith("/admin/mcp/servers/") and path.endswith("/validate"):
-            server_name = path.split("/")[-2]
+            server_name = _decode_path_param(path, "/admin/mcp/servers/", suffix="/validate")
             instance_id = payload.get("instance_id") or "default"
             result = service.validate_mcp_server(instance_id=instance_id, server_name=server_name, accessible_instance_ids=accessible_instance_ids)
             return HTTPStatus.OK, result

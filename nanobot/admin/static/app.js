@@ -2658,7 +2658,7 @@ function renderSelectedInstanceProviders(instance) {
 
   const mcpEditor = selectedServer
     ? (() => {
-      const key = `mcp:${instance.id}:${selectedServer.name}`;
+      const key = buildMcpActionKey(instance.id, selectedServer.name);
       const disabled = state.busyKey === key ? "disabled" : "";
       return `
         <div class="item-card">
@@ -2719,7 +2719,7 @@ function renderSelectedInstanceProviders(instance) {
               ${escapeHtml(provider.label)}
             </button>
           `).join("") : servers.map((server) => `
-            <button class="console-tab provider-subtab ${server.name === selectedServer?.name ? "is-active" : ""}" data-mcp-focus="${escapeHtml(instance.id)}:${escapeHtml(server.name)}">
+            <button class="console-tab provider-subtab ${server.name === selectedServer?.name ? "is-active" : ""}" data-mcp-focus="${escapeHtml(buildMcpFocusKey(instance.id, server.name))}">
               ${escapeHtml(server.name)}
             </button>
           `).join("") || `<p class="meta">${mode === "providers" ? "No providers" : "No MCP servers"}</p>`}</div>
@@ -2794,7 +2794,7 @@ function renderSelectedInstanceProviders(instance) {
     renderSelectedInstanceProviders(instance);
   }));
   target.querySelectorAll("[data-mcp-focus]").forEach((button) => button.addEventListener("click", () => {
-    const [instanceId, serverName] = button.dataset.mcpFocus.split(":");
+    const [instanceId, serverName] = parseMcpFocusKey(button.dataset.mcpFocus);
     state.mcpFocusByInstance[instanceId] = serverName;
     state.mcpCreateOpenByInstance[instanceId] = false;
     renderSelectedInstanceProviders(instance);
@@ -6625,7 +6625,7 @@ function renderMcp() {
     .map((instance) => {
       const cards = (instance.mcp.servers || [])
         .map((server) => {
-          const key = `mcp:${instance.id}:${server.name}`;
+          const key = buildMcpActionKey(instance.id, server.name);
           const disabled = state.busyKey === key ? "disabled" : "";
           return `
             <div class="item-card">
@@ -8228,6 +8228,42 @@ function parseJsonField(selector, fallback) {
   return JSON.parse(text);
 }
 
+function buildMcpFocusKey(instanceId, serverName) {
+  return `${encodeURIComponent(instanceId)}:${encodeURIComponent(serverName)}`;
+}
+
+function parseMcpFocusKey(key) {
+  const raw = String(key || "");
+  const separator = raw.indexOf(":");
+  if (separator < 0) {
+    return ["", ""];
+  }
+  return [
+    decodeURIComponent(raw.slice(0, separator)),
+    decodeURIComponent(raw.slice(separator + 1)),
+  ];
+}
+
+function buildMcpActionKey(instanceId, serverName) {
+  return `mcp:${encodeURIComponent(instanceId)}:${encodeURIComponent(serverName)}`;
+}
+
+function parseMcpActionKey(key) {
+  const raw = String(key || "");
+  if (!raw.startsWith("mcp:")) {
+    return ["", ""];
+  }
+  const remainder = raw.slice(4);
+  const separator = remainder.indexOf(":");
+  if (separator < 0) {
+    return ["", ""];
+  }
+  return [
+    decodeURIComponent(remainder.slice(0, separator)),
+    decodeURIComponent(remainder.slice(separator + 1)),
+  ];
+}
+
 async function handleProviderDefaultsSave(instanceId) {
   const key = `provider-default:${instanceId}`;
   const model = document.querySelector(`[data-default-model="${CSS.escape(instanceId)}"]`)?.value ?? "";
@@ -8358,7 +8394,7 @@ function buildMcpPayload(baseKey, instanceId, serverName) {
 }
 
 async function handleMcpSave(key) {
-  const [, instanceId, serverName] = key.split(":");
+  const [instanceId, serverName] = parseMcpActionKey(key);
   state.busyKey = key;
   renderMcp();
   try {
@@ -8375,11 +8411,11 @@ async function handleMcpSave(key) {
 }
 
 async function handleMcpValidate(key) {
-  const [, instanceId, serverName] = key.split(":");
+  const [instanceId, serverName] = parseMcpActionKey(key);
   state.busyKey = key;
   renderMcp();
   try {
-    const result = await postJson(`/admin/mcp/servers/${serverName}/validate`, {
+    const result = await postJson(`/admin/mcp/servers/${encodeURIComponent(serverName)}/validate`, {
       instance_id: instanceId,
     });
     setBanner(formatValidationMessage(`MCP server '${serverName}'`, result), result.status === "error" ? "error" : "warning");
@@ -8392,14 +8428,14 @@ async function handleMcpValidate(key) {
 }
 
 async function handleMcpDelete(key) {
-  const [, instanceId, serverName] = key.split(":");
+  const [instanceId, serverName] = parseMcpActionKey(key);
   if (!window.confirm(`Delete MCP server '${serverName}' from instance '${instanceId}'?`)) {
     return;
   }
   state.busyKey = key;
   renderMcp();
   try {
-    await deleteJson(`/admin/mcp/servers/${serverName}`, { instance_id: instanceId });
+    await deleteJson(`/admin/mcp/servers/${encodeURIComponent(serverName)}`, { instance_id: instanceId });
     clearBanner();
     await loadDashboard();
   } catch (error) {

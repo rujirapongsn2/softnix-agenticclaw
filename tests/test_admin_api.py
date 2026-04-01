@@ -1708,6 +1708,28 @@ def test_admin_server_resolves_delete_mcp_server(tmp_path) -> None:
     assert payload["instance"]["mcp"]["server_count"] == 0
 
 
+def test_admin_server_resolves_delete_mcp_server_with_url_name(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    config_path = tmp_path / "config.json"
+
+    server_name = "https://connect.composio.dev/mcp"
+    config = Config()
+    config.agents.defaults.workspace = str(workspace)
+    config.tools.mcp_servers[server_name] = MCPServerConfig(type="streamableHttp", url=server_name)
+    save_config(config, config_path)
+
+    service = AdminService(config_path=config_path)
+    status, payload = resolve_admin_delete(
+        service,
+        "/admin/mcp/servers/https%3A%2F%2Fconnect.composio.dev%2Fmcp",
+        {"instance_id": "default"},
+    )
+
+    assert status == HTTPStatus.OK
+    assert payload["instance"]["mcp"]["server_count"] == 0
+
+
 def test_admin_server_resolves_post_validation_routes(tmp_path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -1739,6 +1761,31 @@ def test_admin_server_resolves_post_validation_routes(tmp_path) -> None:
 
     assert provider_status == HTTPStatus.OK
     assert provider_payload["status"] == "ok"
+    assert mcp_status == HTTPStatus.OK
+    assert mcp_payload["status"] == "ok"
+
+
+def test_admin_server_resolves_mcp_validation_with_url_name(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    config_path = tmp_path / "config.json"
+
+    server_name = "https://connect.composio.dev/mcp"
+    config = Config()
+    config.agents.defaults.workspace = str(workspace)
+    config.tools.mcp_servers[server_name] = MCPServerConfig(
+        type="streamableHttp",
+        url=server_name,
+    )
+    save_config(config, config_path)
+
+    service = AdminService(config_path=config_path)
+    mcp_status, mcp_payload = resolve_admin_post(
+        service,
+        "/admin/mcp/servers/https%3A%2F%2Fconnect.composio.dev%2Fmcp/validate",
+        {"instance_id": "default"},
+    )
+
     assert mcp_status == HTTPStatus.OK
     assert mcp_payload["status"] == "ok"
 
