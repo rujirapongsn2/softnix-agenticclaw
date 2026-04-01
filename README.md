@@ -157,10 +157,10 @@ If you are on Linux, you can install AgenticClaw as a **Systemd User Service** s
 chmod +x softnixclaw
 ./softnixclaw install
 ```
-*This command enables auto-start and lingering for the current user.*
+*This command enables auto-start and lingering for the current user, and manages the Admin UI service for this repository checkout.*
 
 #### **B. Admin Service Control**
-Manage the Admin UI service (whether running via Systemd or background process):
+Manage the Admin UI service for the current repository checkout (whether running via Systemd or background process):
 ```bash
 ./softnixclaw admin start    # Start the admin server
 ./softnixclaw admin stop     # Stop the admin server
@@ -181,10 +181,17 @@ Keep your installation up-to-date with a single command:
 ```
 *This performs a `git pull`, updates dependencies, restarts `Softnix Admin`, and then decides whether sandbox images or running instances must be refreshed based on the files changed in the new commit range.*
 
+Force a sandbox image rebuild even when the update diff would not normally require one:
+```bash
+./softnixclaw update rebuild
+```
+You can also use the misspelled alias `./softnixclaw update rebuid` for compatibility.
+
 Update behavior is intentionally automatic:
 - UI / docs / static asset changes: restart `Softnix Admin` only
 - Runtime, dependency, or Docker changes: rebuild sandbox images and restart running instances that use the updated runtime
 - Instance lifecycle changes: restart only the instances that are currently running
+- `update rebuild`: force rebuild sandbox images and restart running instances after the update
 
 If the repository is not a git checkout, `./softnixclaw update` skips `git pull` and only applies the local service restart flow.
 
