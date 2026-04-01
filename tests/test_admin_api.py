@@ -1845,6 +1845,46 @@ def test_admin_server_forwards_gmail_refresh_credentials() -> None:
         assert call["token_uri"] == "https://oauth2.googleapis.com/token"
 
 
+def test_admin_server_forwards_composio_connector_settings() -> None:
+    calls: list[tuple[str, dict]] = []
+
+    class StubService:
+        def install_composio_connector(self, **kwargs):
+            calls.append(("install", kwargs))
+            return {"ok": True}
+
+        def validate_composio_connector(self, **kwargs):
+            calls.append(("validate", kwargs))
+            return {"ok": True}
+
+    status, payload = resolve_admin_post(
+        StubService(),
+        "/admin/connectors/composio/install",
+        {
+            "instance_id": "default",
+            "api_key": "ck_example",
+        },
+    )
+    assert status == HTTPStatus.OK
+    assert payload == {"ok": True}
+
+    status, payload = resolve_admin_post(
+        StubService(),
+        "/admin/connectors/composio/validate",
+        {
+            "instance_id": "default",
+            "api_key": "ck_example",
+        },
+    )
+    assert status == HTTPStatus.OK
+    assert payload == {"ok": True}
+
+    install_call = next(call for call in calls if call[0] == "install")[1]
+    validate_call = next(call for call in calls if call[0] == "validate")[1]
+    for call in (install_call, validate_call):
+        assert call["api_key"] == "ck_example"
+
+
 def test_admin_server_forwards_insightdoc_connector_settings() -> None:
     calls: list[tuple[str, dict]] = []
 

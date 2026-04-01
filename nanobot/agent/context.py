@@ -74,6 +74,10 @@ Skills with available="false" need dependencies installed first - you can try in
             routing_lines.append("- If the task is about email, Gmail wins even if GitHub or Notion are also installed.")
             routing_lines.append("- Never route email or inbox questions to the GitHub connector.")
             has_any = True
+        if "composio-connector" in available:
+            routing_lines.append("- Use the Composio connector for supported third-party app actions that are exposed through Composio and are not already covered by a dedicated built-in connector.")
+            routing_lines.append("- When a dedicated connector exists for a domain, prefer that dedicated connector over Composio.")
+            has_any = True
         if "github-connector" in available:
             routing_lines.append("- Use the GitHub connector for any repository, issue, pull request, workflow, or commit question.")
             has_any = True

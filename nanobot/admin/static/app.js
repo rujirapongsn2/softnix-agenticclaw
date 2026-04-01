@@ -103,6 +103,7 @@ const CONNECTOR_ICON_MARKUP = {
   github: `<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z" /></svg>`,
   notion: `<svg viewBox="0 0 24 24" aria-hidden="true" fill="currentColor"><path d="M4.5 4.3 9.3 3l10.1 1.8 0.9 15.2-5.3 1-9.8-1.7L4.5 4.3Zm2.1 1.4.8 11.5 7.1 1.2 2.9-.5-.8-11.3-7-1.2-3 .5Zm2.4 1.6 2.1-.4 4.7 6.8-.1-5.9-1.7-.3.1-1.2 4 0.7-.1 1.2-1 .2.1 8.3-2 .4-4.8-6.9.1 5.9 1.8.3-.1 1.2-4.1-.7.1-1.2 1-.2-.1-7.9-.9-.2.1-1.2Z"/></svg>`,
   gmail: `<svg viewBox="0 0 24 24" aria-hidden="true" fill="none"><path d="M4 6h16a2 2 0 0 1 2 2v10H2V8a2 2 0 0 1 2-2Z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="m3.8 8 8.2 6 8.2-6" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M4 18V8l8 5.8L20 8v10" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>`,
+  composio: `<svg viewBox="0 0 24 24" aria-hidden="true" fill="none"><path d="M6 4.5h8.4L18.3 8.4v11.1H6V4.5Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M14.4 4.5v3.9h3.9" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M8.2 11.1h7.6M8.2 14.2h7.6M8.2 17.3h5.2" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>`,
   linkedin: `<svg viewBox="0 0 24 24" aria-hidden="true" fill="currentColor"><path d="M6.5 6.75A1.75 1.75 0 1 1 6.5 3.25a1.75 1.75 0 0 1 0 3.5ZM4.75 8.5h3.5V20h-3.5V8.5ZM9.75 8.5h3.35v1.57h.05c.47-.9 1.63-1.87 3.35-1.87 3.58 0 4.24 2.36 4.24 5.43V20h-3.5v-5.46c0-1.3-.03-2.97-1.81-2.97-1.82 0-2.1 1.42-2.1 2.88V20h-3.58V8.5Z"/></svg>`,
   instagram: `<svg viewBox="0 0 24 24" aria-hidden="true" fill="none"><rect x="3" y="3" width="18" height="18" rx="5" stroke="currentColor" stroke-width="1.8"/><circle cx="12" cy="12" r="4.2" stroke="currentColor" stroke-width="1.8"/><circle cx="17.2" cy="6.8" r="1.2" fill="currentColor"/></svg>`,
   calendar: `<svg viewBox="0 0 24 24" aria-hidden="true" fill="none"><rect x="3.5" y="4.5" width="17" height="16" rx="3" stroke="currentColor" stroke-width="1.8"/><path d="M3.5 9h17" stroke="currentColor" stroke-width="1.8"/><path d="M8 2.8v3.2M16 2.8v3.2" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><rect x="7" y="12" width="3" height="3" rx="1" fill="currentColor"/><rect x="12" y="12" width="3" height="3" rx="1" fill="currentColor"/></svg>`,
@@ -118,6 +119,7 @@ const CONNECTOR_ICON_MARKUP = {
 const CONNECTOR_IMAGE_ASSET_MAP = {
   github: "/docs/images/Connectors/icons8-github-logo-48.png",
   gmail: "/docs/images/Connectors/icons8-gmail-logo-48.png",
+  composio: "/docs/images/Connectors/composio.png",
   insightdoc: "/docs/images/Logo Softnix.png",
   notion: "/docs/images/Connectors/icons8-notion-48.png",
   instagram: "/docs/images/Connectors/icons8-instagram-logo-48.png",
@@ -512,6 +514,18 @@ function escapeHtml(value) {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#39;");
+}
+
+function getObjectValueCaseInsensitive(obj, key) {
+  if (!obj || typeof obj !== "object") return "";
+  const normalizedKey = String(key || "").trim().toLowerCase();
+  if (!normalizedKey) return "";
+  for (const [candidateKey, candidateValue] of Object.entries(obj)) {
+    if (String(candidateKey || "").trim().toLowerCase() === normalizedKey) {
+      return candidateValue;
+    }
+  }
+  return "";
 }
 
 function badgeClass(severity) {
@@ -2845,6 +2859,13 @@ function renderSelectedInstanceConnectors(instance) {
     skill_name: "gmail-connector",
     server_name: "gmail",
   };
+  const composioPreset = getConnectorPreset("composio") || {
+    name: "composio",
+    display_name: "Composio",
+    description: "Install a Composio remote MCP connector preset.",
+    skill_name: "composio-connector",
+    server_name: "composio",
+  };
   const insightdocPreset = getConnectorPreset("insightdoc") || {
     name: "insightdoc",
     display_name: "InsightDOC",
@@ -2855,6 +2876,7 @@ function renderSelectedInstanceConnectors(instance) {
   const githubServer = servers.find((server) => server.name === githubPreset.server_name || server.name === githubPreset.name) || null;
   const notionServer = servers.find((server) => server.name === notionPreset.server_name || server.name === notionPreset.name) || null;
   const gmailServer = servers.find((server) => server.name === gmailPreset.server_name || server.name === gmailPreset.name) || null;
+  const composioServer = servers.find((server) => server.name === composioPreset.server_name || server.name === composioPreset.name) || null;
   const insightdocServer = servers.find((server) => server.name === insightdocPreset.server_name || server.name === insightdocPreset.name) || null;
   const githubStatus = String(
     state.connectorStatusByInstance[`${instance.id}:github`]
@@ -2874,6 +2896,12 @@ function renderSelectedInstanceConnectors(instance) {
       || gmailServer?.connector_status
       || "",
   ).trim() || "pending";
+  const composioStatus = String(
+    state.connectorStatusByInstance[`${instance.id}:composio`]
+      || composioServer?.status
+      || composioServer?.connector_status
+      || "",
+  ).trim() || "pending";
   const insightdocStatus = String(
     state.connectorStatusByInstance[`${instance.id}:insightdoc`]
       || insightdocServer?.status
@@ -2883,6 +2911,7 @@ function renderSelectedInstanceConnectors(instance) {
   const githubConnected = githubStatus === "connected";
   const notionConnected = notionStatus === "connected";
   const gmailConnected = gmailStatus === "connected";
+  const composioConnected = composioStatus === "connected";
   const insightdocConnected = insightdocStatus === "connected";
   const searchValue = state.connectorSearchByInstance[instance.id] || "";
   const searchTerm = searchValue.trim().toLowerCase();
@@ -2916,6 +2945,16 @@ function renderSelectedInstanceConnectors(instance) {
       available: true,
       iconMarkup: renderConnectorIconMarkup("gmail", "Gmail"),
       accentClass: "connector-mark-gmail",
+    },
+    {
+      id: "composio",
+      name: composioPreset.display_name || "Composio",
+      description: composioPreset.description || "Install a Composio remote MCP connector preset.",
+      status: composioConnected ? "Connected" : "Not Connected",
+      connected: composioConnected,
+      available: true,
+      iconMarkup: renderConnectorIconMarkup("composio", "Composio"),
+      accentClass: "connector-mark-composio",
     },
     {
       id: "insightdoc",
@@ -3126,6 +3165,13 @@ function buildGmailConnectorPayload(instanceId) {
   };
 }
 
+function buildComposioConnectorPayload(instanceId) {
+  return {
+    instance_id: instanceId,
+    api_key: document.getElementById("connector-composio-api-key")?.value ?? "",
+  };
+}
+
 function buildInsightdocConnectorPayload(instanceId) {
   return {
     instance_id: instanceId,
@@ -3227,6 +3273,12 @@ function connectorMaskNotionToken(instance) {
 function connectorMaskGmailToken(instance) {
   const env = instance?.mcp?.servers?.find((server) => server.name === "gmail")?.env || {};
   return env.GMAIL_TOKEN ? `••••${String(env.GMAIL_TOKEN).slice(-4)}` : "";
+}
+
+function connectorMaskComposioApiKey(instance) {
+  const headers = instance?.mcp?.servers?.find((server) => server.name === "composio")?.headers || {};
+  const apiKey = String(getObjectValueCaseInsensitive(headers, "x-consumer-api-key") || "").trim();
+  return apiKey ? `••••${apiKey.slice(-4)}` : "";
 }
 
 function connectorMaskInsightdocToken(instance) {
@@ -3441,6 +3493,36 @@ function renderConnectorModal() {
     });
     return;
   }
+  if (connectorId === "composio") {
+    const composioServer = instance?.mcp?.servers?.find((server) => server.name === "composio") || null;
+    titleEl.textContent = "Composio Connector Settings";
+    body.innerHTML = `
+      <div class="stack connector-modal-stack">
+        <p class="meta">Configure the Composio connector for instance <strong>${escapeHtml(instance?.name || instanceId)}</strong>.</p>
+        <div id="connector-modal-status" class="connector-modal-status is-hidden" role="status" aria-live="polite"></div>
+        <p class="meta connector-guide-note">
+          Composio uses the default MCP endpoint <code>https://connect.composio.dev/mcp</code> and the <code>x-consumer-api-key</code> header.
+          Enter only your API key below. All other values stay on their defaults.
+        </p>
+        <div class="field">
+          <label for="connector-composio-api-key">Composio API Key</label>
+          <input id="connector-composio-api-key" type="password" autocomplete="off" placeholder="${escapeHtml(connectorMaskComposioApiKey(instance) || "ck_...")}" value="">
+        </div>
+        <p class="meta">Leave the key blank to keep the current saved API key.</p>
+        <div class="modal-footer-actions">
+          <div class="inline-actions" style="margin-left:auto">
+            <button class="secondary-button" id="connector-modal-cancel-btn" ${busy ? "disabled" : ""}>Cancel</button>
+            <button class="secondary-button" id="connector-modal-validate-btn" ${busy ? "disabled" : ""}>Validate</button>
+            <button class="primary-button" id="connector-modal-save-btn" ${busy ? "disabled" : ""}>Save</button>
+          </div>
+        </div>
+      </div>
+    `;
+    document.getElementById("connector-modal-cancel-btn")?.addEventListener("click", closeConnectorSettings);
+    document.getElementById("connector-modal-save-btn")?.addEventListener("click", () => void handleComposioConnectorInstall(instanceId));
+    document.getElementById("connector-modal-validate-btn")?.addEventListener("click", () => void handleComposioConnectorValidate(instanceId));
+    return;
+  }
   if (connectorId === "insightdoc") {
     const insightdocServer = instance?.mcp?.servers?.find((server) => server.name === "insightdoc") || null;
     const currentEnv = insightdocServer?.env || {};
@@ -3570,6 +3652,10 @@ async function handleConnectorModalSave() {
     await handleGmailConnectorInstall(ctx.instanceId);
     return;
   }
+  if (ctx.connectorId === "composio") {
+    await handleComposioConnectorInstall(ctx.instanceId);
+    return;
+  }
   if (ctx.connectorId === "insightdoc") {
     await handleInsightdocConnectorInstall(ctx.instanceId);
     return;
@@ -3590,6 +3676,10 @@ async function handleConnectorModalValidate() {
   }
   if (ctx.connectorId === "gmail") {
     await handleGmailConnectorValidate(ctx.instanceId);
+    return;
+  }
+  if (ctx.connectorId === "composio") {
+    await handleComposioConnectorValidate(ctx.instanceId);
     return;
   }
   if (ctx.connectorId === "insightdoc") {
@@ -3714,6 +3804,46 @@ async function handleGmailConnectorValidate(instanceId) {
   } catch (error) {
     state.connectorStatusByInstance[`${instanceId}:gmail`] = "error";
     setConnectorModalStatus(`Unable to validate Gmail connector: ${error.message}`, "error");
+  } finally {
+    setConnectorModalBusy(false);
+  }
+}
+
+async function handleComposioConnectorInstall(instanceId) {
+  const payload = buildComposioConnectorPayload(instanceId);
+  setConnectorModalBusy(true);
+  try {
+    const installResult = await postJson("/admin/connectors/composio/install", payload);
+    const validationResult = await postJson("/admin/connectors/composio/validate", payload);
+    state.connectorStatusByInstance[`${instanceId}:composio`] = validationResult.status === "ok" ? "connected" : "error";
+    setConnectorModalStatus(formatValidationMessage("Composio connector", validationResult), validationResult.status === "ok" ? "success" : "error");
+    await loadDashboard();
+    if (validationResult.status === "ok") {
+      await promptConnectorRestartAfterSave(installResult.instance || selectedInstance(), "Composio connector", `Server '${installResult.server_name || "composio"}' is ready.`);
+    }
+  } catch (error) {
+    setBanner(`Unable to install Composio connector: ${error.message}`, "error");
+  } finally {
+    setConnectorModalBusy(false);
+  }
+}
+
+async function handleComposioConnectorValidate(instanceId) {
+  const payload = buildComposioConnectorPayload(instanceId);
+  setConnectorModalBusy(true);
+  try {
+    const result = await postJson("/admin/connectors/composio/validate", payload);
+    const bannerType = result.status === "error" ? "error" : result.status === "warning" ? "warning" : "success";
+    setConnectorModalStatus(formatValidationMessage("Composio connector", result), bannerType);
+    state.connectorStatusByInstance[`${instanceId}:composio`] = result.status === "ok" ? "connected" : "error";
+    await loadDashboard();
+    const selected = selectedInstance();
+    if (selected && selected.id === instanceId) {
+      renderSelectedInstanceConnectors(selected);
+    }
+  } catch (error) {
+    state.connectorStatusByInstance[`${instanceId}:composio`] = "error";
+    setConnectorModalStatus(`Unable to validate Composio connector: ${error.message}`, "error");
   } finally {
     setConnectorModalBusy(false);
   }

@@ -1,14 +1,16 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
+from unittest.mock import AsyncMock
 
 import httpx
 import pytest
 
-from nanobot.admin.connectors import build_gmail_stdio_server_config, build_insightdoc_stdio_server_config, get_connector_preset, list_connector_presets
-from nanobot.admin.service import AdminService
+from nanobot.admin.connectors import build_composio_mcp_server_config, build_gmail_stdio_server_config, build_insightdoc_stdio_server_config, get_connector_preset, list_connector_presets
+from nanobot.admin.service import AdminService, _probe_remote_mcp_server_async
 from nanobot.config.loader import load_config, save_config
 from nanobot.config.schema import Config, MCPServerConfig
 
@@ -16,13 +18,16 @@ from nanobot.config.schema import Config, MCPServerConfig
 @dataclass(frozen=True)
 class ConnectorContract:
     name: str
-    runtime_script_name: str
+    runtime_script_name: str | None
     expected_env_keys: tuple[str, ...]
     install: Callable[[AdminService], dict[str, Any]]
     seed_saved_config: Callable[[Path], None]
     patch_validate_success: Callable[[pytest.MonkeyPatch], None]
     patch_validate_failure: Callable[[pytest.MonkeyPatch], None]
     validate: Callable[[AdminService], dict[str, Any]]
+    expected_transport: str = "stdio"
+    expected_url: str | None = None
+    expected_header_keys: tuple[str, ...] = ()
 
 
 def _make_config(config_path: Path) -> None:
@@ -31,6 +36,64 @@ def _make_config(config_path: Path) -> None:
     config = Config()
     config.agents.defaults.workspace = str(workspace)
     save_config(config, config_path)
+
+
+def test_probe_remote_mcp_server_supports_streamable_http_context_manager(monkeypatch: pytest.MonkeyPatch) -> None:
+    class DummyClientSession:
+        def __init__(self, read: object, write: object) -> None:
+            self.read = read
+            self.write = write
+
+        async def __aenter__(self) -> "DummyClientSession":
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb) -> None:
+            return None
+
+        async def initialize(self) -> None:
+            return None
+
+        async def list_tools(self):
+            return type(
+                "DummyToolsResult",
+                (),
+                {"tools": [type("DummyTool", (), {"name": "search_apps"})(), type("DummyTool", (), {"name": "list_connected_accounts"})()]},
+            )()
+
+    class DummyHttpClient:
+        def __init__(self, **_: Any) -> None:
+            pass
+
+        async def __aenter__(self) -> "DummyHttpClient":
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb) -> None:
+            return None
+
+    class DummyStreamableHttpContext:
+        async def __aenter__(self):
+            return ("read_stream", "write_stream", lambda: "session-1")
+
+        async def __aexit__(self, exc_type, exc, tb) -> None:
+            return None
+
+    monkeypatch.setattr("nanobot.admin.service.httpx.AsyncClient", DummyHttpClient)
+    monkeypatch.setattr("mcp.ClientSession", DummyClientSession)
+    monkeypatch.setattr(
+        "mcp.client.streamable_http.streamable_http_client",
+        lambda *args, **kwargs: DummyStreamableHttpContext(),
+    )
+
+    result = asyncio.run(
+        _probe_remote_mcp_server_async(
+            MCPServerConfig.model_validate(
+                build_composio_mcp_server_config(api_key="ck_example")
+            )
+        )
+    )
+
+    assert result["tool_count"] == 2
+    assert result["tool_names"] == ["search_apps", "list_connected_accounts"]
 
 
 def _github_install(service: AdminService) -> dict[str, Any]:
@@ -250,6 +313,51 @@ def _gmail_validate(service: AdminService) -> dict[str, Any]:
     )
 
 
+def _composio_install(service: AdminService) -> dict[str, Any]:
+    return service.install_composio_connector(
+        instance_id="default",
+        api_key="ck_example",
+    )
+
+
+def _composio_seed_saved_config(config_path: Path) -> None:
+    config = load_config(config_path)
+    config.tools.mcp_servers["composio"] = MCPServerConfig.model_validate(
+        build_composio_mcp_server_config(
+            api_key="ck_saved",
+            url="https://connect.composio.dev/mcp",
+        )
+    )
+    save_config(config, config_path)
+
+
+def _patch_composio_validate_success(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "nanobot.admin.service._probe_remote_mcp_server_async",
+        AsyncMock(return_value={"tool_count": 7, "tool_names": ["gmail_send", "slack_message"]}),
+    )
+
+
+def _patch_composio_validate_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "nanobot.admin.service._probe_remote_mcp_server_async",
+        AsyncMock(
+            side_effect=httpx.HTTPStatusError(
+                "unauthorized",
+                request=httpx.Request("POST", "https://connect.composio.dev/mcp"),
+                response=httpx.Response(401),
+            )
+        ),
+    )
+
+
+def _composio_validate(service: AdminService) -> dict[str, Any]:
+    return service.validate_composio_connector(
+        instance_id="default",
+        api_key="",
+    )
+
+
 def _insightdoc_install(service: AdminService) -> dict[str, Any]:
     return service.install_insightdoc_connector(
         instance_id="default",
@@ -382,6 +490,19 @@ CONNECTOR_CONTRACTS: tuple[ConnectorContract, ...] = (
         validate=_gmail_validate,
     ),
     ConnectorContract(
+        name="composio",
+        runtime_script_name=None,
+        expected_env_keys=(),
+        expected_transport="streamableHttp",
+        expected_url="https://connect.composio.dev/mcp",
+        expected_header_keys=("x-consumer-api-key",),
+        install=_composio_install,
+        seed_saved_config=_composio_seed_saved_config,
+        patch_validate_success=_patch_composio_validate_success,
+        patch_validate_failure=_patch_composio_validate_failure,
+        validate=_composio_validate,
+    ),
+    ConnectorContract(
         name="insightdoc",
         runtime_script_name="insightdoc_mcp_server.py",
         expected_env_keys=(
@@ -413,16 +534,21 @@ def test_connector_contract_install_persists_runtime_and_skill(tmp_path: Path, c
     preset = get_connector_preset(contract.name)
     saved = load_config(config_path)
     server = saved.tools.mcp_servers[preset.server_name]
-    runtime_script = config_path.parent / "runtime" / contract.runtime_script_name
-
     assert result["connector"] == contract.name
-    assert server.command == "python3"
-    assert server.args == [str(runtime_script)]
     assert server.connector_status == "pending"
-    assert runtime_script.exists()
     assert (config_path.parent / "workspace" / "skills" / preset.skill_name / "SKILL.md").exists()
-    for key in contract.expected_env_keys:
-        assert server.env.get(key)
+    if contract.runtime_script_name:
+        runtime_script = config_path.parent / "runtime" / contract.runtime_script_name
+        assert server.command == "python3"
+        assert server.args == [str(runtime_script)]
+        assert runtime_script.exists()
+        for key in contract.expected_env_keys:
+            assert server.env.get(key)
+    else:
+        assert server.type == contract.expected_transport
+        assert server.url == (contract.expected_url or "")
+        for key in contract.expected_header_keys:
+            assert server.headers.get(key)
 
 
 @pytest.mark.parametrize("contract", CONNECTOR_CONTRACTS, ids=lambda contract: contract.name)
@@ -445,8 +571,12 @@ def test_connector_contract_validate_success_marks_connected(
 
     assert result["status"] == "ok"
     assert server.connector_status == "connected"
-    assert server.command == "python3"
-    assert server.args == [str(config_path.parent / "runtime" / contract.runtime_script_name)]
+    if contract.runtime_script_name:
+        assert server.command == "python3"
+        assert server.args == [str(config_path.parent / "runtime" / contract.runtime_script_name)]
+    else:
+        assert server.type == contract.expected_transport
+        assert server.url == (contract.expected_url or "")
 
 
 @pytest.mark.parametrize("contract", CONNECTOR_CONTRACTS, ids=lambda contract: contract.name)
@@ -469,8 +599,12 @@ def test_connector_contract_validate_failure_marks_error(
 
     assert result["status"] == "error"
     assert server.connector_status == "error"
-    assert server.command == "python3"
-    assert server.args == [str(config_path.parent / "runtime" / contract.runtime_script_name)]
+    if contract.runtime_script_name:
+        assert server.command == "python3"
+        assert server.args == [str(config_path.parent / "runtime" / contract.runtime_script_name)]
+    else:
+        assert server.type == contract.expected_transport
+        assert server.url == (contract.expected_url or "")
 
 
 def test_registered_connector_presets_have_unique_identity_and_skill_files() -> None:

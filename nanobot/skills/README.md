@@ -21,6 +21,7 @@ The skill format and metadata structure follow OpenClaw's conventions to maintai
 | `github-connector` | Use the built-in GitHub MCP connector |
 | `notion-connector` | Use the built-in Notion MCP connector |
 | `gmail-connector` | Use the built-in Gmail MCP connector |
+| `composio-connector` | Use the built-in Composio MCP connector |
 | `insightdoc-connector` | Use the built-in InsightDOC MCP connector |
 | `weather` | Get weather info using wttr.in and Open-Meteo |
 | `summarize` | Summarize URLs, files, and YouTube videos |

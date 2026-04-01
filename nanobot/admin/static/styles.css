@@ -744,6 +744,11 @@ button {
   color: #ef4444;
 }
 
+.connector-mark-composio {
+  background: rgba(39, 134, 194, 0.08);
+  color: var(--brand-blue);
+}
+
 .connector-mark-insightdoc {
   background: rgba(39, 134, 194, 0.08);
   color: var(--brand-blue);

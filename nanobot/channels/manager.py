@@ -83,43 +83,6 @@ class ChannelManager:
             except ImportError as e:
                 logger.warning("Discord channel not available: {}", e)
 
-        # Feishu channel
-        if channel_enabled("feishu"):
-            try:
-                from nanobot.channels.feishu import FeishuChannel
-                self.channels["feishu"] = FeishuChannel(
-                    channel_config("feishu"), self.bus
-                )
-                self.channels["feishu"]._access_request_store = self._access_request_store
-                logger.info("Feishu channel enabled")
-            except ImportError as e:
-                logger.warning("Feishu channel not available: {}", e)
-
-        # Mochat channel
-        if channel_enabled("mochat"):
-            try:
-                from nanobot.channels.mochat import MochatChannel
-
-                self.channels["mochat"] = MochatChannel(
-                    channel_config("mochat"), self.bus
-                )
-                self.channels["mochat"]._access_request_store = self._access_request_store
-                logger.info("Mochat channel enabled")
-            except ImportError as e:
-                logger.warning("Mochat channel not available: {}", e)
-
-        # DingTalk channel
-        if channel_enabled("dingtalk"):
-            try:
-                from nanobot.channels.dingtalk import DingTalkChannel
-                self.channels["dingtalk"] = DingTalkChannel(
-                    channel_config("dingtalk"), self.bus
-                )
-                self.channels["dingtalk"]._access_request_store = self._access_request_store
-                logger.info("DingTalk channel enabled")
-            except ImportError as e:
-                logger.warning("DingTalk channel not available: {}", e)
-
         # Email channel
         if channel_enabled("email"):
             try:
@@ -144,32 +107,6 @@ class ChannelManager:
             except ImportError as e:
                 logger.warning("Slack channel not available: {}", e)
 
-        # QQ channel
-        if channel_enabled("qq"):
-            try:
-                from nanobot.channels.qq import QQChannel
-                self.channels["qq"] = QQChannel(
-                    channel_config("qq"),
-                    self.bus,
-                )
-                self.channels["qq"]._access_request_store = self._access_request_store
-                logger.info("QQ channel enabled")
-            except ImportError as e:
-                logger.warning("QQ channel not available: {}", e)
-
-        # Matrix channel
-        if channel_enabled("matrix"):
-            try:
-                from nanobot.channels.matrix import MatrixChannel
-                self.channels["matrix"] = MatrixChannel(
-                    channel_config("matrix"),
-                    self.bus,
-                )
-                self.channels["matrix"]._access_request_store = self._access_request_store
-                logger.info("Matrix channel enabled")
-            except ImportError as e:
-                logger.warning("Matrix channel not available: {}", e)
-
         # Softnix Mobile App channel
         if channel_enabled("softnix_app"):
             try:
@@ -178,7 +115,7 @@ class ChannelManager:
                 self.channels["softnix_app"] = SoftnixAppChannel(
                     channel_config("softnix_app"),
                     self.bus,
-                    workspace_path=self.config.workspace_path
+                    workspace_path=self.config.workspace_path,
                 )
                 logger.info("Softnix Mobile App channel enabled")
             except ImportError as e:

@@ -41,6 +41,17 @@ GMAIL_CONNECTOR_PRESET = ConnectorPreset(
     server_name="gmail",
 )
 
+COMPOSIO_MCP_URL_DEFAULT = "https://connect.composio.dev/mcp"
+COMPOSIO_API_KEY_HEADER_DEFAULT = "x-consumer-api-key"
+
+COMPOSIO_CONNECTOR_PRESET = ConnectorPreset(
+    name="composio",
+    display_name="Composio",
+    description="Install a Composio remote MCP connector for third-party app actions using a consumer API key.",
+    skill_name="composio-connector",
+    server_name="composio",
+)
+
 INSIGHTDOC_CONNECTOR_PRESET = ConnectorPreset(
     name="insightdoc",
     display_name="InsightDOC",
@@ -52,7 +63,13 @@ INSIGHTDOC_CONNECTOR_PRESET = ConnectorPreset(
 
 def list_connector_presets() -> list[ConnectorPreset]:
     """Return the built-in connector presets."""
-    return [GITHUB_CONNECTOR_PRESET, NOTION_CONNECTOR_PRESET, GMAIL_CONNECTOR_PRESET, INSIGHTDOC_CONNECTOR_PRESET]
+    return [
+        GITHUB_CONNECTOR_PRESET,
+        NOTION_CONNECTOR_PRESET,
+        GMAIL_CONNECTOR_PRESET,
+        COMPOSIO_CONNECTOR_PRESET,
+        INSIGHTDOC_CONNECTOR_PRESET,
+    ]
 
 
 def get_connector_preset(name: str) -> ConnectorPreset:
@@ -139,6 +156,25 @@ def build_gmail_stdio_server_config(
         "command": "python3",
         "args": [str(script_path).strip()] if str(script_path or "").strip() else ["-m", "nanobot.integrations.gmail_mcp_server"],
         "env": {key: value for key, value in env.items() if value},
+        "tool_timeout": int(tool_timeout),
+    }
+
+
+def build_composio_mcp_server_config(
+    *,
+    api_key: str,
+    url: str | None = None,
+    tool_timeout: int = 30,
+) -> dict[str, Any]:
+    """Build the MCP server config payload for the Composio connector."""
+    normalized_url = str(url or COMPOSIO_MCP_URL_DEFAULT).strip() or COMPOSIO_MCP_URL_DEFAULT
+    headers = {
+        COMPOSIO_API_KEY_HEADER_DEFAULT: str(api_key or "").strip(),
+    }
+    return {
+        "type": "streamableHttp",
+        "url": normalized_url,
+        "headers": {key: value for key, value in headers.items() if value},
         "tool_timeout": int(tool_timeout),
     }
 

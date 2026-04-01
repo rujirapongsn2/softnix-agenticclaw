@@ -139,6 +139,8 @@ def resolve_admin_get(
                 "/admin/connectors/notion/validate",
                 "/admin/connectors/gmail/install",
                 "/admin/connectors/gmail/validate",
+                "/admin/connectors/composio/install",
+                "/admin/connectors/composio/validate",
                 "/admin/connectors/insightdoc/install",
                 "/admin/connectors/insightdoc/validate",
                 "/admin/security",
@@ -934,6 +936,28 @@ def resolve_admin_post(
                 accessible_instance_ids=accessible_instance_ids,
             )
             return HTTPStatus.OK, result
+        if path == "/admin/connectors/composio/install":
+            instance_id = payload.get("instance_id") or "default"
+            api_key = str(payload.get("api_key") or payload.get("token") or "")
+            result = service.install_composio_connector(
+                instance_id=instance_id,
+                api_key=api_key,
+                url=payload.get("url"),
+                server_name=payload.get("server_name"),
+                accessible_instance_ids=accessible_instance_ids,
+            )
+            return HTTPStatus.OK, result
+        if path == "/admin/connectors/composio/validate":
+            instance_id = payload.get("instance_id") or "default"
+            api_key = str(payload.get("api_key") or payload.get("token") or "")
+            result = service.validate_composio_connector(
+                instance_id=instance_id,
+                api_key=api_key,
+                url=payload.get("url"),
+                server_name=payload.get("server_name"),
+                accessible_instance_ids=accessible_instance_ids,
+            )
+            return HTTPStatus.OK, result
         if path == "/admin/connectors/insightdoc/install":
             instance_id = payload.get("instance_id") or "default"
             token = str(payload.get("token") or "")
@@ -1185,6 +1209,10 @@ def _match_permission(method: str, path: str) -> str | None:
         if path == "/admin/connectors/gmail/install":
             return "mcp.update"
         if path == "/admin/connectors/gmail/validate":
+            return "mcp.read"
+        if path == "/admin/connectors/composio/install":
+            return "mcp.update"
+        if path == "/admin/connectors/composio/validate":
             return "mcp.read"
         if path == "/admin/connectors/insightdoc/install":
             return "mcp.update"

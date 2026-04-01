@@ -1,4 +1,6 @@
 from nanobot.admin.connectors import (
+    COMPOSIO_CONNECTOR_PRESET,
+    build_composio_mcp_server_config,
     GMAIL_CONNECTOR_PRESET,
     GITHUB_CONNECTOR_PRESET,
     INSIGHTDOC_CONNECTOR_PRESET,
@@ -20,6 +22,8 @@ def test_github_connector_preset_is_registered() -> None:
     assert get_connector_preset("notion") == NOTION_CONNECTOR_PRESET
     assert any(preset.name == "gmail" for preset in presets)
     assert get_connector_preset("gmail") == GMAIL_CONNECTOR_PRESET
+    assert any(preset.name == "composio" for preset in presets)
+    assert get_connector_preset("composio") == COMPOSIO_CONNECTOR_PRESET
     assert any(preset.name == "insightdoc" for preset in presets)
     assert get_connector_preset("insightdoc") == INSIGHTDOC_CONNECTOR_PRESET
 
@@ -98,6 +102,14 @@ def test_gmail_stdio_server_config_includes_refresh_credentials_when_present() -
     assert config["env"]["GMAIL_CLIENT_ID"] == "client-id"
     assert config["env"]["GMAIL_CLIENT_SECRET"] == "client-secret"
     assert config["env"]["GMAIL_TOKEN_URI"] == "https://oauth2.googleapis.com/token"
+
+
+def test_composio_mcp_server_config_uses_remote_http_defaults() -> None:
+    config = build_composio_mcp_server_config(api_key="ck_example")
+
+    assert config["type"] == "streamableHttp"
+    assert config["url"] == "https://connect.composio.dev/mcp"
+    assert config["headers"]["x-consumer-api-key"] == "ck_example"
 
 
 def test_insightdoc_stdio_server_config_accepts_runtime_script_path() -> None:

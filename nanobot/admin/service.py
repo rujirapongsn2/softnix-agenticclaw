@@ -23,6 +23,7 @@ import time
 import urllib.request
 import uuid
 import zipfile
+from contextlib import AsyncExitStack
 from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
@@ -52,10 +53,14 @@ from nanobot.admin.auth import (
 )
 from nanobot.admin.auth_store import AdminAuthStore
 from nanobot.admin.connectors import (
+    COMPOSIO_API_KEY_HEADER_DEFAULT,
+    COMPOSIO_CONNECTOR_PRESET,
+    COMPOSIO_MCP_URL_DEFAULT,
     GMAIL_CONNECTOR_PRESET,
     GITHUB_CONNECTOR_PRESET,
     INSIGHTDOC_CONNECTOR_PRESET,
     NOTION_CONNECTOR_PRESET,
+    build_composio_mcp_server_config,
     build_gmail_stdio_server_config,
     build_github_stdio_server_config,
     build_insightdoc_stdio_server_config,
@@ -154,6 +159,66 @@ def _ensure_gmail_connector_runtime_script(target: "InstanceTarget") -> Path:
 
 def _ensure_insightdoc_connector_runtime_script(target: "InstanceTarget") -> Path:
     return _ensure_connector_runtime_script(target, "insightdoc_mcp_server.py")
+
+
+def _header_value_case_insensitive(headers: dict[str, Any] | None, header_name: str) -> str:
+    normalized_name = str(header_name or "").strip().lower()
+    if not normalized_name:
+        return ""
+    for key, value in (headers or {}).items():
+        if str(key or "").strip().lower() == normalized_name:
+            return str(value or "").strip()
+    return ""
+
+
+async def _probe_remote_mcp_server_async(server_config: MCPServerConfig) -> dict[str, Any]:
+    from mcp import ClientSession
+    from mcp.client.sse import sse_client
+    from mcp.client.streamable_http import streamable_http_client
+
+    transport_type = str(server_config.type or "").strip()
+    if not transport_type:
+        transport_type = "sse" if str(server_config.url or "").rstrip("/").endswith("/sse") else "streamableHttp"
+
+    async with AsyncExitStack() as stack:
+        if transport_type == "sse":
+            def httpx_client_factory(
+                headers: dict[str, str] | None = None,
+                timeout: httpx.Timeout | None = None,
+                auth: httpx.Auth | None = None,
+            ) -> httpx.AsyncClient:
+                merged_headers = {**(server_config.headers or {}), **(headers or {})}
+                return httpx.AsyncClient(
+                    headers=merged_headers or None,
+                    follow_redirects=True,
+                    timeout=timeout,
+                    auth=auth,
+                )
+
+            read, write = await stack.enter_async_context(
+                sse_client(server_config.url, httpx_client_factory=httpx_client_factory)
+            )
+        elif transport_type == "streamableHttp":
+            http_client = await stack.enter_async_context(
+                httpx.AsyncClient(
+                    headers=server_config.headers or None,
+                    follow_redirects=True,
+                    timeout=None,
+                )
+            )
+            read, write, _ = await stack.enter_async_context(
+                streamable_http_client(server_config.url, http_client=http_client)
+            )
+        else:
+            raise ValueError(f"Unsupported MCP transport '{transport_type}'")
+
+        async with ClientSession(read, write) as session:
+            await session.initialize()
+            tools = await session.list_tools()
+            return {
+                "tool_count": len(tools.tools),
+                "tool_names": [tool.name for tool in tools.tools],
+            }
 
 
 def _file_mode(path: Path) -> str | None:
@@ -2643,6 +2708,164 @@ class AdminService:
             event_type="connector.validated",
             payload={
                 "connector": GMAIL_CONNECTOR_PRESET.name,
+                "status": status,
+            },
+        )
+        return response
+
+    def install_composio_connector(
+        self,
+        *,
+        instance_id: str,
+        api_key: str,
+        url: str | None = None,
+        server_name: str | None = None,
+        accessible_instance_ids: set[str] | list[str] | tuple[str, ...] | None = None,
+    ) -> dict[str, Any]:
+        """Install the built-in Composio connector preset into one instance."""
+        target = self._get_target(instance_id)
+        self._require_target_access(target, accessible_instance_ids)
+        preset = get_connector_preset(COMPOSIO_CONNECTOR_PRESET.name)
+        normalized_server_name = str(server_name or preset.server_name).strip() or preset.server_name
+        config = self._load_target_config(target)
+        existing_server = config.tools.mcp_servers.get(normalized_server_name)
+        existing_headers = existing_server.headers if existing_server is not None else {}
+        api_key_value = str(api_key or "").strip() or _header_value_case_insensitive(existing_headers, COMPOSIO_API_KEY_HEADER_DEFAULT)
+        url_value = str(url or "").strip() or str(getattr(existing_server, "url", "") or "").strip() or COMPOSIO_MCP_URL_DEFAULT
+        if not api_key_value:
+            raise ValueError("Composio API key is required")
+        config.tools.mcp_servers[normalized_server_name] = MCPServerConfig.model_validate(
+            build_composio_mcp_server_config(
+                api_key=api_key_value,
+                url=url_value,
+            )
+        )
+        config.tools.mcp_servers[normalized_server_name].connector_status = "pending"
+        save_config(config, target.config_path)
+        workspace_path = target.workspace_path
+        if workspace_path.exists():
+            sync_workspace_templates(
+                workspace_path,
+                silent=True,
+                agent_name=target.name,
+                apply_identity=True,
+            )
+        self._append_audit_event(
+            instance_id=target.id,
+            event_type="connector.installed",
+            payload={
+                "connector": preset.name,
+                "server_name": normalized_server_name,
+                "skill_name": preset.skill_name,
+            },
+        )
+        return {
+            "instance": self._collect_instance(target),
+            "connector": preset.name,
+            "server_name": normalized_server_name,
+            "skill_name": preset.skill_name,
+        }
+
+    def validate_composio_connector(
+        self,
+        *,
+        instance_id: str,
+        api_key: str,
+        url: str | None = None,
+        server_name: str | None = None,
+        accessible_instance_ids: set[str] | list[str] | tuple[str, ...] | None = None,
+    ) -> dict[str, Any]:
+        """Validate the Composio connector API key and remote MCP availability."""
+        target = self._get_target(instance_id)
+        self._require_target_access(target, accessible_instance_ids)
+        preset_server_name = str(server_name or COMPOSIO_CONNECTOR_PRESET.server_name).strip() or COMPOSIO_CONNECTOR_PRESET.server_name
+        api_key_value = str(api_key or "").strip()
+        config = self._load_target_config(target)
+        server_config = config.tools.mcp_servers.get(preset_server_name)
+        if server_config is not None:
+            if not api_key_value:
+                api_key_value = _header_value_case_insensitive(server_config.headers, COMPOSIO_API_KEY_HEADER_DEFAULT)
+            if not url:
+                url = str(server_config.url or "").strip() or COMPOSIO_MCP_URL_DEFAULT
+        if not api_key_value:
+            raise ValueError("Composio API key is required")
+
+        probe_config = MCPServerConfig.model_validate(
+            build_composio_mcp_server_config(
+                api_key=api_key_value,
+                url=str(url or COMPOSIO_MCP_URL_DEFAULT).strip() or COMPOSIO_MCP_URL_DEFAULT,
+            )
+        )
+        findings: list[dict[str, Any]] = []
+        try:
+            probe_result = asyncio.run(_probe_remote_mcp_server_async(probe_config))
+            findings.append(
+                {
+                    "severity": "info",
+                    "code": "api_key_valid",
+                    "detail": f"Connected to Composio MCP and discovered {probe_result.get('tool_count') or 0} tools.",
+                }
+            )
+            if int(probe_result.get("tool_count") or 0) <= 0:
+                findings.append(
+                    {
+                        "severity": "warning",
+                        "code": "no_tools_visible",
+                        "detail": "Composio MCP server connected, but no tools were exposed.",
+                    }
+                )
+        except httpx.HTTPStatusError as exc:
+            status_code = exc.response.status_code
+            if status_code in {401, 403}:
+                findings.append(
+                    {
+                        "severity": "error",
+                        "code": "invalid_api_key",
+                        "detail": "Composio API key was rejected by the MCP server.",
+                    }
+                )
+            else:
+                findings.append(
+                    {
+                        "severity": "error",
+                        "code": "composio_api_error",
+                        "detail": f"Composio validation failed with HTTP {status_code}.",
+                    }
+                )
+        except Exception as exc:
+            findings.append(
+                {
+                    "severity": "error",
+                    "code": "composio_api_unreachable",
+                    "detail": str(exc),
+                }
+            )
+
+        status = "ok"
+        if any(item["severity"] == "error" for item in findings):
+            status = "error"
+        elif any(item["severity"] == "warning" for item in findings):
+            status = "warning"
+
+        response = {
+            "instance_id": target.id,
+            "connector": COMPOSIO_CONNECTOR_PRESET.name,
+            "status": status,
+            "findings": findings,
+        }
+        config = self._load_target_config(target)
+        server_config = config.tools.mcp_servers.get(preset_server_name)
+        if server_config is not None:
+            server_config.type = probe_config.type
+            server_config.url = probe_config.url
+            server_config.headers = dict(probe_config.headers)
+            server_config.connector_status = "connected" if status == "ok" else "error"
+            save_config(config, target.config_path)
+        self._append_audit_event(
+            instance_id=target.id,
+            event_type="connector.validated",
+            payload={
+                "connector": COMPOSIO_CONNECTOR_PRESET.name,
                 "status": status,
             },
         )

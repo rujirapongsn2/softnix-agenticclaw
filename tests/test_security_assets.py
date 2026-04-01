@@ -19,6 +19,12 @@ def test_docs_images_route_serves_nested_connector_icons() -> None:
     assert content_type == "image/png"
 
 
+def test_docs_images_route_serves_composio_logo() -> None:
+    path, content_type = resolve_static_asset("/docs/images/Connectors/composio.png")
+    assert path == PROJECT_ROOT / "docs" / "images" / "Connectors" / "composio.png"
+    assert content_type == "image/png"
+
+
 def test_docs_images_route_handles_spaced_filenames() -> None:
     path, content_type = resolve_static_asset("/docs/images/Logo%20Softnix.png")
     assert path == PROJECT_ROOT / "docs" / "images" / "Logo Softnix.png"
