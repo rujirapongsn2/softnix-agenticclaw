@@ -406,6 +406,7 @@ EOF
 }
 
 update_project() {
+    local update_mode="${1:-}"
     echo "Updating Softnix AgenticClaw..."
 
     # 1. Backup critical data
@@ -421,6 +422,15 @@ update_project() {
     local changed_files=""
     local rebuild_image=0
     local restart_instances=0
+    local force_rebuild_requested=0
+
+    case "$update_mode" in
+        rebuild|force-rebuild|--rebuild|--force-rebuild|rebuid)
+            rebuild_image=1
+            restart_instances=1
+            force_rebuild_requested=1
+            ;;
+    esac
 
     if [ -d ".git" ]; then
         before_head="$(git rev-parse HEAD)"
@@ -443,7 +453,11 @@ update_project() {
     fi
 
     if [ "$rebuild_image" -eq 1 ]; then
-        echo "   Runtime-affecting changes detected; sandbox image rebuild is required."
+        if [ "$force_rebuild_requested" -eq 1 ]; then
+            echo "   Force rebuild requested; sandbox image rebuild will run."
+        else
+            echo "   Runtime-affecting changes detected; sandbox image rebuild is required."
+        fi
     fi
     if [ "$restart_instances" -eq 1 ]; then
         echo "   Running instances will be restarted after the update."
@@ -544,14 +558,14 @@ case "$COMMAND" in
         install_service
         ;;
     update)
-        update_project
+        update_project "$SUBCOMMAND"
         ;;
     *)
         echo "Softnix AgenticClaw Management Tool"
         echo "Usage:"
         echo "  $0 admin {start|stop|restart|status}  - Manage the Admin Service"
         echo "  $0 install                            - Install as Systemd Service (Linux Auto-Start)"
-        echo "  $0 update                             - Update code and restart"
+        echo "  $0 update [rebuild]                   - Update code; 'rebuild' forces sandbox image rebuild"
         exit 1
         ;;
 esac
