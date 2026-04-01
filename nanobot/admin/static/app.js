@@ -5711,7 +5711,7 @@ function handleMemoryEditorInput(instanceId, path, value) {
   const file = memoryState.files[path];
   if (!file) return;
   file.content = value;
-  renderSelectedInstanceMemory(selectedInstance());
+  updateMemoryEditorDirtyState(instanceId, path);
 }
 
 async function handleMemoryFileSave(instanceId, path) {
@@ -5729,7 +5729,12 @@ async function handleMemoryFileSave(instanceId, path) {
     file.content = String(payload.content || "");
     file.originalContent = String(payload.content || "");
     file.exists = !!payload.exists;
+    const editor = document.querySelector(`[data-memory-editor="${instanceId}:${path}"]`);
+    if (editor) {
+      editor.value = file.content;
+    }
     clearBanner();
+    updateMemoryEditorDirtyState(instanceId, path);
   } catch (error) {
     setBanner(`Unable to save ${path}: ${error.message}`, "error");
   } finally {
@@ -5743,7 +5748,44 @@ function handleMemoryFileReset(instanceId, path) {
   const file = memoryState.files[path];
   if (!file) return;
   file.content = file.originalContent || "";
-  renderSelectedInstanceMemory(selectedInstance());
+  const editor = document.querySelector(`[data-memory-editor="${instanceId}:${path}"]`);
+  if (editor) {
+    editor.value = file.content;
+  }
+  updateMemoryEditorDirtyState(instanceId, path);
+}
+
+function updateMemoryEditorDirtyState(instanceId, path) {
+  const target = document.getElementById("instance-workspace-memory");
+  if (!target) return;
+  const memoryState = getMemoryState(instanceId);
+  const file = memoryState.files[path];
+  if (!file) return;
+  const canUpdateMemory = hasAuthPermission("memory.update");
+  const dirty = file.content !== file.originalContent;
+  const busyKey = `memory-save:${instanceId}:${path}`;
+  const editorTextarea = target.querySelector(`[data-memory-editor="${instanceId}:${path}"]`);
+  const editorShell = editorTextarea?.closest(".item-card");
+  if (editorShell) {
+    const statusBadge = editorShell.querySelector(".row-between .badge");
+    if (statusBadge) {
+      statusBadge.textContent = dirty ? "Unsaved" : "Saved";
+      statusBadge.classList.toggle("is-warning", dirty);
+      statusBadge.classList.toggle("is-ok", !dirty);
+    }
+  }
+  target.querySelectorAll("[data-memory-save]").forEach((button) => {
+    if (button.dataset.memorySave !== `${instanceId}:${path}`) return;
+    button.disabled = !canUpdateMemory || state.busyKey === busyKey || !dirty;
+  });
+  target.querySelectorAll("[data-memory-reset]").forEach((button) => {
+    if (button.dataset.memoryReset !== `${instanceId}:${path}`) return;
+    button.disabled = !canUpdateMemory || state.busyKey === busyKey || !dirty;
+  });
+  target.querySelectorAll("[data-memory-file]").forEach((button) => {
+    if (button.dataset.memoryFile !== `${instanceId}:${path}`) return;
+    button.textContent = `${path}${dirty ? " *" : ""}`;
+  });
 }
 
 function renderSelectedInstanceSkills(instance) {
