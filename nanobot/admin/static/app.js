@@ -4243,7 +4243,12 @@ function compactExecutionTraceEvents(events) {
       pendingStarts.set(signature, queued);
       return;
     }
-    if ((operation === "command" || operation === "package_install" || operation.startsWith("file_")) && signature) {
+    const completesPendingStart =
+      signature
+      && !isToolStart
+      && status
+      && status !== "running";
+    if (completesPendingStart) {
       const queued = pendingStarts.get(signature) || [];
       if (queued.length > 0) {
         hiddenIndexes.add(queued.shift());
@@ -4364,12 +4369,23 @@ function renderExecutionGraphSvg(trace, options = {}) {
     const firstLine = raw.split(/\r?\n/).find((line) => line.trim()) || raw;
     return firstLine.replace(/^Error:\s*/i, "").trim() || "Unknown error";
   };
-  const laneY = {
-    input: 82,
-    tool: 176,
-    file: 270,
-    output: 364,
-  };
+  const laneOrder = ["input", "tool", "file", "output"];
+  const laneLabels = [
+    { lane: "input", text: "Request" },
+    { lane: "tool", text: "Tool Execution" },
+    { lane: "file", text: "Workspace I/O" },
+    { lane: "output", text: "Response" },
+  ];
+  const nodeWidth = 140;
+  const nodeHeight = 60;
+  const columnGap = 198;
+  const rowGap = 84;
+  const marginX = 86;
+  const marginTop = 84;
+  const marginBottom = 44;
+  const laneX = Object.fromEntries(
+    laneOrder.map((lane, index) => [lane, marginX + index * columnGap]),
+  );
   const hasExplicitStart = trace.events.some((event) => String(event.operation || "") === "message_received");
   const hasExplicitFinish = trace.events.some((event) => String(event.operation || "") === "message_completed");
   const traceStatus = summarizeTraceStatus(trace);
@@ -4434,24 +4450,19 @@ function renderExecutionGraphSvg(trace, options = {}) {
       })(),
     }] : []),
   ];
-  const stepX = 168;
-  const marginX = 76;
-  const width = Math.max(980, marginX * 2 + stepX * Math.max(syntheticNodes.length - 1, 1));
-  const height = 430;
-  const nodeWidth = 140;
-  const nodeHeight = 60;
-  const nodes = syntheticNodes.map((node, index) => {
-    const x = marginX + index * stepX;
-    const y = laneY[node.lane] || laneY.tool;
-    return { ...node, x, y };
+  const laneDepths = new Map();
+  const nodes = syntheticNodes.map((node) => {
+    const lane = laneOrder.includes(node.lane) ? node.lane : "tool";
+    const depth = laneDepths.get(lane) || 0;
+    laneDepths.set(lane, depth + 1);
+    const x = laneX[lane];
+    const y = marginTop + depth * rowGap;
+    return { ...node, lane, x, y };
   });
+  const maxDepth = Math.max(1, ...Array.from(laneDepths.values()));
+  const width = Math.max(980, marginX * 2 + columnGap * Math.max(laneOrder.length - 1, 1) + nodeWidth);
+  const height = Math.max(430, marginTop + (maxDepth - 1) * rowGap + nodeHeight + marginBottom);
   const edges = nodes.slice(1).map((node, index) => ({ from: nodes[index], to: node }));
-  const laneLabels = [
-    { lane: "input", text: "Request" },
-    { lane: "tool", text: "Tool Execution" },
-    { lane: "file", text: "Workspace I/O" },
-    { lane: "output", text: "Response" },
-  ];
   const trunc = (value, max) => {
     const text = String(value || "");
     return text.length > max ? `${text.slice(0, max - 1)}…` : text;
@@ -4476,21 +4487,28 @@ function renderExecutionGraphSvg(trace, options = {}) {
         </defs>
         ${laneLabels
           .map((lane) => `
-            <line x1="16" y1="${laneY[lane.lane]}" x2="${width - 16}" y2="${laneY[lane.lane]}" class="execution-lane-line"></line>
-            <text x="16" y="${laneY[lane.lane] - 10}" class="execution-lane-label">${escapeHtml(lane.text)}</text>
+            <line x1="${laneX[lane.lane]}" y1="46" x2="${laneX[lane.lane]}" y2="${height - 16}" class="execution-lane-line"></line>
+            <text x="${laneX[lane.lane]}" y="30" text-anchor="middle" class="execution-lane-label">${escapeHtml(lane.text)}</text>
           `)
           .join("")}
         ${edges
-          .map((edge) => `
-            <line
-              x1="${edge.from.x + nodeWidth / 2}"
-              y1="${edge.from.y + nodeHeight / 2}"
-              x2="${edge.to.x - nodeWidth / 2}"
-              y2="${edge.to.y + nodeHeight / 2}"
+          .map((edge) => {
+            const sameLane = edge.from.lane === edge.to.lane;
+            const x1 = sameLane ? edge.from.x : edge.from.x + nodeWidth / 2;
+            const y1 = sameLane ? edge.from.y + nodeHeight : edge.from.y + nodeHeight / 2;
+            const x2 = sameLane ? edge.to.x : edge.to.x - nodeWidth / 2;
+            const y2 = sameLane ? edge.to.y : edge.to.y + nodeHeight / 2;
+            const pathD = sameLane
+              ? `M ${x1} ${y1} C ${x1} ${(y1 + y2) / 2}, ${x2} ${(y1 + y2) / 2}, ${x2} ${y2}`
+              : `M ${x1} ${y1} C ${x1 + (x2 - x1) * 0.45} ${y1}, ${x1 + (x2 - x1) * 0.55} ${y2}, ${x2} ${y2}`;
+            return `
+            <path
+              d="${pathD}"
               class="execution-edge ${edge.to.status === "running" ? "is-running" : ""}"
               marker-end="url(#execution-arrow)"
-            ></line>
-          `)
+            ></path>
+          `;
+          })
           .join("")}
         ${nodes
           .map((node) => `
