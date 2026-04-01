@@ -1885,6 +1885,40 @@ def test_admin_server_forwards_composio_connector_settings() -> None:
         assert call["api_key"] == "ck_example"
 
 
+def test_admin_server_forwards_connector_enable_disable() -> None:
+    calls: list[dict] = []
+
+    class StubService:
+        def set_connector_enabled(self, **kwargs):
+            calls.append(kwargs)
+            return {"ok": True, "enabled": kwargs["enabled"]}
+
+    status, payload = resolve_admin_post(
+        StubService(),
+        "/admin/connectors/composio/disable",
+        {
+            "instance_id": "default",
+        },
+    )
+    assert status == HTTPStatus.OK
+    assert payload == {"ok": True, "enabled": False}
+
+    status, payload = resolve_admin_post(
+        StubService(),
+        "/admin/connectors/composio/enable",
+        {
+            "instance_id": "default",
+        },
+    )
+    assert status == HTTPStatus.OK
+    assert payload == {"ok": True, "enabled": True}
+
+    assert calls[0]["connector_name"] == "composio"
+    assert calls[0]["enabled"] is False
+    assert calls[1]["connector_name"] == "composio"
+    assert calls[1]["enabled"] is True
+
+
 def test_admin_server_forwards_insightdoc_connector_settings() -> None:
     calls: list[tuple[str, dict]] = []
 

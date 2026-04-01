@@ -2056,6 +2056,44 @@ class AdminService:
             ]
         }
 
+    def set_connector_enabled(
+        self,
+        *,
+        instance_id: str,
+        connector_name: str,
+        enabled: bool,
+        accessible_instance_ids: set[str] | list[str] | tuple[str, ...] | None = None,
+    ) -> dict[str, Any]:
+        """Enable or disable one built-in connector without deleting its saved config."""
+        target = self._get_target(instance_id)
+        self._require_target_access(target, accessible_instance_ids)
+        preset = get_connector_preset(connector_name)
+        config = self._load_target_config(target)
+        server = config.tools.mcp_servers.get(preset.server_name)
+        if server is None:
+            raise ValueError(f"Connector '{preset.display_name}' is not installed")
+        server.enabled = bool(enabled)
+        runtime = self._probe_instance_runtime(target)
+        server.restart_required = str(runtime.get("status") or "").lower() == "running"
+        save_config(config, target.config_path)
+        self._append_audit_event(
+            instance_id=target.id,
+            event_type="connector.enabled" if enabled else "connector.disabled",
+            payload={
+                "connector": preset.name,
+                "server_name": preset.server_name,
+                "enabled": bool(enabled),
+                "restart_required": bool(server.restart_required),
+            },
+        )
+        return {
+            "instance": self._collect_instance(target),
+            "connector": preset.name,
+            "server_name": preset.server_name,
+            "enabled": bool(enabled),
+            "restart_required": bool(server.restart_required),
+        }
+
     def install_github_connector(
         self,
         *,
@@ -2074,6 +2112,7 @@ class AdminService:
         config = self._load_target_config(target)
         existing_server = config.tools.mcp_servers.get(normalized_server_name)
         existing_env = existing_server.env if existing_server is not None else {}
+        existing_enabled = existing_server.enabled if existing_server is not None else True
         token_value = str(token or "").strip() or str(existing_env.get("GITHUB_TOKEN") or "").strip()
         default_repo_value = str(default_repo or "").strip() or str(existing_env.get("GITHUB_DEFAULT_REPO") or "").strip() or None
         api_base_value = str(api_base or "").strip() or str(existing_env.get("GITHUB_API_BASE") or "").strip() or None
@@ -2088,6 +2127,7 @@ class AdminService:
                 script_path=str(runtime_script),
             )
         )
+        config.tools.mcp_servers[normalized_server_name].enabled = existing_enabled
         config.tools.mcp_servers[normalized_server_name].connector_status = "pending"
         save_config(config, target.config_path)
         workspace_path = target.workspace_path
@@ -2262,6 +2302,7 @@ class AdminService:
         config = self._load_target_config(target)
         existing_server = config.tools.mcp_servers.get(normalized_server_name)
         existing_env = existing_server.env if existing_server is not None else {}
+        existing_enabled = existing_server.enabled if existing_server is not None else True
         token_value = str(token or "").strip() or str(existing_env.get("NOTION_TOKEN") or "").strip()
         default_page_value = normalize_notion_target_id(default_page_id) or normalize_notion_target_id(existing_env.get("NOTION_DEFAULT_PAGE_ID")) or None
         api_base_value = str(api_base or "").strip() or str(existing_env.get("NOTION_API_BASE") or "").strip() or NOTION_API_BASE_DEFAULT
@@ -2278,6 +2319,7 @@ class AdminService:
                 script_path=str(runtime_script),
             )
         )
+        config.tools.mcp_servers[normalized_server_name].enabled = existing_enabled
         config.tools.mcp_servers[normalized_server_name].connector_status = "pending"
         save_config(config, target.config_path)
         workspace_path = target.workspace_path
@@ -2484,6 +2526,7 @@ class AdminService:
         config = self._load_target_config(target)
         existing_server = config.tools.mcp_servers.get(normalized_server_name)
         existing_env = existing_server.env if existing_server is not None else {}
+        existing_enabled = existing_server.enabled if existing_server is not None else True
         token_value = str(token or "").strip() or str(existing_env.get("GMAIL_TOKEN") or "").strip()
         user_id_value = str(user_id or "").strip() or str(existing_env.get("GMAIL_USER_ID") or "").strip() or "me"
         api_base_value = str(api_base or "").strip() or str(existing_env.get("GMAIL_API_BASE") or "").strip() or GMAIL_API_BASE_DEFAULT
@@ -2506,6 +2549,7 @@ class AdminService:
                 script_path=str(runtime_script),
             )
         )
+        config.tools.mcp_servers[normalized_server_name].enabled = existing_enabled
         config.tools.mcp_servers[normalized_server_name].connector_status = "pending"
         save_config(config, target.config_path)
         workspace_path = target.workspace_path
@@ -2730,6 +2774,7 @@ class AdminService:
         config = self._load_target_config(target)
         existing_server = config.tools.mcp_servers.get(normalized_server_name)
         existing_headers = existing_server.headers if existing_server is not None else {}
+        existing_enabled = existing_server.enabled if existing_server is not None else True
         api_key_value = str(api_key or "").strip() or _header_value_case_insensitive(existing_headers, COMPOSIO_API_KEY_HEADER_DEFAULT)
         url_value = str(url or "").strip() or str(getattr(existing_server, "url", "") or "").strip() or COMPOSIO_MCP_URL_DEFAULT
         if not api_key_value:
@@ -2740,6 +2785,7 @@ class AdminService:
                 url=url_value,
             )
         )
+        config.tools.mcp_servers[normalized_server_name].enabled = existing_enabled
         config.tools.mcp_servers[normalized_server_name].connector_status = "pending"
         save_config(config, target.config_path)
         workspace_path = target.workspace_path
@@ -2893,6 +2939,7 @@ class AdminService:
         config = self._load_target_config(target)
         existing_server = config.tools.mcp_servers.get(normalized_server_name)
         existing_env = existing_server.env if existing_server is not None else {}
+        existing_enabled = existing_server.enabled if existing_server is not None else True
         token_value = str(token or "").strip() or str(existing_env.get("INSIGHTOCR_API_TOKEN") or "").strip()
         api_base_value = str(api_base_url or "").strip() or str(existing_env.get("INSIGHTOCR_API_BASE_URL") or "").strip() or INSIGHTDOC_API_BASE_DEFAULT
         external_base_value = str(external_base_url or "").strip() or str(existing_env.get("INSIGHTOCR_EXTERNAL_BASE_URL") or "").strip() or INSIGHTDOC_EXTERNAL_BASE_DEFAULT
@@ -2915,6 +2962,7 @@ class AdminService:
                 script_path=str(runtime_script),
             )
         )
+        config.tools.mcp_servers[normalized_server_name].enabled = existing_enabled
         config.tools.mcp_servers[normalized_server_name].connector_status = "pending"
         save_config(config, target.config_path)
         workspace_path = target.workspace_path
@@ -5243,6 +5291,19 @@ class AdminService:
             "stderr": stderr[:2000],
             "ok": result.returncode == 0,
         }
+        if result.returncode == 0 and action in {"start", "restart", "stop"}:
+            try:
+                config = self._load_target_config(target)
+                changed = False
+                for server in config.tools.mcp_servers.values():
+                    if getattr(server, "restart_required", False):
+                        server.restart_required = False
+                        changed = True
+                if changed:
+                    save_config(config, target.config_path)
+                    payload["instance"] = self._collect_instance(target)
+            except Exception:
+                pass
         self._append_audit_event(
             instance_id=target.id,
             event_type=f"runtime.{action}",
@@ -6257,6 +6318,8 @@ class AdminService:
                     "url": server.url,
                     "headers": server.headers,
                     "tool_timeout": server.tool_timeout,
+                    "enabled": bool(server.enabled),
+                    "restart_required": bool(server.restart_required),
                     "status": server.connector_status,
                 }
             )
@@ -6282,7 +6345,7 @@ class AdminService:
                 for spec in PROVIDERS
             )
         )
-        has_online_mcp = bool(config.tools.mcp_servers)
+        has_online_mcp = any(getattr(server, "enabled", True) for server in config.tools.mcp_servers.values())
         requires_outbound_network = bool(connected_channels or has_online_provider or has_online_mcp)
         if not config.tools.restrict_to_workspace:
             findings.append(

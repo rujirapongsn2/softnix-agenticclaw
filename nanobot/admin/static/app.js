@@ -48,6 +48,7 @@ const state = {
   connectorSearchByInstance: {},
   connectorModal: { open: false, instanceId: null, connectorId: null },
   connectorStatusByInstance: {},
+  connectorEnabledByInstance: {},
   skillsBankModal: { open: false, instanceId: null },
   skillsBankByInstance: {},
   memoryByInstance: {},
@@ -119,7 +120,7 @@ const CONNECTOR_ICON_MARKUP = {
 const CONNECTOR_IMAGE_ASSET_MAP = {
   github: "/docs/images/Connectors/icons8-github-logo-48.png",
   gmail: "/docs/images/Connectors/icons8-gmail-logo-48.png",
-  composio: "/docs/images/Connectors/composio.png",
+  composio: "/docs/images/Connectors/composio.svg",
   insightdoc: "/docs/images/Logo Softnix.png",
   notion: "/docs/images/Connectors/icons8-notion-48.png",
   instagram: "/docs/images/Connectors/icons8-instagram-logo-48.png",
@@ -2908,11 +2909,27 @@ function renderSelectedInstanceConnectors(instance) {
       || insightdocServer?.connector_status
       || "",
   ).trim() || "pending";
-  const githubConnected = githubStatus === "connected";
-  const notionConnected = notionStatus === "connected";
-  const gmailConnected = gmailStatus === "connected";
-  const composioConnected = composioStatus === "connected";
-  const insightdocConnected = insightdocStatus === "connected";
+  const githubInstalled = !!githubServer;
+  const notionInstalled = !!notionServer;
+  const gmailInstalled = !!gmailServer;
+  const composioInstalled = !!composioServer;
+  const insightdocInstalled = !!insightdocServer;
+  const runtimeRunning = String(instance?.runtime?.status || "").toLowerCase() === "running";
+  const githubEnabled = githubInstalled && String(state.connectorEnabledByInstance[`${instance.id}:github`] ?? githubServer?.enabled ?? true) !== "false";
+  const notionEnabled = notionInstalled && String(state.connectorEnabledByInstance[`${instance.id}:notion`] ?? notionServer?.enabled ?? true) !== "false";
+  const gmailEnabled = gmailInstalled && String(state.connectorEnabledByInstance[`${instance.id}:gmail`] ?? gmailServer?.enabled ?? true) !== "false";
+  const composioEnabled = composioInstalled && String(state.connectorEnabledByInstance[`${instance.id}:composio`] ?? composioServer?.enabled ?? true) !== "false";
+  const insightdocEnabled = insightdocInstalled && String(state.connectorEnabledByInstance[`${instance.id}:insightdoc`] ?? insightdocServer?.enabled ?? true) !== "false";
+  const githubRestartRequired = githubInstalled && runtimeRunning && !!githubServer?.restart_required;
+  const notionRestartRequired = notionInstalled && runtimeRunning && !!notionServer?.restart_required;
+  const gmailRestartRequired = gmailInstalled && runtimeRunning && !!gmailServer?.restart_required;
+  const composioRestartRequired = composioInstalled && runtimeRunning && !!composioServer?.restart_required;
+  const insightdocRestartRequired = insightdocInstalled && runtimeRunning && !!insightdocServer?.restart_required;
+  const githubConnected = githubInstalled && githubEnabled && githubStatus === "connected";
+  const notionConnected = notionInstalled && notionEnabled && notionStatus === "connected";
+  const gmailConnected = gmailInstalled && gmailEnabled && gmailStatus === "connected";
+  const composioConnected = composioInstalled && composioEnabled && composioStatus === "connected";
+  const insightdocConnected = insightdocInstalled && insightdocEnabled && insightdocStatus === "connected";
   const searchValue = state.connectorSearchByInstance[instance.id] || "";
   const searchTerm = searchValue.trim().toLowerCase();
   const connectorCatalog = [
@@ -2920,8 +2937,11 @@ function renderSelectedInstanceConnectors(instance) {
       id: "github",
       name: githubPreset.display_name || "GitHub",
       description: githubPreset.description || "Install a GitHub connector preset.",
-      status: githubConnected ? "Connected" : "Not Connected",
+      status: !githubInstalled ? "Not Connected" : githubRestartRequired ? (githubEnabled ? "Enable Pending Restart" : "Disable Pending Restart") : !githubEnabled ? "Disabled" : githubConnected ? "Connected" : "Not Connected",
       connected: githubConnected,
+      enabled: githubEnabled,
+      installed: githubInstalled,
+      restartRequired: githubRestartRequired,
       available: true,
       iconMarkup: renderConnectorIconMarkup("github", "GitHub"),
       accentClass: "connector-mark-github",
@@ -2930,8 +2950,11 @@ function renderSelectedInstanceConnectors(instance) {
       id: "notion",
       name: notionPreset.display_name || "Notion",
       description: notionPreset.description || "Install a Notion connector preset.",
-      status: notionConnected ? "Connected" : "Not Connected",
+      status: !notionInstalled ? "Not Connected" : notionRestartRequired ? (notionEnabled ? "Enable Pending Restart" : "Disable Pending Restart") : !notionEnabled ? "Disabled" : notionConnected ? "Connected" : "Not Connected",
       connected: notionConnected,
+      enabled: notionEnabled,
+      installed: notionInstalled,
+      restartRequired: notionRestartRequired,
       available: true,
       iconMarkup: renderConnectorIconMarkup("notion", "Notion"),
       accentClass: "connector-mark-notion",
@@ -2940,8 +2963,11 @@ function renderSelectedInstanceConnectors(instance) {
       id: "gmail",
       name: "Gmail",
       description: gmailPreset.description || "Install a Gmail connector preset.",
-      status: gmailConnected ? "Connected" : "Not Connected",
+      status: !gmailInstalled ? "Not Connected" : gmailRestartRequired ? (gmailEnabled ? "Enable Pending Restart" : "Disable Pending Restart") : !gmailEnabled ? "Disabled" : gmailConnected ? "Connected" : "Not Connected",
       connected: gmailConnected,
+      enabled: gmailEnabled,
+      installed: gmailInstalled,
+      restartRequired: gmailRestartRequired,
       available: true,
       iconMarkup: renderConnectorIconMarkup("gmail", "Gmail"),
       accentClass: "connector-mark-gmail",
@@ -2950,8 +2976,11 @@ function renderSelectedInstanceConnectors(instance) {
       id: "composio",
       name: composioPreset.display_name || "Composio",
       description: composioPreset.description || "Install a Composio remote MCP connector preset.",
-      status: composioConnected ? "Connected" : "Not Connected",
+      status: !composioInstalled ? "Not Connected" : composioRestartRequired ? (composioEnabled ? "Enable Pending Restart" : "Disable Pending Restart") : !composioEnabled ? "Disabled" : composioConnected ? "Connected" : "Not Connected",
       connected: composioConnected,
+      enabled: composioEnabled,
+      installed: composioInstalled,
+      restartRequired: composioRestartRequired,
       available: true,
       iconMarkup: renderConnectorIconMarkup("composio", "Composio"),
       accentClass: "connector-mark-composio",
@@ -2961,8 +2990,11 @@ function renderSelectedInstanceConnectors(instance) {
       name: insightdocPreset.display_name || "InsightDOC",
       titleMarkup: '<span class="connector-title-insight">Insight</span><span class="connector-title-doc">DOC</span>',
       description: insightdocPreset.description || "Install an InsightDOC connector preset.",
-      status: insightdocConnected ? "Connected" : "Not Connected",
+      status: !insightdocInstalled ? "Not Connected" : insightdocRestartRequired ? (insightdocEnabled ? "Enable Pending Restart" : "Disable Pending Restart") : !insightdocEnabled ? "Disabled" : insightdocConnected ? "Connected" : "Not Connected",
       connected: insightdocConnected,
+      enabled: insightdocEnabled,
+      installed: insightdocInstalled,
+      restartRequired: insightdocRestartRequired,
       available: true,
       iconMarkup: renderConnectorIconMarkup("insightdoc", "InsightDOC"),
       accentClass: "connector-mark-insightdoc",
@@ -3062,7 +3094,7 @@ function renderSelectedInstanceConnectors(instance) {
           <div class="connector-card-meta">
             <div class="row-between connector-card-heading">
               <h4>${connector.titleMarkup || escapeHtml(connector.name)}</h4>
-              <span class="connector-status ${connector.connected ? "is-connected" : connector.available ? "is-disconnected" : "is-coming-soon"}">
+              <span class="connector-status ${connector.connected ? "is-connected" : connector.available ? connector.restartRequired ? "is-pending-restart" : connector.installed && !connector.enabled ? "is-disabled" : "is-disconnected" : "is-coming-soon"}">
                 <span class="connector-status-dot"></span>
                 ${escapeHtml(connector.status)}
               </span>
@@ -3078,6 +3110,14 @@ function renderSelectedInstanceConnectors(instance) {
             >
               Setting
             </button>
+            ${connector.installed ? `
+              <button
+                class="secondary-button is-small"
+                data-connector-toggle="${escapeHtml(instance.id)}:${escapeHtml(connector.id)}:${connector.enabled ? "disable" : "enable"}"
+              >
+                ${connector.enabled ? "Disable" : "Enable"}
+              </button>
+            ` : ""}
           ` : `<span class="connector-coming-soon-pill">Coming Soon</span>`}
         </div>
       </article>
@@ -3127,6 +3167,9 @@ function renderSelectedInstanceConnectors(instance) {
     void loadDashboard();
   }));
   target.querySelectorAll("[data-connector-setting]").forEach((button) => button.addEventListener("click", () => openConnectorSettings(button.dataset.connectorSetting)));
+  target.querySelectorAll("[data-connector-toggle]").forEach((button) => button.addEventListener("click", () => {
+    void handleConnectorToggle(button.dataset.connectorToggle);
+  }));
 }
 
 function getConnectorPreset(name) {
@@ -3929,6 +3972,65 @@ async function promptConnectorRestartAfterSave(instance, connectorLabel, readyMe
     setBanner(`${connectorLabel} was saved, but restarting instance '${instanceName}' failed: ${error.message}`, "error");
   } finally {
     setConnectorModalBusy(false);
+  }
+}
+
+async function promptConnectorRestartAfterToggle(instance, connectorLabel, enabled) {
+  const instanceId = instance?.id;
+  const instanceName = instance?.name || instanceId || "instance";
+  const runtime = instance?.runtime || {};
+  const actions = Array.isArray(runtime.actions) ? runtime.actions : [];
+  const isRunning = String(runtime.status || "").toLowerCase() === "running";
+  const canRestart = actions.includes("restart") && !!instanceId;
+  const actionText = enabled ? "enabled" : "disabled";
+
+  if (!isRunning) {
+    setBanner(`${connectorLabel} ${actionText} on instance '${instanceName}'. The instance is currently stopped, so no restart is needed right now.`, "success");
+    return;
+  }
+
+  if (!canRestart) {
+    setBanner(`${connectorLabel} ${actionText} on instance '${instanceName}', but restart is not available for this instance. Please restart it manually to apply the new connector state.`, "warning");
+    return;
+  }
+
+  const confirmed = window.confirm(`${connectorLabel} ${actionText} on instance '${instanceName}'. Restart the instance now to apply the new connector state?`);
+  if (!confirmed) {
+    setBanner(`${connectorLabel} ${actionText} on instance '${instanceName}'. Restart later to apply the new connector state.`, "warning");
+    return;
+  }
+
+  try {
+    const restartResult = await postJson(`/admin/instances/${encodeURIComponent(instanceId)}/restart`, {});
+    if (!restartResult.ok) {
+      throw new Error(restartResult.error || summarizeCommandResult(restartResult));
+    }
+    await loadDashboard();
+    setBanner(`${connectorLabel} ${actionText} and instance '${instanceName}' restarted successfully.`, "success");
+  } catch (error) {
+    setBanner(`${connectorLabel} was ${actionText}, but restarting instance '${instanceName}' failed: ${error.message}`, "error");
+  }
+}
+
+async function handleConnectorToggle(toggleKey) {
+  const [instanceId, connectorId, nextAction] = String(toggleKey || "").split(":");
+  if (!instanceId || !connectorId || !nextAction) {
+    return;
+  }
+  const connectorLabel = connectorId === "insightdoc" ? "InsightDOC connector" : `${connectorId.charAt(0).toUpperCase()}${connectorId.slice(1)} connector`;
+  const enabled = nextAction === "enable";
+  const endpoint = `/admin/connectors/${encodeURIComponent(connectorId)}/${enabled ? "enable" : "disable"}`;
+  try {
+    const result = await postJson(endpoint, { instance_id: instanceId });
+    state.connectorEnabledByInstance[`${instanceId}:${connectorId}`] = enabled;
+    await loadDashboard();
+    const selected = selectedInstance();
+    if (selected && selected.id === instanceId) {
+      renderSelectedInstanceConnectors(selected);
+    }
+    await promptConnectorRestartAfterToggle(result.instance || selectedInstance(), connectorLabel, enabled);
+  } catch (error) {
+    setBanner(`Unable to ${enabled ? "enable" : "disable"} ${connectorLabel.toLowerCase()}: ${error.message}`, "error");
   }
 }
 

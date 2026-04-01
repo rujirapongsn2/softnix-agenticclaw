@@ -749,6 +749,11 @@ button {
   color: var(--brand-blue);
 }
 
+.connector-mark-composio img {
+  width: 36px;
+  height: auto;
+}
+
 .connector-mark-insightdoc {
   background: rgba(39, 134, 194, 0.08);
   color: var(--brand-blue);
@@ -852,6 +857,22 @@ button {
 
 .connector-status.is-disconnected {
   color: #8a929c;
+}
+
+.connector-status.is-disabled {
+  color: #a86614;
+}
+
+.connector-status.is-disabled .connector-status-dot {
+  background: #d79b45;
+}
+
+.connector-status.is-pending-restart {
+  color: #8b5cf6;
+}
+
+.connector-status.is-pending-restart .connector-status-dot {
+  background: #a78bfa;
 }
 
 .connector-status.is-coming-soon {

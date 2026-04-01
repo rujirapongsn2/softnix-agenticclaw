@@ -84,9 +84,12 @@ Skills with available="false" need dependencies installed first - you can try in
         if not has_any:
             return ""
         routing_lines += [
+            "- Only use connectors whose tools are actually available in the current tool list. A configured or remembered connector that is not present in the tool list should be treated as unavailable for this turn.",
+            "- Connector context tools such as `*_get_connector_context` are diagnostic only. Use them only for the connector that matches the user's requested product or when explicitly debugging connector readiness.",
             "- Do not substitute one connector for another.",
             "- If the user mentions a product name explicitly, prefer that connector first before falling back to a generic skill.",
             "- If a connector is available and the task matches its domain, call that connector even if another connector is also installed.",
+            "- If the user explicitly asks for Google Sheets, Google Drive, Google Calendar, Slack, or another named app and there is no matching connector/tool available, say that the required connector is unavailable or disabled. Do not search Notion, Gmail, GitHub, or other unrelated apps as a substitute unless the user explicitly asks for that broader search.",
         ]
         return "\n".join(routing_lines)
 

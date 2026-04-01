@@ -1,14 +1,19 @@
 from __future__ import annotations
 
 import asyncio
+import sys
+import types
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 from unittest.mock import AsyncMock
+from contextlib import AsyncExitStack
 
 import httpx
 import pytest
 
+from nanobot.agent.tools.mcp import connect_mcp_servers
+from nanobot.agent.tools.registry import ToolRegistry
 from nanobot.admin.connectors import build_composio_mcp_server_config, build_gmail_stdio_server_config, build_insightdoc_stdio_server_config, get_connector_preset, list_connector_presets
 from nanobot.admin.service import AdminService, _probe_remote_mcp_server_async
 from nanobot.config.loader import load_config, save_config
@@ -622,3 +627,78 @@ def test_registered_connector_presets_have_unique_identity_and_skill_files() -> 
         assert preset.display_name.strip()
         assert preset.description.strip()
         assert (skills_root / preset.skill_name / "SKILL.md").exists()
+
+
+def test_connector_can_be_disabled_and_reenabled_without_losing_config(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.json"
+    _make_config(config_path)
+    service = AdminService(config_path=config_path)
+
+    service.install_composio_connector(instance_id="default", api_key="ck_example")
+    disabled = service.set_connector_enabled(instance_id="default", connector_name="composio", enabled=False)
+    saved = load_config(config_path)
+    server = saved.tools.mcp_servers["composio"]
+
+    assert disabled["enabled"] is False
+    assert server.enabled is False
+    assert server.headers["x-consumer-api-key"] == "ck_example"
+
+    reenabled = service.set_connector_enabled(instance_id="default", connector_name="composio", enabled=True)
+    saved = load_config(config_path)
+    server = saved.tools.mcp_servers["composio"]
+
+    assert reenabled["enabled"] is True
+    assert server.enabled is True
+    assert server.headers["x-consumer-api-key"] == "ck_example"
+
+
+def test_disabling_connector_while_running_marks_restart_required(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = tmp_path / "config.json"
+    _make_config(config_path)
+    service = AdminService(config_path=config_path)
+    service.install_composio_connector(instance_id="default", api_key="ck_example")
+
+    monkeypatch.setattr(service, "_probe_instance_runtime", lambda target: {"status": "running"})
+    result = service.set_connector_enabled(instance_id="default", connector_name="composio", enabled=False)
+
+    saved = load_config(config_path)
+    server = saved.tools.mcp_servers["composio"]
+    assert result["restart_required"] is True
+    assert server.restart_required is True
+
+
+def test_connect_mcp_servers_skips_disabled_servers(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake_mcp = types.ModuleType("mcp")
+    fake_mcp.ClientSession = object
+    fake_mcp.StdioServerParameters = object
+    fake_stdio = types.ModuleType("mcp.client.stdio")
+    fake_stdio.stdio_client = AsyncMock()
+    fake_sse = types.ModuleType("mcp.client.sse")
+    fake_sse.sse_client = AsyncMock()
+    fake_streamable = types.ModuleType("mcp.client.streamable_http")
+    fake_streamable.streamable_http_client = AsyncMock()
+
+    monkeypatch.setitem(sys.modules, "mcp", fake_mcp)
+    monkeypatch.setitem(sys.modules, "mcp.client.stdio", fake_stdio)
+    monkeypatch.setitem(sys.modules, "mcp.client.sse", fake_sse)
+    monkeypatch.setitem(sys.modules, "mcp.client.streamable_http", fake_streamable)
+
+    registry = ToolRegistry()
+    stack = AsyncExitStack()
+    servers = {
+        "disabled-docs": MCPServerConfig(
+            type="streamableHttp",
+            url="https://example.com/mcp",
+            enabled=False,
+        )
+    }
+
+    asyncio.run(connect_mcp_servers(servers, registry, stack))
+
+    assert len(registry.tool_names) == 0
+    fake_stdio.stdio_client.assert_not_called()
+    fake_sse.sse_client.assert_not_called()
+    fake_streamable.streamable_http_client.assert_not_called()

@@ -20,6 +20,10 @@ def test_docs_images_route_serves_nested_connector_icons() -> None:
 
 
 def test_docs_images_route_serves_composio_logo() -> None:
+    svg_path, svg_content_type = resolve_static_asset("/docs/images/Connectors/composio.svg")
+    assert svg_path == PROJECT_ROOT / "docs" / "images" / "Connectors" / "composio.svg"
+    assert svg_content_type == "image/svg+xml"
+
     path, content_type = resolve_static_asset("/docs/images/Connectors/composio.png")
     assert path == PROJECT_ROOT / "docs" / "images" / "Connectors" / "composio.png"
     assert content_type == "image/png"

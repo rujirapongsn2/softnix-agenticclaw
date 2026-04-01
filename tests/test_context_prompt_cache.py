@@ -53,6 +53,9 @@ def test_system_prompt_includes_connector_routing_rules(tmp_path) -> None:
     assert "Use the Gmail connector" in prompt
     assert "Gmail wins" in prompt
     assert "Never route email or inbox questions to the GitHub connector." in prompt
+    assert "Only use connectors whose tools are actually available in the current tool list." in prompt
+    assert "Connector context tools such as `*_get_connector_context` are diagnostic only." in prompt
+    assert "Do not search Notion, Gmail, GitHub, or other unrelated apps as a substitute" in prompt
 
 
 def test_runtime_context_is_separate_untrusted_user_message(tmp_path) -> None:

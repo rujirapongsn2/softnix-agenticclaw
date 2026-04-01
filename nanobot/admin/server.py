@@ -135,14 +135,24 @@ def resolve_admin_get(
                 "/admin/skills-bank",
                 "/admin/connectors/github/install",
                 "/admin/connectors/github/validate",
+                "/admin/connectors/github/enable",
+                "/admin/connectors/github/disable",
                 "/admin/connectors/notion/install",
                 "/admin/connectors/notion/validate",
+                "/admin/connectors/notion/enable",
+                "/admin/connectors/notion/disable",
                 "/admin/connectors/gmail/install",
                 "/admin/connectors/gmail/validate",
+                "/admin/connectors/gmail/enable",
+                "/admin/connectors/gmail/disable",
                 "/admin/connectors/composio/install",
                 "/admin/connectors/composio/validate",
+                "/admin/connectors/composio/enable",
+                "/admin/connectors/composio/disable",
                 "/admin/connectors/insightdoc/install",
                 "/admin/connectors/insightdoc/validate",
+                "/admin/connectors/insightdoc/enable",
+                "/admin/connectors/insightdoc/disable",
                 "/admin/security",
                 "/admin/security/policies/global",
                 "/admin/security/policies/global/hits",
@@ -958,6 +968,17 @@ def resolve_admin_post(
                 accessible_instance_ids=accessible_instance_ids,
             )
             return HTTPStatus.OK, result
+        if path.startswith("/admin/connectors/") and path.endswith(("/enable", "/disable")):
+            parts = path.split("/")
+            connector_name = parts[-2]
+            instance_id = payload.get("instance_id") or "default"
+            result = service.set_connector_enabled(
+                instance_id=instance_id,
+                connector_name=connector_name,
+                enabled=path.endswith("/enable"),
+                accessible_instance_ids=accessible_instance_ids,
+            )
+            return HTTPStatus.OK, result
         if path == "/admin/connectors/insightdoc/install":
             instance_id = payload.get("instance_id") or "default"
             token = str(payload.get("token") or "")
@@ -1067,6 +1088,7 @@ def resolve_static_asset(raw_path: str) -> tuple[Path | None, str]:
                     "jpg": "image/jpeg",
                     "jpeg": "image/jpeg",
                     "webp": "image/webp",
+                    "svg": "image/svg+xml",
                 }.get(ext, "application/octet-stream")
                 return asset, content_type
     if path == "/favicon.ico":
@@ -1080,7 +1102,7 @@ def resolve_static_asset(raw_path: str) -> tuple[Path | None, str]:
         if asset.exists() and asset.is_file():
             ext = asset.suffix.lstrip(".")
             ct = {"html": "text/html", "js": "application/javascript", "css": "text/css",
-                  "json": "application/json", "png": "image/png"}.get(ext, "application/octet-stream")
+                  "json": "application/json", "png": "image/png", "svg": "image/svg+xml"}.get(ext, "application/octet-stream")
             return asset, f"{ct}; charset=utf-8" if ext != "png" else ct
     return None, ""
 
@@ -1202,22 +1224,42 @@ def _match_permission(method: str, path: str) -> str | None:
             return "mcp.update"
         if path == "/admin/connectors/github/validate":
             return "mcp.read"
+        if path == "/admin/connectors/github/enable":
+            return "mcp.update"
+        if path == "/admin/connectors/github/disable":
+            return "mcp.update"
         if path == "/admin/connectors/notion/install":
             return "mcp.update"
         if path == "/admin/connectors/notion/validate":
             return "mcp.read"
+        if path == "/admin/connectors/notion/enable":
+            return "mcp.update"
+        if path == "/admin/connectors/notion/disable":
+            return "mcp.update"
         if path == "/admin/connectors/gmail/install":
             return "mcp.update"
         if path == "/admin/connectors/gmail/validate":
             return "mcp.read"
+        if path == "/admin/connectors/gmail/enable":
+            return "mcp.update"
+        if path == "/admin/connectors/gmail/disable":
+            return "mcp.update"
         if path == "/admin/connectors/composio/install":
             return "mcp.update"
         if path == "/admin/connectors/composio/validate":
             return "mcp.read"
+        if path == "/admin/connectors/composio/enable":
+            return "mcp.update"
+        if path == "/admin/connectors/composio/disable":
+            return "mcp.update"
         if path == "/admin/connectors/insightdoc/install":
             return "mcp.update"
         if path == "/admin/connectors/insightdoc/validate":
             return "mcp.read"
+        if path == "/admin/connectors/insightdoc/enable":
+            return "mcp.update"
+        if path == "/admin/connectors/insightdoc/disable":
+            return "mcp.update"
         if path == "/admin/skills-bank":
             return "skills.read"
         if path == "/admin/schedules":
