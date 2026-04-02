@@ -132,6 +132,41 @@ def _mask_secret(value: str, keep: int = 4) -> str:
     return f"{'*' * max(len(value) - keep, 3)}{value[-keep:]}"
 
 
+def _mask_ip_for_display(value: str | None) -> str | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    if ":" in raw:
+        parts = [part for part in raw.split(":") if part]
+        if len(parts) <= 2:
+            return "****"
+        return ":".join(parts[:2] + ["****"])
+    octets = raw.split(".")
+    if len(octets) == 4:
+        return ".".join(octets[:2] + ["x", "x"])
+    return "***"
+
+
+def _user_agent_label(value: str | None) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return "Unknown browser"
+    lowered = text.lower()
+    if "edg/" in lowered:
+        return "Microsoft Edge"
+    if "chrome/" in lowered and "edg/" not in lowered:
+        return "Google Chrome"
+    if "safari/" in lowered and "chrome/" not in lowered:
+        return "Safari"
+    if "firefox/" in lowered:
+        return "Firefox"
+    if "iphone" in lowered:
+        return "iPhone browser"
+    if "android" in lowered:
+        return "Android browser"
+    return text.split(" ", 1)[0][:60]
+
+
 def _connector_runtime_script_source(filename: str) -> Path:
     return Path(__file__).resolve().parent.parent / "integrations" / filename
 
@@ -879,6 +914,8 @@ class AdminService:
             "device_label": ticket.get("device_label"),
             "active_session_id": ticket.get("active_session_id"),
             "approved_at": ticket.get("approved_at"),
+            "request_ip_masked": _mask_ip_for_display(ticket.get("ip")),
+            "request_user_agent_label": _user_agent_label(ticket.get("user_agent")),
         }
 
     def approve_web_chat_login(

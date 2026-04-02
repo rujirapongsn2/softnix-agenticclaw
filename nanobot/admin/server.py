@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import threading
+import time
 from http import HTTPStatus
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -21,6 +23,39 @@ SOFTNIX_WHITE_LOGO = PROJECT_ROOT / "softnix-logo-white.png"
 SOFTNIX_LOGIN_LOGO = STATIC_DIR / "Logo_Softnix.png"
 PUBLIC_HTTPS_REDIRECT_HOSTS = {"softnixclaw.softnix.ai"}
 SECURITY_TXT_PATH = STATIC_DIR / ".well-known" / "security.txt"
+WEB_CHAT_RATE_LIMITS: dict[str, tuple[int, int]] = {
+    "/admin/web-chat/login/init": (12, 300),
+    "/admin/web-chat/login/status": (120, 300),
+    "/admin/web-chat/login/exchange": (24, 300),
+    "/admin/mobile/web-login/approve": (30, 300),
+}
+
+
+class _SlidingWindowRateLimiter:
+    def __init__(self) -> None:
+        self._entries: dict[tuple[str, str], list[float]] = {}
+        self._lock = threading.Lock()
+
+    def allow(self, *, bucket: str, actor: str, limit: int, window_seconds: int) -> bool:
+        if limit <= 0 or window_seconds <= 0:
+            return True
+        now = time.monotonic()
+        cutoff = now - float(window_seconds)
+        key = (str(bucket or "").strip(), str(actor or "").strip() or "anonymous")
+        with self._lock:
+            recent = [stamp for stamp in self._entries.get(key, []) if stamp >= cutoff]
+            if len(recent) >= limit:
+                self._entries[key] = recent
+                return False
+            recent.append(now)
+            self._entries[key] = recent
+            stale_keys = [item for item, stamps in self._entries.items() if not stamps or stamps[-1] < cutoff]
+            for stale_key in stale_keys[:64]:
+                self._entries.pop(stale_key, None)
+        return True
+
+
+_web_chat_rate_limiter = _SlidingWindowRateLimiter()
 
 
 def _normalize_host_name(value: str | None) -> str:
@@ -44,6 +79,17 @@ def _public_https_redirect_location(host_header: str | None, forwarded_proto: st
         return None
     path = raw_path if raw_path.startswith("/") else f"/{raw_path}"
     return f"https://{host}{path}"
+
+
+def _is_secure_request(host_header: str | None, forwarded_proto: str | None) -> bool:
+    host = _normalize_host_name(host_header)
+    proto_header = str(forwarded_proto or "").strip().lower()
+    if "proto=https" in proto_header:
+        return True
+    proto = proto_header.split(",", 1)[0].strip()
+    if proto == "https":
+        return True
+    return host in PUBLIC_HTTPS_REDIRECT_HOSTS
 
 
 def _accessible_instance_ids(context: dict[str, Any] | None) -> set[str] | None:
@@ -1589,6 +1635,8 @@ def create_admin_server(host: str, port: int, service: AdminService) -> Threadin
             path = parsed.path.rstrip("/") or "/"
             query = parse_qs(parsed.query)
             if path == "/admin/web-chat/login/status":
+                if not self._enforce_web_chat_rate_limit(path):
+                    return True
                 login_ticket = str((query.get("login_ticket") or query.get("ticket") or [None])[0] or "").strip()
                 if not login_ticket:
                     self._send_json({"error": "login_ticket is required"}, status=HTTPStatus.BAD_REQUEST)
@@ -1629,6 +1677,8 @@ def create_admin_server(host: str, port: int, service: AdminService) -> Threadin
             parsed = urlparse(self.path)
             path = parsed.path.rstrip("/") or "/"
             if path == "/admin/web-chat/login/init":
+                if not self._enforce_web_chat_rate_limit(path):
+                    return True
                 result = service.create_web_chat_login(
                     ip=self.client_address[0] if self.client_address else None,
                     user_agent=self.headers.get("User-Agent"),
@@ -1636,6 +1686,8 @@ def create_admin_server(host: str, port: int, service: AdminService) -> Threadin
                 self._send_json(result, status=HTTPStatus.OK)
                 return True
             if path == "/admin/web-chat/login/exchange":
+                if not self._enforce_web_chat_rate_limit(path):
+                    return True
                 login_ticket = str(payload.get("login_ticket") or payload.get("ticket") or "").strip()
                 if not login_ticket:
                     self._send_json({"error": "login_ticket is required"}, status=HTTPStatus.BAD_REQUEST)
@@ -1654,6 +1706,33 @@ def create_admin_server(host: str, port: int, service: AdminService) -> Threadin
                     status=HTTPStatus.OK,
                     extra_headers={"Set-Cookie": self._build_web_chat_session_cookie(str(result["session"]["id"]))},
                 )
+                return True
+            if path == "/admin/web-chat/transcribe":
+                context = self._web_chat_context()
+                if context is None:
+                    self._send_json({"error": "Authentication required"}, status=HTTPStatus.UNAUTHORIZED)
+                    return True
+                if not self._validate_web_chat_csrf(context):
+                    return True
+                audio = payload.get("audio")
+                if not isinstance(audio, dict):
+                    self._send_json({"error": "audio is required"}, status=HTTPStatus.BAD_REQUEST)
+                    return True
+                try:
+                    result = service.transcribe_mobile_audio(
+                        instance_id=str(context["device"]["instance_id"] or ""),
+                        sender_id=str(context["device"]["device_id"] or ""),
+                        audio=audio,
+                        accessible_instance_ids={str(context["device"]["instance_id"] or "")},
+                    )
+                except ValueError as exc:
+                    message = str(exc)
+                    error_payload = {"error": message}
+                    if "Groq API key is not configured for transcription" in message:
+                        error_payload["error_code"] = "groq_key_missing"
+                    self._send_json(error_payload, status=HTTPStatus.BAD_REQUEST)
+                    return True
+                self._send_json(result, status=HTTPStatus.OK)
                 return True
             if path == "/admin/web-chat/logout":
                 context = self._web_chat_context()
@@ -1722,11 +1801,26 @@ def create_admin_server(host: str, port: int, service: AdminService) -> Threadin
                 return True
             return False
 
+        def _enforce_web_chat_rate_limit(self, bucket: str) -> bool:
+            rule = WEB_CHAT_RATE_LIMITS.get(str(bucket or "").strip())
+            if not rule:
+                return True
+            actor = self.client_address[0] if self.client_address else ""
+            if _web_chat_rate_limiter.allow(bucket=bucket, actor=actor, limit=rule[0], window_seconds=rule[1]):
+                return True
+            self._send_json(
+                {"error": "Too many requests. Please wait and try again."},
+                status=HTTPStatus.TOO_MANY_REQUESTS,
+            )
+            return False
+
         def _authorize_mobile_request(self, payload: dict[str, Any] | None = None) -> bool:
             parsed = urlparse(self.path)
             path = parsed.path.rstrip("/") or "/"
             if not path.startswith("/admin/mobile/"):
                 return True
+            if path == "/admin/mobile/web-login/approve" and not self._enforce_web_chat_rate_limit(path):
+                return False
             if self._auth_context() is not None:
                 return True
             if path == "/admin/mobile/media" and self._web_chat_context() is not None:
@@ -2068,16 +2162,24 @@ def create_admin_server(host: str, port: int, service: AdminService) -> Threadin
             return value or None
 
         def _build_session_cookie(self, session_id: str) -> str:
-            return f"{ADMIN_SESSION_COOKIE}={session_id}; Path=/; HttpOnly; SameSite=Lax; Max-Age=604800"
+            return f"{ADMIN_SESSION_COOKIE}={session_id}; Path=/; HttpOnly; SameSite=Lax; Max-Age=604800{self._cookie_security_suffix()}"
 
         def _clear_session_cookie(self) -> str:
-            return f"{ADMIN_SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0"
+            return f"{ADMIN_SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0{self._cookie_security_suffix()}"
 
         def _build_web_chat_session_cookie(self, session_id: str) -> str:
-            return f"{WEB_CHAT_SESSION_COOKIE}={session_id}; Path=/; HttpOnly; SameSite=Lax; Max-Age=604800"
+            return f"{WEB_CHAT_SESSION_COOKIE}={session_id}; Path=/; HttpOnly; SameSite=Lax; Max-Age=604800{self._cookie_security_suffix()}"
 
         def _clear_web_chat_session_cookie(self) -> str:
-            return f"{WEB_CHAT_SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0"
+            return f"{WEB_CHAT_SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0{self._cookie_security_suffix()}"
+
+        def _cookie_security_suffix(self) -> str:
+            if _is_secure_request(
+                self.headers.get("X-Forwarded-Host") or self.headers.get("Host"),
+                self.headers.get("X-Forwarded-Proto") or self.headers.get("Forwarded"),
+            ):
+                return "; Secure"
+            return ""
 
         def _validate_web_chat_csrf(self, context: dict[str, Any]) -> bool:
             expected = str((context.get("session") or {}).get("csrf_token") or "")

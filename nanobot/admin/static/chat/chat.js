@@ -1514,15 +1514,14 @@ async function transcribeVoiceBlob(blob, mimeType) {
       size: blob.size,
       data_base64: await blobToBase64(blob),
     };
-    const response = await fetch("/admin/mobile/transcribe", {
+    const response = await fetch("/admin/web-chat/transcribe", {
       method: "POST",
       credentials: "same-origin",
       headers: {
         "Content-Type": "application/json",
+        "X-CSRF-Token": state.session?.csrf_token || "",
       },
       body: JSON.stringify({
-        instance_id: state.device.instance_id,
-        sender_id: state.device.device_id,
         audio,
       }),
     });

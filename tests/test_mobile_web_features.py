@@ -165,6 +165,8 @@ def test_web_chat_login_ticket_exchange_uses_mobile_device_context(tmp_path: Pat
     login = service.create_web_chat_login(ip="127.0.0.1", user_agent="pytest")
     status = service.get_web_chat_login_status(login_ticket=login["login_ticket"])
     assert status["status"] == "pending"
+    assert status["request_ip_masked"] == "127.0.x.x"
+    assert status["request_user_agent_label"] == "pytest"
 
     approved = service.approve_web_chat_login(
         login_ticket=login["login_ticket"],

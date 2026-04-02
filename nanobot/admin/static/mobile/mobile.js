@@ -2182,6 +2182,30 @@ function loadJsQrLibrary() {
 async function approveWebChatLogin(loginTicket) {
   if (!device?.device_token) return;
   try {
+    const statusResponse = await fetch(`/admin/web-chat/login/status?login_ticket=${encodeURIComponent(loginTicket)}`, {
+      credentials: "same-origin",
+      cache: "no-store",
+    });
+    const statusPayload = await statusResponse.json().catch(() => ({}));
+    if (!statusResponse.ok) {
+      throw new Error(statusPayload.error || `Unable to inspect login request (${statusResponse.status})`);
+    }
+    const browserLabel = String(statusPayload.request_user_agent_label || "Unknown browser");
+    const requestIp = String(statusPayload.request_ip_masked || "").trim();
+    const confirmLines = [
+      "Approve Web Chat sign-in?",
+      "",
+      `Instance: ${device.instance_id || "-"}`,
+      `Mobile device: ${device.label || device.device_id || "-"}`,
+      `Browser: ${browserLabel}`,
+    ];
+    if (requestIp) {
+      confirmLines.push(`Request IP: ${requestIp}`);
+    }
+    if (!window.confirm(confirmLines.join("\n"))) {
+      setBanner("Web chat sign-in cancelled.", "info", 2500);
+      return;
+    }
     const response = await apiFetch("/admin/mobile/web-login/approve", {
       method: "POST",
       body: JSON.stringify({
