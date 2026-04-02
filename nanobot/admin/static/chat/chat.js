@@ -534,7 +534,9 @@ function renderRichText(text) {
   let listItems = [];
   let listOrdered = false;
   let codeLines = [];
+  let tableLines = [];
   let inCode = false;
+  let inTable = false;
 
   const flushParagraph = () => {
     if (!paragraphLines.length) return;
@@ -552,7 +554,7 @@ function renderRichText(text) {
       appendInlineTokens(quoteLine, line);
       blockquote.appendChild(quoteLine);
     });
-    fragment.appendChild(blockquote);
+      fragment.appendChild(blockquote);
     quoteLines = [];
   };
 
@@ -570,16 +572,22 @@ function renderRichText(text) {
 
   const flushCode = () => {
     if (!codeLines.length) return;
-    const pre = document.createElement("pre");
-    const code = document.createElement("code");
-    code.textContent = codeLines.join("\n");
-    pre.appendChild(code);
-    fragment.appendChild(pre);
+    fragment.appendChild(renderCodeBlock(codeLines.join("\n")));
     codeLines = [];
   };
 
-  lines.forEach((line) => {
+  const flushTable = () => {
+    if (!tableLines.length) return;
+    const table = renderMarkdownTable(tableLines);
+    if (table) {
+      fragment.appendChild(table);
+    }
+    tableLines = [];
+  };
+
+  lines.forEach((line, index) => {
     const trimmed = line.trim();
+    const nextTrimmed = String(lines[index + 1] || "").trim();
     if (trimmed.startsWith("```")) {
       if (inCode) {
         flushCode();
@@ -588,6 +596,8 @@ function renderRichText(text) {
         flushParagraph();
         flushQuote();
         flushList();
+        flushTable();
+        inTable = false;
         inCode = true;
       }
       return;
@@ -596,10 +606,32 @@ function renderRichText(text) {
       codeLines.push(line);
       return;
     }
+    if (inTable) {
+      if (isMarkdownTableSeparatorLine(trimmed)) {
+        return;
+      }
+      if (isMarkdownTableRowLine(line)) {
+        tableLines.push(line);
+        return;
+      }
+      flushTable();
+      inTable = false;
+    }
+    if (isMarkdownTableRowLine(line) && isMarkdownTableSeparatorLine(nextTrimmed)) {
+      flushParagraph();
+      flushQuote();
+      flushList();
+      flushTable();
+      tableLines = [line, lines[index + 1]];
+      inTable = true;
+      return;
+    }
     const quoteMatch = line.match(/^\s*>\s?(.*)$/);
     if (quoteMatch) {
       flushParagraph();
       flushList();
+      flushTable();
+      inTable = false;
       quoteLines.push(quoteMatch[1]);
       return;
     }
@@ -609,6 +641,8 @@ function renderRichText(text) {
     const listMatch = line.match(/^\s*(?:([-*+•])|(\d+\.))\s+(.*)$/);
     if (listMatch) {
       flushParagraph();
+      flushTable();
+      inTable = false;
       const ordered = !!listMatch[2];
       if (listItems.length && ordered !== listOrdered) {
         flushList();
@@ -622,6 +656,8 @@ function renderRichText(text) {
     }
     if (!trimmed) {
       flushParagraph();
+      flushTable();
+      inTable = false;
       return;
     }
     paragraphLines.push(line.trim());
@@ -630,8 +666,103 @@ function renderRichText(text) {
   flushParagraph();
   flushQuote();
   flushList();
+  flushTable();
   flushCode();
   return fragment;
+}
+
+function isMarkdownTableRowLine(line) {
+  const value = String(line || "");
+  if (!value.includes("|")) return false;
+  const trimmed = value.trim();
+  if (!trimmed || !trimmed.includes("|")) return false;
+  return /\|/.test(trimmed);
+}
+
+function isMarkdownTableSeparatorLine(line) {
+  const trimmed = String(line || "").trim();
+  if (!trimmed.includes("|")) return false;
+  const cells = splitMarkdownTableCells(trimmed);
+  if (cells.length < 2) return false;
+  return cells.every((cell) => /^:?-{3,}:?$/.test(cell.replace(/\s+/g, "")));
+}
+
+function splitMarkdownTableCells(line) {
+  const trimmed = String(line || "").trim();
+  const withoutEdgePipes = trimmed.replace(/^\|/, "").replace(/\|$/, "");
+  return withoutEdgePipes.split("|").map((cell) => cell.trim());
+}
+
+function renderMarkdownTable(tableLines) {
+  const lines = Array.isArray(tableLines) ? tableLines.filter((line) => String(line || "").trim()) : [];
+  if (lines.length < 2) return null;
+  const headerCells = splitMarkdownTableCells(lines[0] || "");
+  const separatorIndex = lines.findIndex((line, index) => index > 0 && isMarkdownTableSeparatorLine(line));
+  if (separatorIndex < 1) return null;
+  const bodyLines = lines.slice(separatorIndex + 1);
+  const thead = document.createElement("thead");
+  const headRow = document.createElement("tr");
+  headerCells.forEach((cell) => {
+    const th = document.createElement("th");
+    appendInlineTokens(th, cell);
+    headRow.appendChild(th);
+  });
+  thead.appendChild(headRow);
+
+  const tbody = document.createElement("tbody");
+  bodyLines.forEach((line) => {
+    if (!isMarkdownTableRowLine(line)) return;
+    const row = document.createElement("tr");
+    splitMarkdownTableCells(line).forEach((cell) => {
+      const td = document.createElement("td");
+      appendInlineTokens(td, cell);
+      row.appendChild(td);
+    });
+    tbody.appendChild(row);
+  });
+
+  const table = document.createElement("table");
+  table.className = "message-table";
+  table.appendChild(thead);
+  table.appendChild(tbody);
+  return table;
+}
+
+function renderCodeBlock(codeText) {
+  const wrapper = document.createElement("div");
+  wrapper.className = "code-block";
+
+  const header = document.createElement("div");
+  header.className = "code-block__header";
+
+  const label = document.createElement("span");
+  label.className = "code-block__label";
+  label.textContent = "Code";
+  header.appendChild(label);
+
+  const copy = document.createElement("button");
+  copy.type = "button";
+  copy.className = "code-block__copy";
+  copy.textContent = "Copy";
+  copy.addEventListener("click", async () => {
+    try {
+      await navigator.clipboard?.writeText(String(codeText || ""));
+      showToast("Code copied.");
+    } catch (_) {
+      showToast("Unable to copy code.", true);
+    }
+  });
+  header.appendChild(copy);
+
+  const pre = document.createElement("pre");
+  pre.className = "code-block__pre";
+  const code = document.createElement("code");
+  code.textContent = codeText;
+  pre.appendChild(code);
+
+  wrapper.appendChild(header);
+  wrapper.appendChild(pre);
+  return wrapper;
 }
 
 function appendInlineTokens(parent, text) {

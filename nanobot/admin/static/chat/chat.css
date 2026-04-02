@@ -587,15 +587,123 @@ textarea {
   font-size: 0.94em;
 }
 
-.message-body pre {
+.code-block {
+  margin: 12px 0 14px;
+  overflow: hidden;
+  border-radius: 18px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: #1f1f24;
+  box-shadow: 0 18px 36px rgba(16, 35, 50, 0.12);
+}
+
+.code-block__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 14px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.03);
+  color: rgba(255, 255, 255, 0.72);
+}
+
+.code-block__label {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+
+.code-block__copy {
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.72);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.code-block__pre {
+  margin: 0;
+  padding: 18px 16px 16px;
   overflow: auto;
-  padding: 12px 14px;
-  margin: 0 0 12px;
-  border-radius: 16px;
-  background: rgba(16, 35, 50, 0.06);
-  white-space: pre-wrap;
+  white-space: pre;
+  color: #f4f7fa;
   font-family: "SFMono-Regular", "SF Mono", Consolas, monospace;
-  font-size: 0.92em;
+  font-size: 13px;
+  line-height: 1.75;
+}
+
+.code-block__pre code {
+  padding: 0;
+  border-radius: 0;
+  background: transparent;
+  color: inherit;
+  font-size: inherit;
+}
+
+.message-body pre code {
+  white-space: inherit;
+}
+
+.message-table {
+  width: 100%;
+  margin: 12px 0 14px;
+  border-collapse: collapse;
+  border: 1px solid rgba(16, 35, 50, 0.12);
+  border-radius: 14px;
+  overflow: hidden;
+  font-size: 14px;
+  line-height: 1.55;
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.message-table thead th {
+  padding: 12px 14px;
+  text-align: left;
+  font-weight: 700;
+  color: var(--text);
+  background: rgba(16, 35, 50, 0.04);
+}
+
+.message-table tbody td {
+  padding: 12px 14px;
+  vertical-align: top;
+  color: var(--text);
+}
+
+.message-table th,
+.message-table td {
+  border-right: 1px solid rgba(16, 35, 50, 0.1);
+  border-bottom: 1px solid rgba(16, 35, 50, 0.1);
+}
+
+.message-table th:last-child,
+.message-table td:last-child {
+  border-right: 0;
+}
+
+.message-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.message.user .message-table {
+  background: rgba(255, 255, 255, 0.04);
+  border-color: rgba(255, 255, 255, 0.12);
+}
+
+.message.user .message-table thead th,
+.message.user .message-table tbody td {
+  color: #fff;
+}
+
+.message.user .message-table thead th {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.message.user .message-table th,
+.message.user .message-table td {
+  border-color: rgba(255, 255, 255, 0.12);
 }
 
 .message-body ul,
