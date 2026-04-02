@@ -48,9 +48,14 @@
 
     <main class="chat-main">
       <header class="chat-header">
-        <div>
+        <div class="chat-header__lead">
+          <button id="btn-toggle-sidebar" class="sidebar-toggle" type="button" aria-label="Toggle sidebar" aria-expanded="true" title="Toggle sidebar">
+            <span class="sidebar-toggle__icon" aria-hidden="true"></span>
+          </button>
+          <div>
           <p class="eyebrow">Connected Device</p>
           <h3 id="device-label">Softnix Mobile</h3>
+          </div>
         </div>
         <p id="conversation-label" class="conversation-label"></p>
       </header>

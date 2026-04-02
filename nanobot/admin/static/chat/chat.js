@@ -3,6 +3,7 @@
 const POLL_INTERVAL_MS = 2000;
 const MAX_ATTACHMENT_BYTES = 15 * 1024 * 1024;
 const MESSAGE_FOLLOW_THRESHOLD_PX = 96;
+const SIDEBAR_STORAGE_KEY = "softnix.web-chat.sidebarCollapsed";
 let pollTimer = null;
 let loginTimer = null;
 let loginExpiryTimer = null;
@@ -12,6 +13,7 @@ let selectedAttachments = [];
 let isSending = false;
 let unreadReplyCount = 0;
 let shouldAutoFollowLatest = true;
+let isSidebarCollapsed = false;
 const baseDocumentTitle = document.title;
 
 const state = {
@@ -39,6 +41,7 @@ function bindEvents() {
   $("btn-logout")?.addEventListener("click", () => void logoutWebChat());
   $("btn-new-chat")?.addEventListener("click", () => startNewConversation());
   $("btn-attach")?.addEventListener("click", handleAttachClick);
+  $("btn-toggle-sidebar")?.addEventListener("click", () => toggleSidebar());
   $("btn-latest")?.addEventListener("click", () => scrollMessagesToLatest({ smooth: true }));
   $("reply-banner-action")?.addEventListener("click", () => scrollMessagesToLatest({ smooth: true }));
   $("attachment-input")?.addEventListener("change", (event) => void handleAttachmentInput(event));
@@ -123,6 +126,40 @@ function clearLoginTimers() {
 function setLoginMode(isLoginMode) {
   $("login-shell")?.classList.toggle("is-hidden", !isLoginMode);
   $("chat-shell")?.classList.toggle("is-hidden", isLoginMode);
+}
+
+function readSidebarPreference() {
+  try {
+    return window.localStorage?.getItem(SIDEBAR_STORAGE_KEY) === "1";
+  } catch (_) {
+    return false;
+  }
+}
+
+function setSidebarCollapsed(isCollapsed) {
+  isSidebarCollapsed = !!isCollapsed;
+  const shell = $("chat-shell");
+  if (shell) {
+    shell.classList.toggle("is-sidebar-collapsed", isSidebarCollapsed);
+  }
+  updateSidebarToggle();
+}
+
+function toggleSidebar() {
+  setSidebarCollapsed(!isSidebarCollapsed);
+  try {
+    window.localStorage?.setItem(SIDEBAR_STORAGE_KEY, isSidebarCollapsed ? "1" : "0");
+  } catch (_) {
+    // Ignore storage errors.
+  }
+}
+
+function updateSidebarToggle() {
+  const button = $("btn-toggle-sidebar");
+  if (!button) return;
+  button.setAttribute("aria-expanded", String(!isSidebarCollapsed));
+  button.title = isSidebarCollapsed ? "Show sidebar" : "Hide sidebar";
+  button.setAttribute("aria-label", isSidebarCollapsed ? "Show sidebar" : "Hide sidebar");
 }
 
 async function renderLoginQR(payload) {
@@ -240,6 +277,7 @@ function applyBootstrap(payload) {
   unreadReplyCount = 0;
   shouldAutoFollowLatest = true;
   const shared = window.SoftnixChatShared;
+  setSidebarCollapsed(readSidebarPreference());
   state.device = payload.device || null;
   state.session = payload.session || null;
   const built = shared?.buildConversationState
@@ -257,6 +295,7 @@ function applyBootstrap(payload) {
   setLoginMode(false);
   $("instance-label").textContent = state.device?.instance_id || "Softnix Web Chat";
   $("device-label").textContent = state.device?.label || state.device?.device_id || "Softnix Mobile";
+  updateSidebarToggle();
   renderConversationList();
   renderActiveConversation();
   renderComposerMeta();
@@ -425,13 +464,11 @@ function isAssistantAnswerMessage(message) {
 function renderUserMessage(message) {
   const element = document.createElement("article");
   element.className = "message user";
-  const text = window.SoftnixChatShared?.stripMarkdownDecorations
-    ? window.SoftnixChatShared.stripMarkdownDecorations(message.text || "")
-    : String(message.text || "");
+  const text = String(message.text || "");
   if (text.trim()) {
     const body = document.createElement("div");
     body.className = "message-body";
-    body.innerHTML = renderPlainTextWithLinks(text);
+    body.appendChild(renderRichText(text));
     element.appendChild(body);
   }
   const meta = document.createElement("div");
@@ -447,17 +484,38 @@ function renderUserMessage(message) {
 
 function renderAssistantMessage(message) {
   const element = document.createElement("article");
-  element.className = "message agent";
-  const text = window.SoftnixChatShared?.stripMarkdownDecorations
-    ? window.SoftnixChatShared.stripMarkdownDecorations(message.text || "")
-    : String(message.text || "");
+  element.className = "message agent assistant-entry";
+  const text = String(message.text || "");
+  const attachments = normalizeAttachments(message.attachments);
+  const hasText = !!text.trim();
+  const header = document.createElement("div");
+  header.className = "assistant-entry__meta";
+  const label = document.createElement("span");
+  label.className = "assistant-entry__label";
+  label.textContent = "Assistant";
+  header.appendChild(label);
+  if (hasText) {
+    const copy = document.createElement("button");
+    copy.type = "button";
+    copy.className = "assistant-entry__copy";
+    copy.textContent = "Copy";
+    copy.addEventListener("click", async () => {
+      try {
+        await navigator.clipboard?.writeText(text);
+        showToast("Assistant answer copied.");
+      } catch (_) {
+        showToast("Unable to copy answer.", true);
+      }
+    });
+    header.appendChild(copy);
+  }
+  element.appendChild(header);
   if (text.trim()) {
     const body = document.createElement("div");
-    body.className = "message-body";
-    body.innerHTML = renderPlainTextWithLinks(text);
+    body.className = "assistant-entry__content message-body";
+    body.appendChild(renderRichText(text));
     element.appendChild(body);
   }
-  const attachments = normalizeAttachments(message.attachments);
   if (attachments.length) {
     element.appendChild(renderAttachmentList(attachments));
   }
@@ -468,12 +526,177 @@ function renderAssistantMessage(message) {
   return element;
 }
 
-function renderPlainTextWithLinks(text) {
-  const escaped = escapeHtml(String(text || "")).replace(/\n/g, "<br>");
-  return escaped.replace(
-    /(https?:\/\/[^\s<]+)/g,
-    '<a href="$1" target="_blank" rel="noreferrer">$1</a>',
-  );
+function renderRichText(text) {
+  const fragment = document.createDocumentFragment();
+  const normalized = String(text || "").replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  const lines = normalized.split("\n");
+  let paragraphLines = [];
+  let quoteLines = [];
+  let listItems = [];
+  let listOrdered = false;
+  let codeLines = [];
+  let inCode = false;
+
+  const flushParagraph = () => {
+    if (!paragraphLines.length) return;
+    const paragraph = document.createElement("p");
+    appendInlineTokens(paragraph, paragraphLines.join(" "));
+    fragment.appendChild(paragraph);
+    paragraphLines = [];
+  };
+
+  const flushQuote = () => {
+    if (!quoteLines.length) return;
+    const blockquote = document.createElement("blockquote");
+    quoteLines.forEach((line) => {
+      const quoteLine = document.createElement("p");
+      appendInlineTokens(quoteLine, line);
+      blockquote.appendChild(quoteLine);
+    });
+    fragment.appendChild(blockquote);
+    quoteLines = [];
+  };
+
+  const flushList = () => {
+    if (!listItems.length) return;
+    const list = document.createElement(listOrdered ? "ol" : "ul");
+    listItems.forEach((item) => {
+      const li = document.createElement("li");
+      appendInlineTokens(li, item);
+      list.appendChild(li);
+    });
+    fragment.appendChild(list);
+    listItems = [];
+  };
+
+  const flushCode = () => {
+    if (!codeLines.length) return;
+    const pre = document.createElement("pre");
+    const code = document.createElement("code");
+    code.textContent = codeLines.join("\n");
+    pre.appendChild(code);
+    fragment.appendChild(pre);
+    codeLines = [];
+  };
+
+  lines.forEach((line) => {
+    const trimmed = line.trim();
+    if (trimmed.startsWith("```")) {
+      if (inCode) {
+        flushCode();
+        inCode = false;
+      } else {
+        flushParagraph();
+        flushQuote();
+        flushList();
+        inCode = true;
+      }
+      return;
+    }
+    if (inCode) {
+      codeLines.push(line);
+      return;
+    }
+    const quoteMatch = line.match(/^\s*>\s?(.*)$/);
+    if (quoteMatch) {
+      flushParagraph();
+      flushList();
+      quoteLines.push(quoteMatch[1]);
+      return;
+    }
+    if (quoteLines.length) {
+      flushQuote();
+    }
+    const listMatch = line.match(/^\s*(?:([-*+•])|(\d+\.))\s+(.*)$/);
+    if (listMatch) {
+      flushParagraph();
+      const ordered = !!listMatch[2];
+      if (listItems.length && ordered !== listOrdered) {
+        flushList();
+      }
+      listOrdered = ordered;
+      listItems.push(listMatch[3]);
+      return;
+    }
+    if (listItems.length) {
+      flushList();
+    }
+    if (!trimmed) {
+      flushParagraph();
+      return;
+    }
+    paragraphLines.push(line.trim());
+  });
+
+  flushParagraph();
+  flushQuote();
+  flushList();
+  flushCode();
+  return fragment;
+}
+
+function appendInlineTokens(parent, text) {
+  const value = String(text || "");
+  const tokenRe = /\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)|https?:\/\/[^\s<]+|`([^`]+)`|\*\*([^*]+)\*\*|\*([^*]+)\*/g;
+  let lastIndex = 0;
+  let match;
+  while ((match = tokenRe.exec(value)) !== null) {
+    if (match.index > lastIndex) {
+      parent.appendChild(document.createTextNode(value.slice(lastIndex, match.index)));
+    }
+    if (match[1] && match[2]) {
+      parent.appendChild(createLinkElement(match[2], match[1]));
+    } else if (match[0].startsWith("http")) {
+      const urlToken = trimTrailingUrlPunctuation(match[0]);
+      parent.appendChild(createLinkElement(urlToken.value, urlToken.value));
+      if (urlToken.trailing) {
+        parent.appendChild(document.createTextNode(urlToken.trailing));
+      }
+    } else if (match[3]) {
+      const code = document.createElement("code");
+      code.textContent = match[3];
+      parent.appendChild(code);
+    } else if (match[4]) {
+      const strong = document.createElement("strong");
+      strong.textContent = match[4];
+      parent.appendChild(strong);
+    } else if (match[5]) {
+      const em = document.createElement("em");
+      em.textContent = match[5];
+      parent.appendChild(em);
+    }
+    lastIndex = tokenRe.lastIndex;
+  }
+  if (lastIndex < value.length) {
+    parent.appendChild(document.createTextNode(value.slice(lastIndex)));
+  }
+}
+
+function createLinkElement(href, label) {
+  const anchor = document.createElement("a");
+  anchor.textContent = label;
+  try {
+    const url = new URL(href, window.location.origin);
+    if (url.protocol === "http:" || url.protocol === "https:") {
+      anchor.href = url.href;
+      anchor.target = "_blank";
+      anchor.rel = "noreferrer";
+      return anchor;
+    }
+  } catch (_) {
+    // Fall through to plain text.
+  }
+  anchor.removeAttribute("href");
+  return anchor;
+}
+
+function trimTrailingUrlPunctuation(value) {
+  const source = String(value || "");
+  const trimmed = source.match(/^(.*?)([.,!?;:)\]]+)?$/);
+  return {
+    value: trimmed?.[1] || source,
+    trailing: trimmed?.[2] || "",
+  };
 }
 
 function createProcessingGroupState(container) {
@@ -559,10 +782,11 @@ function appendProcessingStep(groupState, message) {
   ensureProcessingGroup(groupState);
   const step = document.createElement("div");
   step.className = "tool-step";
-  const text = window.SoftnixChatShared?.stripMarkdownDecorations
-    ? window.SoftnixChatShared.stripMarkdownDecorations(message.text || "")
-    : String(message.text || "");
-  step.innerHTML = `<div class="tool-step-text">${renderPlainTextWithLinks(text)}</div>`;
+  const text = String(message.text || "");
+  const textBlock = document.createElement("div");
+  textBlock.className = "tool-step-text";
+  textBlock.appendChild(renderRichText(text));
+  step.appendChild(textBlock);
   const time = document.createElement("span");
   time.className = "tool-step-time";
   time.textContent = formatTimestamp(message.timestamp);
