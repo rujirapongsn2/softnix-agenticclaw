@@ -66,13 +66,18 @@
       .map(([sessionId, conversation]) => {
         const messages = Array.isArray(conversation?.messages) ? conversation.messages : [];
         const lastMessage = messages[messages.length - 1] || null;
+        const latestUser = [...messages].reverse().find((entry) => String(entry?.role || "") === "user") || null;
         const attachmentCount = Array.isArray(lastMessage?.attachments) ? lastMessage.attachments.length : 0;
-        const previewText = stripMarkdownDecorations(String(lastMessage?.text || "")).trim().replace(/\s+/g, " ").slice(0, 140);
+        const rawTitle = stripMarkdownDecorations(String(latestUser?.text || lastMessage?.text || "")).trim().replace(/\s+/g, " ");
+        const previewText = stripMarkdownDecorations(String(lastMessage?.text || "")).trim().replace(/\s+/g, " ");
+        const title = compactConversationText(rawTitle || previewText || (attachmentCount > 0 ? `[Attachment${attachmentCount > 1 ? "s" : ""}]` : "Conversation"), 40);
+        const preview = compactConversationText(previewText || (attachmentCount > 0 ? `[Attachment${attachmentCount > 1 ? "s" : ""}]` : ""), 64);
         return {
           session_id: sessionId,
           updated_at: String(conversation?.updatedAt || lastMessage?.timestamp || ""),
           message_count: messages.length,
-          preview: previewText || (attachmentCount > 0 ? `[Attachment${attachmentCount > 1 ? "s" : ""}]` : ""),
+          title,
+          preview,
         };
       })
       .sort((a, b) => String(b.updated_at || "").localeCompare(String(a.updated_at || "")));
@@ -122,6 +127,13 @@
       .replace(/```[\s\S]*?```/g, (match) => match.replace(/```/g, ""))
       .replace(/\n{3,}/g, "\n\n");
     return value;
+  }
+
+  function compactConversationText(value, limit) {
+    const clean = String(value || "").trim().replace(/\s+/g, " ");
+    if (!clean) return "";
+    if (clean.length <= limit) return clean;
+    return `${clean.slice(0, Math.max(0, limit - 1)).trimEnd()}…`;
   }
 
   global.SoftnixChatShared = {

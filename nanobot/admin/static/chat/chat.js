@@ -394,9 +394,8 @@ function renderConversationList() {
     button.type = "button";
     button.className = `conversation-item${item.session_id === state.activeSessionId ? " is-active" : ""}`;
     button.innerHTML = `
-      <strong>${escapeHtml(index === 0 ? "Latest Conversation" : `Conversation ${index + 1}`)}</strong>
+      <strong>${escapeHtml(item.title || (index === 0 ? "Latest Conversation" : `Conversation ${index + 1}`))}</strong>
       <p>${escapeHtml(item.preview || "No messages yet")}</p>
-      <span>${escapeHtml(formatTimestamp(item.updated_at))}</span>
     `;
     button.addEventListener("click", () => {
       unreadReplyCount = 0;
