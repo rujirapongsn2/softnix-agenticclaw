@@ -5,6 +5,39 @@ from nanobot.admin.service import AdminService
 from nanobot.bus.events import OutboundMessage
 from nanobot.bus.queue import MessageBus
 from nanobot.channels.softnix_app import SoftnixAppChannel
+from nanobot.session.manager import SessionManager
+
+
+def _make_mobile_service(tmp_path: Path, *, allow_from: list[str] | None = None) -> tuple[AdminService, Path]:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True)
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "agents": {"defaults": {"workspace": str(workspace)}},
+                "channels": {"softnix_app": {"enabled": True, "allow_from": allow_from or ["mob-1"]}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    registry_path = tmp_path / "instances.json"
+    registry_path.write_text(
+        json.dumps(
+            {
+                "instances": [
+                    {
+                        "id": "prod",
+                        "name": "Production",
+                        "config": str(config_path),
+                        "workspace": str(workspace),
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    return AdminService(registry_path=registry_path), workspace
 
 
 def test_relay_mobile_message_persists_thread_and_attachments(tmp_path: Path) -> None:
@@ -66,6 +99,341 @@ def test_relay_mobile_message_persists_thread_and_attachments(tmp_path: Path) ->
     saved_path = Path(payload["media"][0])
     assert saved_path.exists()
     assert saved_path.read_text(encoding="utf-8") == "hello world"
+
+
+def test_relay_mobile_message_rejects_oversized_attachment(tmp_path: Path) -> None:
+    service, _workspace = _make_mobile_service(tmp_path)
+    service.max_mobile_attachment_bytes = 4
+
+    try:
+        service.relay_mobile_message(
+            "prod",
+            "mob-1",
+            "hello",
+            attachments=[
+                {
+                    "name": "oversized.txt",
+                    "type": "text/plain",
+                    "data_base64": "aGVsbG8=",
+                }
+            ],
+            accessible_instance_ids={"prod"},
+        )
+    except ValueError as exc:
+        assert "maximum size" in str(exc)
+    else:
+        raise AssertionError("Expected oversized attachment to be rejected")
+
+
+async def test_softnix_app_channel_preserves_progress_and_tool_messages(tmp_path: Path) -> None:
+    class _Config:
+        allow_from = ["*"]
+
+    workspace = tmp_path / "workspace"
+    channel = SoftnixAppChannel(_Config(), MessageBus(), workspace)
+
+    await channel.send(
+        OutboundMessage(
+            channel="softnix_app",
+            chat_id="mobile-mob-7",
+            content="Thinking through the task",
+            metadata={"sender_id": "mob-7", "_progress": True},
+        )
+    )
+    await channel.send(
+        OutboundMessage(
+            channel="softnix_app",
+            chat_id="mobile-mob-7",
+            content="read_file(\"workspace/notes.txt\")",
+            metadata={"sender_id": "mob-7", "_progress": True, "_tool_hint": True},
+        )
+    )
+
+    outbound_path = workspace / "mobile_relay" / "outbound.jsonl"
+    payloads = [json.loads(line) for line in outbound_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    assert [item["type"] for item in payloads] == ["progress", "tool"]
+
+    event_path = workspace / "mobile_relay" / "events" / "mob-7.jsonl"
+    event_payloads = [json.loads(line) for line in event_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    assert [item["type"] for item in event_payloads] == ["progress", "tool"]
+
+
+def test_web_chat_login_ticket_exchange_uses_mobile_device_context(tmp_path: Path) -> None:
+    service, _workspace = _make_mobile_service(tmp_path)
+    service.auth_store.upsert_mobile_device("prod", "mob-1", "Tester", device_token="mobtok-1")
+
+    login = service.create_web_chat_login(ip="127.0.0.1", user_agent="pytest")
+    status = service.get_web_chat_login_status(login_ticket=login["login_ticket"])
+    assert status["status"] == "pending"
+
+    approved = service.approve_web_chat_login(
+        login_ticket=login["login_ticket"],
+        device=service.auth_store.get_mobile_device("prod", "mob-1") or {},
+        active_session_id="mobile-mob-1#thread:root-1",
+        accessible_instance_ids={"prod"},
+    )
+    assert approved["device_id"] == "mob-1"
+
+    exchanged = service.exchange_web_chat_login(
+        login_ticket=login["login_ticket"],
+        ip="127.0.0.1",
+        user_agent="pytest",
+    )
+    assert exchanged["device"]["instance_id"] == "prod"
+    assert exchanged["session"]["active_session_id"] == "mobile-mob-1#thread:root-1"
+
+    context = service.get_authenticated_web_chat_session(session_id=exchanged["session"]["id"])
+    assert context is not None
+    assert context["device"]["device_id"] == "mob-1"
+    assert context["session"]["csrf_token"]
+
+
+def test_relay_web_chat_message_targets_same_device_session_scope(tmp_path: Path) -> None:
+    service, workspace = _make_mobile_service(tmp_path)
+    service.auth_store.upsert_mobile_device("prod", "mob-1", "Tester", device_token="mobtok-1")
+    login = service.create_web_chat_login()
+    service.approve_web_chat_login(
+        login_ticket=login["login_ticket"],
+        device=service.auth_store.get_mobile_device("prod", "mob-1") or {},
+        active_session_id="mobile-mob-1-beta",
+        accessible_instance_ids={"prod"},
+    )
+    exchanged = service.exchange_web_chat_login(login_ticket=login["login_ticket"])
+
+    result = service.relay_web_chat_message(
+        web_session_id=exchanged["session"]["id"],
+        text="desktop hello",
+        chat_session_id="mobile-mob-1-beta",
+        message_id="msg-desktop-1",
+    )
+
+    assert result["session_id"] == "mobile-mob-1-beta"
+    inbound_path = workspace / "mobile_relay" / "inbound.jsonl"
+    payload = json.loads(inbound_path.read_text(encoding="utf-8").splitlines()[0])
+    assert payload["sender_id"] == "mob-1"
+    assert payload["session_id"] == "mobile-mob-1-beta"
+    events = service.get_mobile_chat_events("prod", "mob-1", accessible_instance_ids={"prod"})
+    assert any(event.get("text") == "desktop hello" for event in events)
+
+
+def test_relay_web_chat_message_persists_attachment_payloads(tmp_path: Path) -> None:
+    service, workspace = _make_mobile_service(tmp_path)
+    service.auth_store.upsert_mobile_device("prod", "mob-1", "Tester", device_token="mobtok-1")
+    login = service.create_web_chat_login()
+    service.approve_web_chat_login(
+        login_ticket=login["login_ticket"],
+        device=service.auth_store.get_mobile_device("prod", "mob-1") or {},
+        active_session_id="mobile-mob-1",
+        accessible_instance_ids={"prod"},
+    )
+    exchanged = service.exchange_web_chat_login(login_ticket=login["login_ticket"])
+
+    result = service.relay_web_chat_message(
+        web_session_id=exchanged["session"]["id"],
+        text="",
+        chat_session_id="mobile-mob-1",
+        message_id="msg-desktop-attachment-1",
+        attachments=[
+            {
+                "name": "desktop-note.txt",
+                "type": "text/plain",
+                "data_base64": "aGVsbG8gd2Vi",
+            }
+        ],
+    )
+
+    assert result["attachment_count"] == 1
+    assert result["attachments"][0]["url"].startswith("/admin/mobile/media?instance_id=prod")
+    inbound_path = workspace / "mobile_relay" / "inbound.jsonl"
+    payload = json.loads(inbound_path.read_text(encoding="utf-8").splitlines()[0])
+    assert payload["sender_id"] == "mob-1"
+    assert payload["attachments"][0]["name"] == "desktop-note.txt"
+    saved_path = Path(payload["media"][0])
+    assert saved_path.read_text(encoding="utf-8") == "hello web"
+
+
+async def test_mobile_chat_bootstrap_uses_event_log_and_after_cursor(tmp_path: Path) -> None:
+    class _Config:
+        allow_from = ["*"]
+
+    service, workspace = _make_mobile_service(tmp_path)
+    service.auth_store.upsert_mobile_device("prod", "mob-1", "Tester", device_token="mobtok-1")
+    service.relay_mobile_message(
+        "prod",
+        "mob-1",
+        "hello from mobile",
+        session_id="mobile-mob-1-alpha",
+        message_id="msg-mobile-1",
+        accessible_instance_ids={"prod"},
+    )
+
+    channel = SoftnixAppChannel(_Config(), MessageBus(), workspace)
+    await channel.send(
+        OutboundMessage(
+            channel="softnix_app",
+            chat_id="mobile-mob-1-alpha",
+            content="hello from agent",
+            metadata={"sender_id": "mob-1"},
+        )
+    )
+
+    bootstrap = service.get_mobile_chat_bootstrap(
+        "prod",
+        "mob-1",
+        preferred_active_session_id="mobile-mob-1-alpha",
+        accessible_instance_ids={"prod"},
+    )
+    assert bootstrap["active_session_id"] == "mobile-mob-1-alpha"
+    assert len(bootstrap["events"]) >= 2
+    assert bootstrap["conversations"][0]["session_id"] == "mobile-mob-1-alpha"
+
+    first_event_id = bootstrap["events"][0]["event_id"]
+    tail = service.get_mobile_chat_events(
+        "prod",
+        "mob-1",
+        after_event_id=first_event_id,
+        accessible_instance_ids={"prod"},
+    )
+    assert tail
+    assert all(event["event_id"] != first_event_id for event in tail)
+
+
+async def test_mobile_chat_bootstrap_merges_outbound_progress_and_answers(tmp_path: Path) -> None:
+    service, workspace = _make_mobile_service(tmp_path)
+    service.auth_store.upsert_mobile_device("prod", "mob-1", "Tester", device_token="mobtok-1")
+
+    manager = SessionManager(workspace)
+    legacy_session = manager.get_or_create("mobile-mob-1-thread-1")
+    legacy_session.add_message("user", "hello")
+    legacy_session.add_message("assistant", "Done")
+    manager.save(legacy_session)
+
+    events_dir = workspace / "mobile_relay" / "events"
+    events_dir.mkdir(parents=True, exist_ok=True)
+    (events_dir / "mob-1.jsonl").write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "event_id": "mobevt-user-1",
+                        "instance_id": "prod",
+                        "device_id": "mob-1",
+                        "role": "user",
+                        "direction": "inbound",
+                        "type": "message",
+                        "session_id": "mobile-mob-1-thread-1",
+                        "message_id": "user-1",
+                        "reply_to": None,
+                        "thread_root_id": None,
+                        "text": "hello",
+                        "attachments": [],
+                        "timestamp": "2026-04-02T03:00:00+00:00",
+                    }
+                ),
+                json.dumps(
+                    {
+                        "event_id": "mobevt-progress-1",
+                        "instance_id": "prod",
+                        "device_id": "mob-1",
+                        "role": "agent",
+                        "direction": "outbound",
+                        "type": "progress",
+                        "session_id": "mobile-mob-1-thread-1",
+                        "message_id": "mobr-progress-1",
+                        "reply_to": "user-1",
+                        "thread_root_id": "user-1",
+                        "text": "Thinking through the task",
+                        "attachments": [],
+                        "timestamp": "2026-04-02T03:00:01+00:00",
+                    }
+                ),
+                json.dumps(
+                    {
+                        "event_id": "mobevt-answer-1",
+                        "instance_id": "prod",
+                        "device_id": "mob-1",
+                        "role": "agent",
+                        "direction": "outbound",
+                        "type": "answer",
+                        "session_id": "mobile-mob-1-thread-1",
+                        "message_id": "mobr-answer-1",
+                        "reply_to": "user-1",
+                        "thread_root_id": "user-1",
+                        "text": "Done",
+                        "attachments": [],
+                        "timestamp": "2026-04-02T03:00:02+00:00",
+                    }
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    (workspace / "mobile_relay" / "outbound.jsonl").write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "message_id": "mobr-progress-1",
+                        "text": "Thinking through the task",
+                        "type": "progress",
+                        "sender_id": "mob-1",
+                        "session_id": "mobile-mob-1-thread-1",
+                        "reply_to": "user-1",
+                        "thread_root_id": "user-1",
+                        "attachments": [],
+                        "timestamp": "2026-04-02T03:00:01+00:00",
+                    }
+                ),
+                json.dumps(
+                    {
+                        "message_id": "mobr-answer-1",
+                        "text": "Done",
+                        "type": "answer",
+                        "sender_id": "mob-1",
+                        "session_id": "mobile-mob-1-thread-1",
+                        "reply_to": "user-1",
+                        "thread_root_id": "user-1",
+                        "attachments": [],
+                        "timestamp": "2026-04-02T03:00:02+00:00",
+                    }
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    bootstrap = service.get_mobile_chat_bootstrap(
+        "prod",
+        "mob-1",
+        accessible_instance_ids={"prod"},
+    )
+
+    assert bootstrap["active_session_id"] == "mobile-mob-1-thread-1"
+    assert [event["type"] for event in bootstrap["events"]] == ["message", "progress", "answer"]
+    assert bootstrap["conversations"][0]["message_count"] == 3
+
+
+async def test_mobile_chat_bootstrap_includes_bare_session_history(tmp_path: Path) -> None:
+    service, workspace = _make_mobile_service(tmp_path)
+    service.auth_store.upsert_mobile_device("prod", "mob-1", "Tester", device_token="mobtok-1")
+
+    manager = SessionManager(workspace)
+    session = manager.get_or_create("mobile-mob-1")
+    session.add_message("user", "hello from session log")
+    session.add_message("assistant", "reply from session log")
+    manager.save(session)
+
+    bootstrap = service.get_mobile_chat_bootstrap(
+        "prod",
+        "mob-1",
+        accessible_instance_ids={"prod"},
+    )
+
+    assert bootstrap["active_session_id"] == "mobile-mob-1"
+    assert any(event.get("role") == "agent" and event.get("text") == "reply from session log" for event in bootstrap["events"])
 
 
 async def test_softnix_app_channel_relays_attachment_metadata(tmp_path: Path) -> None:

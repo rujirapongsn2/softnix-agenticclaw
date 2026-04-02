@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Softnix Web Chat</title>
+  <link rel="icon" type="image/png" href="/mobile/apple-touch-icon.png">
+  <link rel="stylesheet" href="/chat/chat.css">
+</head>
+<body>
+  <div id="login-shell" class="login-shell">
+    <section class="login-panel">
+      <div class="brand-lockup">
+        <img src="/static/Logo_Softnix.png" alt="Softnix" class="brand-logo">
+        <div>
+          <p class="eyebrow">Softnix Web Chat</p>
+          <h1>Sign in from your mobile app</h1>
+          <p class="subtle">Open Softnix Mobile, go to the menu, then use <strong>Scan QR Code Web Chat</strong>.</p>
+        </div>
+      </div>
+      <div class="qr-card">
+        <div id="qr-container" class="qr-container"></div>
+        <div class="qr-meta">
+          <p id="login-status" class="login-status">Preparing secure login…</p>
+          <p id="login-expiry" class="login-expiry"></p>
+          <code id="manual-code" class="manual-code"></code>
+        </div>
+        <div class="qr-actions">
+          <button id="btn-copy-code" class="secondary-btn" type="button">Copy Code</button>
+          <button id="btn-refresh-login" class="secondary-btn" type="button">Refresh QR</button>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <div id="chat-shell" class="chat-shell is-hidden">
+    <aside class="sidebar">
+      <div class="sidebar-header">
+        <div>
+          <p class="eyebrow">Softnix</p>
+          <h2 id="instance-label">Web Chat</h2>
+        </div>
+        <button id="btn-logout" class="ghost-btn" type="button">Log Out</button>
+      </div>
+      <button id="btn-new-chat" class="primary-btn" type="button">New Chat</button>
+      <div id="conversation-list" class="conversation-list"></div>
+    </aside>
+
+    <main class="chat-main">
+      <header class="chat-header">
+        <div>
+          <p class="eyebrow">Connected Device</p>
+          <h3 id="device-label">Softnix Mobile</h3>
+        </div>
+        <p id="conversation-label" class="conversation-label"></p>
+      </header>
+
+      <div id="reply-banner" class="reply-banner is-hidden" role="status" aria-live="polite">
+        <span class="reply-banner__dot" aria-hidden="true"></span>
+        <span id="reply-banner-text" class="reply-banner__text">New reply received</span>
+        <button id="reply-banner-action" class="reply-banner__action" type="button">Jump to latest</button>
+      </div>
+
+      <section id="messages" class="messages"></section>
+      <button id="btn-latest" class="latest-message-button" type="button" aria-hidden="true">
+        <span class="latest-message-button__badge">New reply</span>
+        <span class="latest-message-button__text">Jump to latest</span>
+      </button>
+
+      <form id="composer" class="composer">
+        <input id="attachment-input" type="file" multiple hidden>
+        <div class="composer-stack">
+          <div id="compose-attachments" class="compose-attachments is-hidden"></div>
+          <div class="composer-bar">
+            <button id="btn-attach" class="secondary-btn composer-attach" type="button">Attach</button>
+            <textarea id="compose-input" rows="1" placeholder="Message Softnix…"></textarea>
+            <button id="btn-send" class="primary-btn" type="submit">Send</button>
+          </div>
+        </div>
+      </form>
+    </main>
+  </div>
+
+  <div id="toast" class="toast" aria-live="polite"></div>
+
+  <script src="/chat/shared.js"></script>
+  <script src="/chat/chat.js"></script>
+</body>
+</html>

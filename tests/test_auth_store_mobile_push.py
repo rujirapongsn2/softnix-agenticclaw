@@ -63,6 +63,54 @@ def test_mobile_device_token_round_trip(tmp_path: Path) -> None:
     assert matched["device_id"] == "mob-1"
 
 
+def test_web_chat_login_ticket_and_session_round_trip(tmp_path: Path) -> None:
+    store = AdminAuthStore(tmp_path)
+    store.create_web_chat_login_ticket(
+        ticket="wclogin-demo",
+        expires_at="2999-01-01T00:00:00+00:00",
+        ip="127.0.0.1",
+        user_agent="Firefox",
+    )
+
+    pending = store.get_web_chat_login_ticket("wclogin-demo")
+    assert pending is not None
+    assert pending["status"] == "pending"
+
+    approved = store.approve_web_chat_login_ticket(
+        ticket="wclogin-demo",
+        instance_id="demo",
+        device_id="mob-1",
+        device_label="Tester",
+        active_session_id="mobile-mob-1",
+    )
+    assert approved is not None
+    assert approved["status"] == "approved"
+    assert approved["device_id"] == "mob-1"
+
+    consumed = store.consume_web_chat_login_ticket("wclogin-demo")
+    assert consumed is not None
+    assert consumed["status"] == "exchanged"
+    assert store.consume_web_chat_login_ticket("wclogin-demo") is None
+
+    session = store.create_web_chat_session(
+        session_id="wc-session-1",
+        instance_id="demo",
+        device_id="mob-1",
+        device_label="Tester",
+        active_session_id="mobile-mob-1",
+        csrf_token="csrf-demo",
+    )
+    assert session["device_id"] == "mob-1"
+    fetched = store.get_web_chat_session("wc-session-1")
+    assert fetched is not None
+    assert fetched["csrf_token"] == "csrf-demo"
+    touched = store.touch_web_chat_session("wc-session-1", active_session_id="mobile-mob-1#thread:alpha")
+    assert touched is not None
+    assert touched["active_session_id"] == "mobile-mob-1#thread:alpha"
+    assert store.revoke_web_chat_sessions_for_device(instance_id="demo", device_id="mob-1") == 1
+    assert store.get_web_chat_session("wc-session-1") is None
+
+
 def test_clear_mobile_state_for_instance_removes_all_instance_scoped_records(tmp_path: Path) -> None:
     store = AdminAuthStore(tmp_path)
     store.create_pairing_token("demo", "pair-demo", "2999-01-01T00:00:00+00:00")
@@ -91,6 +139,36 @@ def test_clear_mobile_state_for_instance_removes_all_instance_scoped_records(tmp
         expires_at="2999-01-01T00:00:00+00:00",
         payload={"device": {"device_id": "mob-2", "instance_id": "other"}},
     )
+    store.create_web_chat_login_ticket(
+        ticket="wclogin-demo",
+        expires_at="2999-01-01T00:00:00+00:00",
+    )
+    store.approve_web_chat_login_ticket(
+        ticket="wclogin-demo",
+        instance_id="demo",
+        device_id="mob-1",
+    )
+    store.create_web_chat_login_ticket(
+        ticket="wclogin-other",
+        expires_at="2999-01-01T00:00:00+00:00",
+    )
+    store.approve_web_chat_login_ticket(
+        ticket="wclogin-other",
+        instance_id="other",
+        device_id="mob-2",
+    )
+    store.create_web_chat_session(
+        session_id="wc-demo",
+        instance_id="demo",
+        device_id="mob-1",
+        csrf_token="csrf-demo",
+    )
+    store.create_web_chat_session(
+        session_id="wc-other",
+        instance_id="other",
+        device_id="mob-2",
+        csrf_token="csrf-other",
+    )
 
     result = store.clear_mobile_state_for_instance("demo")
 
@@ -99,6 +177,8 @@ def test_clear_mobile_state_for_instance_removes_all_instance_scoped_records(tmp
         "devices_removed": 1,
         "push_subscriptions_removed": 1,
         "transfer_tokens_removed": 1,
+        "web_chat_tickets_removed": 1,
+        "web_chat_sessions_removed": 1,
     }
     assert store.list_mobile_devices("demo") == []
     assert store.list_mobile_devices("other")[0]["device_id"] == "mob-2"
@@ -106,3 +186,7 @@ def test_clear_mobile_state_for_instance_removes_all_instance_scoped_records(tmp
     assert store.list_mobile_push_subscriptions("other")[0]["device_id"] == "mob-2"
     assert store.consume_mobile_transfer_token("xfer-demo") is None
     assert store.consume_mobile_transfer_token("xfer-other") is not None
+    assert store.get_web_chat_login_ticket("wclogin-demo") is None
+    assert store.get_web_chat_login_ticket("wclogin-other") is not None
+    assert store.get_web_chat_session("wc-demo") is None
+    assert store.get_web_chat_session("wc-other") is not None

@@ -30,6 +30,8 @@ let isVoiceTranscribing = false;
 let voiceBannerTimer = null;
 let lastApprovalStatusCheckAt = 0;
 let approvalStatusRequest = null;
+let lastEventId = null;
+let webChatScannerState = null;
 const TOOLS_TOGGLE_SPINNER_FRAMES = ["", ".", "..", "..."];
 let toolsToggleSpinnerFrame = 0;
 
@@ -123,6 +125,7 @@ function replaceAppStateForDevice(nextDevice) {
   };
   appState.activeSessionId = activeSessionId;
   device = appState.device;
+  lastEventId = null;
   saveAppState();
 }
 
@@ -264,8 +267,43 @@ function setupChat() {
   renderApprovalState();
   refreshHomeState();
   startPolling();
+  void bootstrapChatState();
   void setupPushNotifications();
   void syncDeviceApprovalStatus({ force: true, silent: true });
+}
+
+async function bootstrapChatState() {
+  if (!device?.instance_id || !device?.device_id) return;
+  try {
+    const response = await apiFetch(
+      `/admin/mobile/bootstrap?instance_id=${encodeURIComponent(device.instance_id)}&sender_id=${encodeURIComponent(device.device_id)}${getActiveSessionId() ? `&active_session_id=${encodeURIComponent(getActiveSessionId())}` : ""}`,
+    );
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(payload.error || `Bootstrap failed (${response.status})`);
+    }
+    const shared = window.SoftnixChatShared;
+    const nextState = shared?.buildConversationState
+      ? shared.buildConversationState(payload.events || [], device.device_id)
+      : { conversations: appState?.conversations || {}, lastEventId: null };
+    if (nextState?.conversations) {
+      appState.conversations = nextState.conversations;
+    }
+    lastEventId = nextState?.lastEventId || lastEventId;
+    const preferredSessionId = appState.activeSessionId || payload.active_session_id || device.current_session_id;
+    if (shared?.pickActiveSessionId) {
+      appState.activeSessionId = shared.pickActiveSessionId(appState.conversations, preferredSessionId, device.device_id);
+    } else if (!appState.activeSessionId) {
+      appState.activeSessionId = payload.active_session_id || `mobile-${device.device_id}`;
+    }
+    device.current_session_id = appState.activeSessionId;
+    saveDevice(device);
+    restoreActiveConversation();
+    renderComposerMeta();
+    refreshHomeState();
+  } catch (_) {
+    // Keep local state as fallback when bootstrap fails
+  }
 }
 
 function configureDisconnectedState() {
@@ -409,7 +447,7 @@ function syncMessageAttachments(messageId, attachments) {
     attachments: normalizedAttachments,
   };
   messageStore.set(messageId, updatedMessage);
-  persistMessage(updatedMessage);
+  persistMessage(updatedMessage, { setActive: updatedMessage.sessionId === getActiveSessionId() });
 
   const element = document.querySelector(`[data-message-id="${CSS.escape(messageId)}"]`);
   if (!element) return;
@@ -429,29 +467,32 @@ function syncMessageAttachments(messageId, attachments) {
 
 function startPolling() {
   if (pollTimer) clearInterval(pollTimer);
-  pollTimer = setInterval(() => void pollReplies(), POLL_INTERVAL_MS);
+  pollTimer = setInterval(() => void pollChatEvents(), POLL_INTERVAL_MS);
 }
 
-async function pollReplies() {
+async function pollChatEvents() {
   if (!device) return;
   await syncDeviceApprovalStatus({ silent: true });
   if (isDevicePendingApproval()) return;
 
   try {
-    const senderId = getActiveSessionId() || device.device_id;
-    const url = `/admin/mobile/poll?instance_id=${encodeURIComponent(device.instance_id)}&sender_id=${encodeURIComponent(senderId)}`;
+    const url = `/admin/mobile/events?instance_id=${encodeURIComponent(device.instance_id)}&sender_id=${encodeURIComponent(device.device_id)}${lastEventId ? `&after_event_id=${encodeURIComponent(lastEventId)}` : ""}`;
     const response = await apiFetch(url);
     if (!response.ok) return;
 
     const data = await response.json();
-    const replies = Array.isArray(data.replies) ? data.replies : [];
+    const events = Array.isArray(data.events) ? data.events : [];
 
-    if (replies.length > 0) {
+    if (events.length > 0) {
       showTypingIndicator(false);
     }
 
-    for (const reply of replies) {
-      const message = normalizeReplyMessage(reply);
+    for (const item of events) {
+      if (item?.event_id) {
+        lastEventId = item.event_id;
+      }
+      const message = normalizeEventMessage(item);
+      if (!message) continue;
       if (seenMessageIds.has(message.messageId)) continue;
       appendMessage(message);
 
@@ -490,6 +531,27 @@ function normalizeReplyMessage(reply) {
     threadRootId: reply.thread_root_id || reply.reply_to || null,
     attachments,
     timestamp: reply.timestamp || new Date().toISOString(),
+  };
+}
+
+function normalizeEventMessage(event) {
+  const shared = window.SoftnixChatShared;
+  if (!shared?.normalizeChatEvent) {
+    return normalizeReplyMessage(event);
+  }
+  const normalized = shared.normalizeChatEvent(event, device?.device_id || "");
+  if (!normalized) return null;
+  return {
+    role: normalized.role,
+    text: normalized.text,
+    msgType: normalized.msgType,
+    messageId: normalized.messageId,
+    sessionId: normalized.sessionId,
+    senderId: normalized.senderId,
+    replyTo: normalized.replyTo,
+    threadRootId: normalized.threadRootId,
+    attachments: normalizeAttachments(normalized.attachments, normalized.senderId),
+    timestamp: normalized.timestamp,
   };
 }
 
@@ -562,11 +624,17 @@ function appendMessageInternal(message, options = {}) {
 
   seenMessageIds.add(normalized.messageId);
   messageStore.set(normalized.messageId, normalized);
+  const activeSessionId = getActiveSessionId();
+  const shouldRender = options.renderInactive === true || normalized.sessionId === activeSessionId;
   if (!options.skipPersist) {
-    persistMessage(normalized);
+    persistMessage(normalized, { setActive: shouldRender || options.setActive === true });
   }
   hasMessages = true;
   refreshHomeState();
+
+  if (!shouldRender) {
+    return normalized;
+  }
 
   if (normalized.role === "agent") {
     if (normalized.msgType === "tool" || normalized.msgType === "progress") {
@@ -744,6 +812,10 @@ function createMessageElement(message) {
 }
 
 function createAssistantTurnElement(message) {
+  if (message.msgType === "tool" || message.msgType === "progress") {
+    return createAssistantProcessingElement(message);
+  }
+
   const turn = document.createElement("div");
   turn.className = "assistant-turn";
   turn.dataset.messageId = message.messageId;
@@ -788,6 +860,65 @@ function createAssistantTurnElement(message) {
 
   turn.appendChild(footer);
   return turn;
+}
+
+function createAssistantProcessingElement(message) {
+  const group = document.createElement("div");
+  group.className = "agent-group";
+
+  const panel = document.createElement("div");
+  panel.className = "tools-panel";
+
+  const toggle = document.createElement("button");
+  toggle.type = "button";
+  toggle.className = "tools-toggle";
+  toggle.innerHTML = `
+    <svg class="tools-toggle-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+      <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>
+    </svg>
+    <span class="tools-toggle-label">Agent processing </span>
+    <span class="spinner tools-toggle-spinner is-visible" aria-hidden="true"></span>
+    <svg class="tools-toggle-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+      <polyline points="6 9 12 15 18 9"/>
+    </svg>
+  `;
+
+  const content = document.createElement("div");
+  content.className = "tools-content";
+
+  const step = document.createElement("div");
+  step.className = "tool-step";
+  step.innerHTML = `<div class="tool-step-text">${renderMarkdown(message.text || "")}</div>`;
+  const time = document.createElement("span");
+  time.className = "tool-step-time";
+  time.textContent = formatMessageTime(message.timestamp);
+  step.appendChild(time);
+  content.appendChild(step);
+
+  const answerSlot = document.createElement("div");
+  answerSlot.className = "agent-group-answer";
+
+  toggle.addEventListener("click", () => {
+    panel.classList.toggle("is-expanded");
+    const count = content.querySelectorAll(".tool-step").length;
+    const label = toggle.querySelector(".tools-toggle-label");
+    if (label) {
+      label.textContent = panel.classList.contains("is-expanded")
+        ? `${count} tool step${count !== 1 ? "s" : ""}`
+        : `${count} tool step${count !== 1 ? "s" : ""} (tap to view)`;
+    }
+    const spinner = toggle.querySelector(".tools-toggle-spinner");
+    if (spinner) {
+      spinner.classList.remove("is-visible");
+      spinner.style.display = "none";
+    }
+  });
+
+  panel.appendChild(toggle);
+  panel.appendChild(content);
+  group.appendChild(panel);
+  group.appendChild(answerSlot);
+  return group;
 }
 
 function buildReplyPreview(messageId) {
@@ -1636,6 +1767,7 @@ function showDisconnectMenu() {
           <p class="settings-note theme-note" id="theme-settings-note"></p>
         </div>
         <button class="action-btn" id="btn-new-chat">New Chat</button>
+        <button class="action-btn" id="btn-scan-web-chat">Scan QR Code Web Chat</button>
         ${!isStandaloneMode() ? '<button class="action-btn" id="btn-transfer-session">Transfer to Home Screen</button>' : ""}
         <p class="settings-note" id="push-settings-note"></p>
         <button class="action-btn" id="btn-toggle-push"></button>
@@ -1657,6 +1789,7 @@ function showDisconnectMenu() {
         renderThemeSettings();
       });
     });
+    $("btn-scan-web-chat")?.addEventListener("click", () => void showWebChatScanner());
     $("btn-transfer-session")?.addEventListener("click", () => void showTransferSessionSheet());
     $("btn-toggle-push").addEventListener("click", () => void togglePushNotifications());
     $("btn-disconnect-confirm").addEventListener("click", () => {
@@ -1858,6 +1991,185 @@ function renderTransferSheet(transferToken, expiresAt) {
     if (event.target === overlay) overlay.classList.remove("is-visible");
   }, { once: true });
   overlay.classList.add("is-visible");
+}
+
+async function showWebChatScanner() {
+  if (!device?.device_token) return;
+  const settingsMenu = document.querySelector(".settings-menu");
+  if (settingsMenu) {
+    settingsMenu.classList.remove("is-visible");
+  }
+  const shared = window.SoftnixChatShared;
+  const parseTicket = (value) => shared?.parseWebChatLoginTicket ? shared.parseWebChatLoginTicket(value) : "";
+
+  const hasCamera = !!navigator.mediaDevices?.getUserMedia;
+  const hasBarcodeDetector = "BarcodeDetector" in window;
+  const hasJsQr = hasCamera && !hasBarcodeDetector ? await loadJsQrLibrary() : false;
+
+  if (!hasCamera || (!hasBarcodeDetector && !hasJsQr)) {
+    const manual = window.prompt("Paste the Web Chat login code or URL");
+    const ticket = parseTicket(manual);
+    if (!ticket) {
+      setBanner("Unable to read a valid web chat login code.", "error", 4000);
+      return;
+    }
+    await approveWebChatLogin(ticket);
+    return;
+  }
+
+  let overlay = document.querySelector(".web-chat-scanner-menu");
+  if (!overlay) {
+    overlay = document.createElement("div");
+    overlay.className = "disconnect-menu web-chat-scanner-menu";
+    overlay.innerHTML = `
+      <div class="disconnect-sheet web-chat-scanner-sheet">
+        <h3>Scan QR Code Web Chat</h3>
+        <video id="web-chat-scanner-video" class="web-chat-scanner-video" autoplay playsinline muted></video>
+        <p class="settings-note" id="web-chat-scanner-status">Point the camera at the QR code shown on desktop.</p>
+        <button class="action-btn" id="btn-web-chat-scanner-manual">Paste Code Instead</button>
+        <button class="action-btn is-cancel" id="btn-web-chat-scanner-close">Close</button>
+      </div>`;
+    document.body.appendChild(overlay);
+    overlay.querySelector("#btn-web-chat-scanner-close")?.addEventListener("click", () => closeWebChatScanner());
+    overlay.querySelector("#btn-web-chat-scanner-manual")?.addEventListener("click", async () => {
+      const manual = window.prompt("Paste the Web Chat login code or URL");
+      const ticket = parseTicket(manual);
+      if (!ticket) {
+        setBanner("Unable to read a valid web chat login code.", "error", 4000);
+        return;
+      }
+      closeWebChatScanner();
+      await approveWebChatLogin(ticket);
+    });
+    overlay.addEventListener("click", (event) => {
+      if (event.target === overlay) {
+        closeWebChatScanner();
+      }
+    });
+  }
+
+  overlay.classList.add("is-visible");
+  const video = overlay.querySelector("#web-chat-scanner-video");
+  const status = overlay.querySelector("#web-chat-scanner-status");
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: { ideal: "environment" } },
+      audio: false,
+    });
+    video.srcObject = stream;
+    const detector = hasBarcodeDetector ? new window.BarcodeDetector({ formats: ["qr_code"] }) : null;
+    const canvas = document.createElement("canvas");
+    const context = canvas.getContext("2d", { willReadFrequently: true });
+    webChatScannerState = {
+      stream,
+      rafId: 0,
+      detector,
+      canvas,
+      context,
+      video,
+      status,
+      parseTicket,
+    };
+    const scan = async () => {
+      if (!webChatScannerState?.video) return;
+      try {
+        if (detector) {
+          const barcodes = await detector.detect(webChatScannerState.video);
+          for (const barcode of barcodes) {
+            const ticket = parseTicket(barcode.rawValue || "");
+            if (!ticket) continue;
+            closeWebChatScanner();
+            await approveWebChatLogin(ticket);
+            return;
+          }
+        } else if (webChatScannerState.context && window.jsQR && webChatScannerState.video.readyState >= 2) {
+          const width = webChatScannerState.video.videoWidth || 0;
+          const height = webChatScannerState.video.videoHeight || 0;
+          if (width > 0 && height > 0) {
+            webChatScannerState.canvas.width = width;
+            webChatScannerState.canvas.height = height;
+            webChatScannerState.context.drawImage(webChatScannerState.video, 0, 0, width, height);
+            const imageData = webChatScannerState.context.getImageData(0, 0, width, height);
+            const result = window.jsQR(imageData.data, width, height, { inversionAttempts: "dontInvert" });
+            const ticket = parseTicket(result?.data || "");
+            if (ticket) {
+              closeWebChatScanner();
+              await approveWebChatLogin(ticket);
+              return;
+            }
+          }
+        }
+      } catch (_) {
+        // Keep scanning quietly
+      }
+      if (webChatScannerState) {
+        webChatScannerState.rafId = window.requestAnimationFrame(scan);
+      }
+    };
+    status.textContent = "Align the QR code within the camera frame.";
+    webChatScannerState.rafId = window.requestAnimationFrame(scan);
+  } catch (error) {
+    closeWebChatScanner();
+    const manual = window.prompt("Camera unavailable. Paste the Web Chat login code or URL");
+    const ticket = parseTicket(manual);
+    if (!ticket) {
+      setBanner(error?.message || "Unable to open camera.", "error", 4000);
+      return;
+    }
+    await approveWebChatLogin(ticket);
+  }
+}
+
+function closeWebChatScanner() {
+  if (webChatScannerState?.rafId) {
+    window.cancelAnimationFrame(webChatScannerState.rafId);
+  }
+  if (webChatScannerState?.stream) {
+    webChatScannerState.stream.getTracks().forEach((track) => track.stop());
+  }
+  webChatScannerState = null;
+  document.querySelector(".web-chat-scanner-menu")?.classList.remove("is-visible");
+}
+
+function loadJsQrLibrary() {
+  return new Promise((resolve) => {
+    if (window.jsQR) {
+      resolve(true);
+      return;
+    }
+    const existing = document.querySelector('script[data-jsqr-lib="1"]');
+    if (existing) {
+      existing.addEventListener("load", () => resolve(!!window.jsQR), { once: true });
+      existing.addEventListener("error", () => resolve(false), { once: true });
+      return;
+    }
+    const script = document.createElement("script");
+    script.src = "https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js";
+    script.dataset.jsqrLib = "1";
+    script.onload = () => resolve(!!window.jsQR);
+    script.onerror = () => resolve(false);
+    document.head.appendChild(script);
+  });
+}
+
+async function approveWebChatLogin(loginTicket) {
+  if (!device?.device_token) return;
+  try {
+    const response = await apiFetch("/admin/mobile/web-login/approve", {
+      method: "POST",
+      body: JSON.stringify({
+        login_ticket: loginTicket,
+        active_session_id: getActiveSessionId(),
+      }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(payload.error || `Approval failed (${response.status})`);
+    }
+    setBanner("Desktop web chat connected.", "info", 4000);
+  } catch (error) {
+    setBanner(error?.message || "Unable to approve web chat login.", "error", 4500);
+  }
 }
 
 async function promptForTransferToken() {
@@ -2280,6 +2592,7 @@ function clearDevice() {
   clearComposerState();
   messageStore.clear();
   seenMessageIds.clear();
+  lastEventId = null;
   device = null;
   appState = createDefaultAppState({ themeMode: getThemeMode() });
   try {
@@ -2390,7 +2703,7 @@ async function syncDeviceApprovalStatus({ force = false, silent = false } = {}) 
   return approvalStatusRequest;
 }
 
-function persistMessage(message) {
+function persistMessage(message, { setActive = false } = {}) {
   if (!appState || !device || !message?.sessionId) return;
   const sessionId = message.sessionId;
   const existing = appState.conversations?.[sessionId]?.messages || [];
@@ -2401,8 +2714,10 @@ function persistMessage(message) {
     messages: nextMessages.slice(-MAX_STORED_MESSAGES),
     updatedAt: new Date().toISOString(),
   };
-  appState.activeSessionId = sessionId;
-  device.current_session_id = sessionId;
+  if (setActive) {
+    appState.activeSessionId = sessionId;
+    device.current_session_id = sessionId;
+  }
   saveDevice(device);
 }
 

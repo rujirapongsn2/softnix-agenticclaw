@@ -1326,6 +1326,20 @@ body {
   margin: 0;
 }
 
+.web-chat-scanner-sheet {
+  max-width: 420px;
+}
+
+.web-chat-scanner-video {
+  width: 100%;
+  aspect-ratio: 1;
+  display: block;
+  border-radius: 18px;
+  background: #101217;
+  object-fit: cover;
+  margin-bottom: 14px;
+}
+
 .transfer-code {
   margin: 12px 0;
   padding: 14px 16px;

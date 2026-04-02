@@ -205,6 +205,43 @@ class SoftnixAppChannel(BaseChannel):
                 return resolved
         return None
 
+    def _event_log_path(self, sender_id: str) -> Path:
+        events_dir = self.relay_dir / "events"
+        events_dir.mkdir(parents=True, exist_ok=True)
+        safe_sender = "".join(ch if ch.isalnum() or ch in {"-", "_", "."} else "_" for ch in sender_id) or "sender"
+        return events_dir / f"{safe_sender}.jsonl"
+
+    def _append_chat_event(
+        self,
+        *,
+        sender_id: str,
+        message_id: str,
+        text: str,
+        msg_type: str,
+        session_id: str,
+        reply_to: str | None,
+        thread_root_id: str | None,
+        attachments: list[dict[str, Any]],
+        timestamp: str,
+    ) -> None:
+        event = {
+            "event_id": f"mobevt-{secrets.token_hex(8)}",
+            "instance_id": self.instance_id,
+            "device_id": sender_id,
+            "role": "agent",
+            "direction": "outbound",
+            "type": msg_type,
+            "session_id": session_id,
+            "message_id": message_id,
+            "reply_to": reply_to,
+            "thread_root_id": thread_root_id,
+            "text": text,
+            "attachments": attachments,
+            "timestamp": timestamp,
+        }
+        with self._event_log_path(sender_id).open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(event, ensure_ascii=False) + "\n")
+
     _INLINE_MEDIA_PATH_PATTERN = re.compile(
         r"(?P<path>(?:https?://[^\s`\"'<>|)]+|(?:[A-Za-z]:[\\/]|/|\.{1,2}[\\/]|workspace[\\/])?[^\s`\"'<>|]+\.(?:png|jpg|jpeg|gif|webp|svg|bmp|avif|mp3|wav|m4a|ogg|aac|flac|webm|mp4|mov|m4v)))",
         re.IGNORECASE,
@@ -321,6 +358,17 @@ class SoftnixAppChannel(BaseChannel):
             }
             with self.outbound_file.open("a", encoding="utf-8") as f:
                 f.write(json.dumps(data) + "\n")
+            self._append_chat_event(
+                sender_id=sender_id,
+                message_id=str(data["message_id"]),
+                text=str(data["text"] or ""),
+                msg_type=str(data["type"] or "answer"),
+                session_id=str(data["session_id"] or ""),
+                reply_to=str(data["reply_to"] or "") or None,
+                thread_root_id=str(data["thread_root_id"] or "") or None,
+                attachments=attachments,
+                timestamp=str(data["timestamp"] or ""),
+            )
             
             # Also call local callback if set (useful if running in same process)
             if self.reply_callback:

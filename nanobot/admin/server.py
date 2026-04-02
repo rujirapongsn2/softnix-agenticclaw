@@ -12,7 +12,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 from loguru import logger
 
-from nanobot.admin.auth import ADMIN_SESSION_COOKIE, clear_request_audit_context, has_permission, normalize_role, set_request_audit_context
+from nanobot.admin.auth import ADMIN_SESSION_COOKIE, WEB_CHAT_SESSION_COOKIE, clear_request_audit_context, has_permission, normalize_role, set_request_audit_context
 from nanobot.admin.service import AdminService
 
 STATIC_DIR = Path(__file__).with_name("static")
@@ -82,7 +82,14 @@ def _allows_unauthenticated_admin_access(method: str, path: str) -> bool:
     if path in {"/admin/auth/me", "/admin/auth/login", "/admin/auth/logout", "/admin/auth/bootstrap", "/admin/auth/bootstrap-status"}:
         return True
     if method == "GET":
-        return path in {"/admin/mobile/poll", "/admin/mobile/push/config", "/admin/mobile/media", "/admin/mobile/status"}
+        return path in {
+            "/admin/mobile/poll",
+            "/admin/mobile/push/config",
+            "/admin/mobile/media",
+            "/admin/mobile/status",
+            "/admin/mobile/events",
+            "/admin/mobile/bootstrap",
+        }
     if method == "POST":
         return path in {
             "/admin/mobile/register",
@@ -92,6 +99,7 @@ def _allows_unauthenticated_admin_access(method: str, path: str) -> bool:
             "/admin/mobile/transfer-session/consume",
             "/admin/mobile/push/subscribe",
             "/admin/mobile/push/unsubscribe",
+            "/admin/mobile/web-login/approve",
         }
     return False
 
@@ -315,6 +323,36 @@ def resolve_admin_get(
         if not instance_id or not sender_id:
             return HTTPStatus.BAD_REQUEST, {"error": "Missing instance_id or sender_id"}
         return HTTPStatus.OK, {"replies": service.get_mobile_replies(instance_id, sender_id, accessible_instance_ids=accessible_instance_ids)}
+
+    if path == "/admin/mobile/events":
+        query = parse_qs(parsed.query)
+        instance_id = (query.get("instance_id") or [None])[0]
+        sender_id = (query.get("sender_id") or query.get("device_id") or [None])[0]
+        after_event_id = (query.get("after_event_id") or [None])[0]
+        if not instance_id or not sender_id:
+            return HTTPStatus.BAD_REQUEST, {"error": "Missing instance_id or sender_id"}
+        return HTTPStatus.OK, {
+            "events": service.get_mobile_chat_events(
+                instance_id,
+                sender_id,
+                after_event_id=after_event_id,
+                accessible_instance_ids=accessible_instance_ids,
+            )
+        }
+
+    if path == "/admin/mobile/bootstrap":
+        query = parse_qs(parsed.query)
+        instance_id = (query.get("instance_id") or [None])[0]
+        sender_id = (query.get("sender_id") or query.get("device_id") or [None])[0]
+        preferred_active_session_id = (query.get("active_session_id") or [None])[0]
+        if not instance_id or not sender_id:
+            return HTTPStatus.BAD_REQUEST, {"error": "Missing instance_id or sender_id"}
+        return HTTPStatus.OK, service.get_mobile_chat_bootstrap(
+            instance_id,
+            sender_id,
+            preferred_active_session_id=preferred_active_session_id,
+            accessible_instance_ids=accessible_instance_ids,
+        )
 
     if path == "/admin/mobile/devices":
         query = parse_qs(parsed.query)
@@ -760,6 +798,20 @@ def resolve_admin_post(
                 return HTTPStatus.BAD_REQUEST, {"error": "transfer_token is required"}
             return HTTPStatus.OK, service.consume_mobile_session_transfer(transfer_token=transfer_token)
 
+        if path == "/admin/mobile/web-login/approve":
+            login_ticket = str(payload.get("login_ticket") or payload.get("ticket") or "").strip()
+            if not login_ticket:
+                return HTTPStatus.BAD_REQUEST, {"error": "login_ticket is required"}
+            device = payload.get("_mobile_device")
+            if not isinstance(device, dict):
+                return HTTPStatus.FORBIDDEN, {"error": "Mobile device authentication required"}
+            return HTTPStatus.OK, service.approve_web_chat_login(
+                login_ticket=login_ticket,
+                device=device,
+                active_session_id=payload.get("active_session_id"),
+                accessible_instance_ids=accessible_instance_ids,
+            )
+
         if path == "/admin/mobile/push/subscribe":
             instance_id = payload.get("instance_id")
             device_id = payload.get("device_id")
@@ -1095,6 +1147,14 @@ def resolve_static_asset(raw_path: str) -> tuple[Path | None, str]:
         return STATIC_DIR / "mobile" / "apple-touch-icon.png", "image/png"
     if path == "/.well-known/security.txt":
         return SECURITY_TXT_PATH, "text/plain; charset=utf-8"
+    if path == "/chat" or path.startswith("/chat/"):
+        subpath = path[len("/chat"):].lstrip("/") or "index.html"
+        asset = STATIC_DIR / "chat" / subpath
+        if asset.exists() and asset.is_file():
+            ext = asset.suffix.lstrip(".")
+            ct = {"html": "text/html", "js": "application/javascript", "css": "text/css",
+                  "json": "application/json", "png": "image/png", "svg": "image/svg+xml"}.get(ext, "application/octet-stream")
+            return asset, f"{ct}; charset=utf-8" if ext != "png" else ct
     # Mobile web app
     if path == "/mobile" or path.startswith("/mobile/"):
         subpath = path[len("/mobile"):].lstrip("/") or "index.html"
@@ -1304,13 +1364,19 @@ def create_admin_server(host: str, port: int, service: AdminService) -> Threadin
                     return self._send_file(asset_path, content_type)
                 if self._handle_auth_get():
                     return
+                if self._handle_web_chat_get():
+                    return
                 context = self._require_access("GET")
                 if context is None:
                     return
                 if not self._authorize_mobile_request():
                     return
                 self._set_audit_context(context)
-                accessible_ids = self._mobile_accessible_instance_ids() or _accessible_instance_ids(context)
+                accessible_ids = (
+                    self._mobile_accessible_instance_ids()
+                    or self._web_chat_accessible_instance_ids()
+                    or _accessible_instance_ids(context)
+                )
                 current_user_id = str((context.get("user") or {}).get("id") or "").strip() or None
                 status, payload = resolve_admin_get(
                     service,
@@ -1393,6 +1459,8 @@ def create_admin_server(host: str, port: int, service: AdminService) -> Threadin
                     return self._send_json({"error": "Invalid JSON body"}, status=HTTPStatus.BAD_REQUEST)
                 if self._handle_auth_post(payload):
                     return
+                if self._handle_web_chat_post(payload):
+                    return
                 context = self._require_access("POST", payload=payload)
                 if context is None:
                     return
@@ -1402,7 +1470,11 @@ def create_admin_server(host: str, port: int, service: AdminService) -> Threadin
                 _mobile_unauthenticated = self.path.startswith("/admin/mobile/") and not self.path.rstrip("/").endswith("/pair")
                 if not _mobile_unauthenticated and not self._authorize_user_mutation(method="POST", path=self.path, payload=payload, context=context):
                     return
-                accessible_ids = self._mobile_accessible_instance_ids(payload) or _accessible_instance_ids(context)
+                accessible_ids = (
+                    self._mobile_accessible_instance_ids(payload)
+                    or self._web_chat_accessible_instance_ids()
+                    or _accessible_instance_ids(context)
+                )
                 current_user_id = str((context.get("user") or {}).get("id") or "").strip() or None
                 status, response = resolve_admin_post(
                     service,
@@ -1495,12 +1567,152 @@ def create_admin_server(host: str, port: int, service: AdminService) -> Threadin
                 return True
             return False
 
+        def _handle_web_chat_get(self) -> bool:
+            parsed = urlparse(self.path)
+            path = parsed.path.rstrip("/") or "/"
+            query = parse_qs(parsed.query)
+            if path == "/admin/web-chat/login/status":
+                login_ticket = str((query.get("login_ticket") or query.get("ticket") or [None])[0] or "").strip()
+                if not login_ticket:
+                    self._send_json({"error": "login_ticket is required"}, status=HTTPStatus.BAD_REQUEST)
+                    return True
+                self._send_json(service.get_web_chat_login_status(login_ticket=login_ticket), status=HTTPStatus.OK)
+                return True
+            if path == "/admin/web-chat/bootstrap":
+                context = self._web_chat_context()
+                if context is None:
+                    self._send_json({"error": "Authentication required"}, status=HTTPStatus.UNAUTHORIZED)
+                    return True
+                payload = service.get_mobile_chat_bootstrap(
+                    str(context["device"]["instance_id"] or ""),
+                    str(context["device"]["device_id"] or ""),
+                    preferred_active_session_id=str(context["session"].get("active_session_id") or "") or None,
+                    accessible_instance_ids={str(context["device"]["instance_id"] or "")},
+                )
+                payload["session"] = context["session"]
+                self._send_json(payload, status=HTTPStatus.OK)
+                return True
+            if path == "/admin/web-chat/events":
+                context = self._web_chat_context()
+                if context is None:
+                    self._send_json({"error": "Authentication required"}, status=HTTPStatus.UNAUTHORIZED)
+                    return True
+                after_event_id = str((query.get("after_event_id") or [None])[0] or "").strip() or None
+                events = service.get_mobile_chat_events(
+                    str(context["device"]["instance_id"] or ""),
+                    str(context["device"]["device_id"] or ""),
+                    after_event_id=after_event_id,
+                    accessible_instance_ids={str(context["device"]["instance_id"] or "")},
+                )
+                self._send_json({"events": events, "session": context["session"]}, status=HTTPStatus.OK)
+                return True
+            return False
+
+        def _handle_web_chat_post(self, payload: dict[str, Any]) -> bool:
+            parsed = urlparse(self.path)
+            path = parsed.path.rstrip("/") or "/"
+            if path == "/admin/web-chat/login/init":
+                result = service.create_web_chat_login(
+                    ip=self.client_address[0] if self.client_address else None,
+                    user_agent=self.headers.get("User-Agent"),
+                )
+                self._send_json(result, status=HTTPStatus.OK)
+                return True
+            if path == "/admin/web-chat/login/exchange":
+                login_ticket = str(payload.get("login_ticket") or payload.get("ticket") or "").strip()
+                if not login_ticket:
+                    self._send_json({"error": "login_ticket is required"}, status=HTTPStatus.BAD_REQUEST)
+                    return True
+                try:
+                    result = service.exchange_web_chat_login(
+                        login_ticket=login_ticket,
+                        ip=self.client_address[0] if self.client_address else None,
+                        user_agent=self.headers.get("User-Agent"),
+                    )
+                except ValueError as exc:
+                    self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+                    return True
+                self._send_json(
+                    result,
+                    status=HTTPStatus.OK,
+                    extra_headers={"Set-Cookie": self._build_web_chat_session_cookie(str(result["session"]["id"]))},
+                )
+                return True
+            if path == "/admin/web-chat/logout":
+                context = self._web_chat_context()
+                if context is None:
+                    self._send_json(
+                        {"ok": True},
+                        status=HTTPStatus.OK,
+                        extra_headers={"Set-Cookie": self._clear_web_chat_session_cookie()},
+                    )
+                    return True
+                if not self._validate_web_chat_csrf(context):
+                    return True
+                service.logout_web_chat_session(session_id=str(context["session"]["id"]))
+                self._send_json(
+                    {"ok": True},
+                    status=HTTPStatus.OK,
+                    extra_headers={"Set-Cookie": self._clear_web_chat_session_cookie()},
+                )
+                return True
+            if path == "/admin/web-chat/message":
+                context = self._web_chat_context()
+                if context is None:
+                    self._send_json({"error": "Authentication required"}, status=HTTPStatus.UNAUTHORIZED)
+                    return True
+                if not self._validate_web_chat_csrf(context):
+                    return True
+                text = str(payload.get("text") or "").strip()
+                if not text and not isinstance(payload.get("attachments"), list):
+                    self._send_json({"error": "text or attachments are required"}, status=HTTPStatus.BAD_REQUEST)
+                    return True
+                try:
+                    result = service.relay_web_chat_message(
+                        web_session_id=str(context["session"]["id"] or ""),
+                        text=text,
+                        chat_session_id=payload.get("session_id"),
+                        message_id=payload.get("message_id"),
+                        reply_to=payload.get("reply_to"),
+                        thread_root_id=payload.get("thread_root_id"),
+                        attachments=payload.get("attachments"),
+                    )
+                except (PermissionError, ValueError) as exc:
+                    self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+                    return True
+                self._send_json(result, status=HTTPStatus.OK)
+                return True
+            if path == "/admin/web-chat/session/active":
+                context = self._web_chat_context()
+                if context is None:
+                    self._send_json({"error": "Authentication required"}, status=HTTPStatus.UNAUTHORIZED)
+                    return True
+                if not self._validate_web_chat_csrf(context):
+                    return True
+                active_session_id = str(payload.get("active_session_id") or payload.get("session_id") or "").strip()
+                if not active_session_id:
+                    self._send_json({"error": "active_session_id is required"}, status=HTTPStatus.BAD_REQUEST)
+                    return True
+                try:
+                    result = service.set_web_chat_active_session(
+                        session_id=str(context["session"]["id"] or ""),
+                        active_session_id=active_session_id,
+                    )
+                except PermissionError as exc:
+                    self._send_json({"error": str(exc)}, status=HTTPStatus.FORBIDDEN)
+                    return True
+                self._send_json(result, status=HTTPStatus.OK)
+                return True
+            return False
+
         def _authorize_mobile_request(self, payload: dict[str, Any] | None = None) -> bool:
             parsed = urlparse(self.path)
             path = parsed.path.rstrip("/") or "/"
             if not path.startswith("/admin/mobile/"):
                 return True
             if self._auth_context() is not None:
+                return True
+            if path == "/admin/mobile/media" and self._web_chat_context() is not None:
                 return True
             if path == "/admin/mobile/register":
                 return True
@@ -1527,6 +1739,8 @@ def create_admin_server(host: str, port: int, service: AdminService) -> Threadin
                 )
                 self._send_json({"error": "Invalid mobile device token"}, status=HTTPStatus.FORBIDDEN)
                 return False
+            if isinstance(payload, dict):
+                payload["_mobile_device"] = device
             return True
 
         def _mobile_token(self, payload: dict[str, Any] | None = None) -> str:
@@ -1552,6 +1766,15 @@ def create_admin_server(host: str, port: int, service: AdminService) -> Threadin
             if device is None:
                 return None
             instance_id = str(device.get("instance_id") or "").strip()
+            if not instance_id:
+                return None
+            return {instance_id}
+
+        def _web_chat_accessible_instance_ids(self) -> set[str] | None:
+            context = self._web_chat_context()
+            if context is None:
+                return None
+            instance_id = str((context.get("device") or {}).get("instance_id") or "").strip()
             if not instance_id:
                 return None
             return {instance_id}
@@ -1792,6 +2015,12 @@ def create_admin_server(host: str, port: int, service: AdminService) -> Threadin
                 return None
             return service.get_authenticated_user(session_id=session_id)
 
+        def _web_chat_context(self) -> dict[str, Any] | None:
+            session_id = self._read_named_cookie(WEB_CHAT_SESSION_COOKIE)
+            if not session_id:
+                return None
+            return service.get_authenticated_web_chat_session(session_id=session_id)
+
         def _set_audit_context(self, context: dict[str, Any]) -> None:
             user = context.get("user") or {}
             ip = self.client_address[0] if self.client_address else None
@@ -1804,6 +2033,9 @@ def create_admin_server(host: str, port: int, service: AdminService) -> Threadin
             )
 
         def _read_session_cookie(self) -> str | None:
+            return self._read_named_cookie(ADMIN_SESSION_COOKIE)
+
+        def _read_named_cookie(self, cookie_name: str) -> str | None:
             raw_cookie = self.headers.get("Cookie") or ""
             if not raw_cookie:
                 return None
@@ -1812,7 +2044,7 @@ def create_admin_server(host: str, port: int, service: AdminService) -> Threadin
                 cookie.load(raw_cookie)
             except Exception:
                 return None
-            morsel = cookie.get(ADMIN_SESSION_COOKIE)
+            morsel = cookie.get(cookie_name)
             if morsel is None:
                 return None
             value = str(morsel.value or "").strip()
@@ -1823,6 +2055,20 @@ def create_admin_server(host: str, port: int, service: AdminService) -> Threadin
 
         def _clear_session_cookie(self) -> str:
             return f"{ADMIN_SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0"
+
+        def _build_web_chat_session_cookie(self, session_id: str) -> str:
+            return f"{WEB_CHAT_SESSION_COOKIE}={session_id}; Path=/; HttpOnly; SameSite=Lax; Max-Age=604800"
+
+        def _clear_web_chat_session_cookie(self) -> str:
+            return f"{WEB_CHAT_SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0"
+
+        def _validate_web_chat_csrf(self, context: dict[str, Any]) -> bool:
+            expected = str((context.get("session") or {}).get("csrf_token") or "")
+            provided = str(self.headers.get("X-CSRF-Token") or "")
+            if expected and expected == provided:
+                return True
+            self._send_json({"error": "Invalid CSRF token"}, status=HTTPStatus.FORBIDDEN)
+            return False
 
         def _redirect_public_http(self) -> bool:
             location = _public_https_redirect_location(
@@ -1934,6 +2180,6 @@ def create_admin_server(host: str, port: int, service: AdminService) -> Threadin
         def _should_send_security_headers(self) -> bool:
             parsed = urlparse(self.path)
             path = parsed.path.rstrip("/") or "/"
-            return path == "/" or path.startswith("/mobile") or path.startswith("/admin")
+            return path == "/" or path.startswith("/mobile") or path.startswith("/chat") or path.startswith("/admin")
 
     return ThreadingHTTPServer((host, port), AdminHandler)
