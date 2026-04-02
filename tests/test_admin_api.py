@@ -12,6 +12,8 @@ from unittest.mock import AsyncMock, patch
 from http import HTTPStatus
 
 from nanobot.admin.server import (
+    _SlidingWindowRateLimiter,
+    _is_secure_request,
     create_admin_server,
     _read_file_response,
     _request_accessible_instance_ids,
@@ -194,6 +196,19 @@ def test_admin_server_supports_http_range_requests_for_static_files() -> None:
     assert headers["Content-Range"].startswith("bytes 0-3/")
     assert headers["Accept-Ranges"] == "bytes"
     assert len(body) == 4
+
+
+def test_is_secure_request_uses_forwarded_proto_or_public_host() -> None:
+    assert _is_secure_request("softnixclaw.softnix.ai", "https") is True
+    assert _is_secure_request("softnixclaw.softnix.ai", None) is True
+    assert _is_secure_request("127.0.0.1:18880", None) is False
+
+
+def test_sliding_window_rate_limiter_blocks_after_limit() -> None:
+    limiter = _SlidingWindowRateLimiter()
+    assert limiter.allow(bucket="/admin/web-chat/login/init", actor="127.0.0.1", limit=2, window_seconds=60) is True
+    assert limiter.allow(bucket="/admin/web-chat/login/init", actor="127.0.0.1", limit=2, window_seconds=60) is True
+    assert limiter.allow(bucket="/admin/web-chat/login/init", actor="127.0.0.1", limit=2, window_seconds=60) is False
 
 
 def test_admin_server_returns_forbidden_for_inaccessible_mobile_media() -> None:
