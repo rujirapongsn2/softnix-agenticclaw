@@ -560,6 +560,35 @@ async def test_softnix_app_channel_resolves_workspace_relative_skill_media_path(
     assert (workspace / "mobile_relay" / "outbound_media" / "mob-13" / copied_name).exists()
 
 
+async def test_softnix_app_channel_maps_sandbox_tmp_link_to_workspace_skill_copy(tmp_path: Path) -> None:
+    class _Config:
+        allow_from = ["*"]
+
+    workspace = tmp_path / "workspace"
+    image_source = workspace / "skills" / "image-create-banana"
+    image_source.mkdir(parents=True, exist_ok=True)
+    image_file = image_source / "tmp_fal_image.png"
+    image_file.write_bytes(b"\x89PNG\r\n\x1a\n")
+    channel = SoftnixAppChannel(_Config(), MessageBus(), workspace)
+
+    await channel.send(
+        OutboundMessage(
+            channel="softnix_app",
+            chat_id="mobile-mob-13b",
+            content="สร้างภาพให้แล้ว [ดาวน์โหลดภาพ](sandbox:/tmp/fal_image.png)",
+            metadata={"sender_id": "mob-13b"},
+        )
+    )
+
+    outbound_path = workspace / "mobile_relay" / "outbound.jsonl"
+    payload = json.loads(outbound_path.read_text(encoding="utf-8").splitlines()[0])
+    assert payload["attachments"][0]["kind"] == "image"
+    assert payload["attachments"][0]["mime_type"] == "image/png"
+    assert payload["attachments"][0]["name"] == "tmp_fal_image.png"
+    copied_name = payload["attachments"][0]["file_name"]
+    assert (workspace / "mobile_relay" / "outbound_media" / "mob-13b" / copied_name).exists()
+
+
 async def test_softnix_app_channel_uses_parent_instance_id_for_workspace_media_urls(tmp_path: Path) -> None:
     class _Config:
         allow_from = ["*"]

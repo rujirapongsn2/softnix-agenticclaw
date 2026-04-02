@@ -2004,18 +2004,6 @@ async function showWebChatScanner() {
 
   const hasCamera = !!navigator.mediaDevices?.getUserMedia;
   const hasBarcodeDetector = "BarcodeDetector" in window;
-  const hasJsQr = hasCamera && !hasBarcodeDetector ? await loadJsQrLibrary() : false;
-
-  if (!hasCamera || (!hasBarcodeDetector && !hasJsQr)) {
-    const manual = window.prompt("Paste the Web Chat login code or URL");
-    const ticket = parseTicket(manual);
-    if (!ticket) {
-      setBanner("Unable to read a valid web chat login code.", "error", 4000);
-      return;
-    }
-    await approveWebChatLogin(ticket);
-    return;
-  }
 
   let overlay = document.querySelector(".web-chat-scanner-menu");
   if (!overlay) {
@@ -2028,7 +2016,7 @@ async function showWebChatScanner() {
         <p class="settings-note" id="web-chat-scanner-status">Point the camera at the QR code shown on desktop.</p>
         <button class="action-btn" id="btn-web-chat-scanner-manual">Paste Code Instead</button>
         <button class="action-btn is-cancel" id="btn-web-chat-scanner-close">Close</button>
-      </div>`;
+        </div>`;
     document.body.appendChild(overlay);
     overlay.querySelector("#btn-web-chat-scanner-close")?.addEventListener("click", () => closeWebChatScanner());
     overlay.querySelector("#btn-web-chat-scanner-manual")?.addEventListener("click", async () => {
@@ -2048,21 +2036,45 @@ async function showWebChatScanner() {
     });
   }
 
+  closeWebChatScanner();
   overlay.classList.add("is-visible");
   const video = overlay.querySelector("#web-chat-scanner-video");
   const status = overlay.querySelector("#web-chat-scanner-status");
+  if (status) {
+    status.textContent = hasCamera
+      ? "Opening camera..."
+      : "Camera is not available on this device. Use Paste Code Instead.";
+  }
+  if (!hasCamera) {
+    return;
+  }
+
   try {
     const stream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: { ideal: "environment" } },
+      video: {
+        facingMode: { ideal: "environment" },
+        width: { ideal: 1280 },
+        height: { ideal: 1280 },
+      },
       audio: false,
     });
     video.srcObject = stream;
+    await video.play().catch(() => {});
     const detector = hasBarcodeDetector ? new window.BarcodeDetector({ formats: ["qr_code"] }) : null;
+    if (!detector) {
+      const jsQrReady = await loadJsQrLibrary();
+      if (status) {
+        status.textContent = jsQrReady
+          ? "Align the QR code within the camera frame."
+          : "Camera is open, but QR decoding is unavailable. Tap Paste Code Instead.";
+      }
+    }
     const canvas = document.createElement("canvas");
     const context = canvas.getContext("2d", { willReadFrequently: true });
     webChatScannerState = {
       stream,
       rafId: 0,
+      timerId: 0,
       detector,
       canvas,
       context,
@@ -2070,27 +2082,41 @@ async function showWebChatScanner() {
       status,
       parseTicket,
     };
+    const scheduleNextScan = () => {
+      if (!webChatScannerState) return;
+      webChatScannerState.timerId = window.setTimeout(() => {
+        webChatScannerState.rafId = window.requestAnimationFrame(scan);
+      }, 120);
+    };
     const scan = async () => {
       if (!webChatScannerState?.video) return;
       try {
-        if (detector) {
-          const barcodes = await detector.detect(webChatScannerState.video);
-          for (const barcode of barcodes) {
-            const ticket = parseTicket(barcode.rawValue || "");
-            if (!ticket) continue;
-            closeWebChatScanner();
-            await approveWebChatLogin(ticket);
-            return;
+        const currentVideo = webChatScannerState.video;
+        const width = currentVideo.videoWidth || 0;
+        const height = currentVideo.videoHeight || 0;
+        if (currentVideo.readyState >= 2 && width > 0 && height > 0 && webChatScannerState.context) {
+          const maxDimension = 960;
+          const scale = Math.min(1, maxDimension / Math.max(width, height));
+          const targetWidth = Math.max(1, Math.round(width * scale));
+          const targetHeight = Math.max(1, Math.round(height * scale));
+          webChatScannerState.canvas.width = targetWidth;
+          webChatScannerState.canvas.height = targetHeight;
+          webChatScannerState.context.drawImage(currentVideo, 0, 0, targetWidth, targetHeight);
+
+          if (detector) {
+            const barcodes = await detector.detect(webChatScannerState.canvas);
+            for (const barcode of barcodes) {
+              const ticket = parseTicket(barcode.rawValue || "");
+              if (!ticket) continue;
+              closeWebChatScanner();
+              await approveWebChatLogin(ticket);
+              return;
+            }
           }
-        } else if (webChatScannerState.context && window.jsQR && webChatScannerState.video.readyState >= 2) {
-          const width = webChatScannerState.video.videoWidth || 0;
-          const height = webChatScannerState.video.videoHeight || 0;
-          if (width > 0 && height > 0) {
-            webChatScannerState.canvas.width = width;
-            webChatScannerState.canvas.height = height;
-            webChatScannerState.context.drawImage(webChatScannerState.video, 0, 0, width, height);
-            const imageData = webChatScannerState.context.getImageData(0, 0, width, height);
-            const result = window.jsQR(imageData.data, width, height, { inversionAttempts: "dontInvert" });
+
+          if (window.jsQR) {
+            const imageData = webChatScannerState.context.getImageData(0, 0, targetWidth, targetHeight);
+            const result = window.jsQR(imageData.data, targetWidth, targetHeight, { inversionAttempts: "attemptBoth" });
             const ticket = parseTicket(result?.data || "");
             if (ticket) {
               closeWebChatScanner();
@@ -2102,27 +2128,28 @@ async function showWebChatScanner() {
       } catch (_) {
         // Keep scanning quietly
       }
-      if (webChatScannerState) {
-        webChatScannerState.rafId = window.requestAnimationFrame(scan);
-      }
+      scheduleNextScan();
     };
-    status.textContent = "Align the QR code within the camera frame.";
-    webChatScannerState.rafId = window.requestAnimationFrame(scan);
+    if (status && detector) {
+      status.textContent = "Align the QR code within the camera frame.";
+    }
+    scheduleNextScan();
   } catch (error) {
     closeWebChatScanner();
-    const manual = window.prompt("Camera unavailable. Paste the Web Chat login code or URL");
-    const ticket = parseTicket(manual);
-    if (!ticket) {
-      setBanner(error?.message || "Unable to open camera.", "error", 4000);
-      return;
+    overlay.classList.add("is-visible");
+    if (status) {
+      status.textContent = error?.message || "Unable to open camera. Tap Paste Code Instead.";
     }
-    await approveWebChatLogin(ticket);
+    setBanner(error?.message || "Unable to open camera.", "error", 4000);
   }
 }
 
 function closeWebChatScanner() {
   if (webChatScannerState?.rafId) {
     window.cancelAnimationFrame(webChatScannerState.rafId);
+  }
+  if (webChatScannerState?.timerId) {
+    window.clearTimeout(webChatScannerState.timerId);
   }
   if (webChatScannerState?.stream) {
     webChatScannerState.stream.getTracks().forEach((track) => track.stop());
@@ -2144,7 +2171,7 @@ function loadJsQrLibrary() {
       return;
     }
     const script = document.createElement("script");
-    script.src = "https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js";
+    script.src = "/mobile/vendor/jsQR.min.js";
     script.dataset.jsqrLib = "1";
     script.onload = () => resolve(!!window.jsQR);
     script.onerror = () => resolve(false);

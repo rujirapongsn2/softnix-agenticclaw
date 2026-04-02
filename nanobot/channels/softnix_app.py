@@ -180,6 +180,11 @@ class SoftnixAppChannel(BaseChannel):
         raw = str(media_ref or "").strip()
         if not raw:
             return None
+        if raw.startswith("sandbox:/"):
+            raw = raw[len("sandbox:"):]
+        elif raw.startswith("file://"):
+            parsed_file = urlparse(raw)
+            raw = parsed_file.path or raw
 
         candidate = Path(raw).expanduser()
         candidates: list[Path] = [candidate]
@@ -203,6 +208,41 @@ class SoftnixAppChannel(BaseChannel):
                 continue
             if resolved.exists() and resolved.is_file():
                 return resolved
+        return self._resolve_workspace_mirrored_media_path(str(media_ref or "").strip())
+
+    def _resolve_workspace_mirrored_media_path(self, media_ref: str) -> Path | None:
+        raw = str(media_ref or "").strip()
+        if not raw:
+            return None
+
+        parsed = urlparse(raw)
+        if parsed.scheme in {"sandbox", "file"}:
+            target_path = Path(parsed.path or "")
+        else:
+            target_path = Path(raw)
+
+        basename = target_path.name
+        if not basename:
+            return None
+
+        candidate_names = [basename]
+        if target_path.parent.name == "tmp" and not basename.startswith("tmp_"):
+            candidate_names.append(f"tmp_{basename}")
+
+        search_roots = [
+            self.workspace_path / "artifacts",
+            self.workspace_path / "skills",
+            self.workspace_path,
+        ]
+        for candidate_name in candidate_names:
+            for root in search_roots:
+                if not root.exists():
+                    continue
+                matches = [path for path in root.rglob(candidate_name) if path.is_file()]
+                if not matches:
+                    continue
+                matches.sort(key=lambda path: path.stat().st_mtime, reverse=True)
+                return matches[0]
         return None
 
     def _event_log_path(self, sender_id: str) -> Path:
@@ -243,10 +283,11 @@ class SoftnixAppChannel(BaseChannel):
             handle.write(json.dumps(event, ensure_ascii=False) + "\n")
 
     _INLINE_MEDIA_PATH_PATTERN = re.compile(
-        r"(?P<path>(?:https?://[^\s`\"'<>|)]+|(?:[A-Za-z]:[\\/]|/|\.{1,2}[\\/]|workspace[\\/])?[^\s`\"'<>|]+\.(?:png|jpg|jpeg|gif|webp|svg|bmp|avif|mp3|wav|m4a|ogg|aac|flac|webm|mp4|mov|m4v)))",
+        r"(?P<path>(?:https?://[^\s`\"'<>|)]+|sandbox:/[^\s`\"'<>|)]+|file://[^\s`\"'<>|)]+|(?:[A-Za-z]:[\\/]|/|\.{1,2}[\\/]|workspace[\\/])?[^\s`\"'<>|]+\.(?:png|jpg|jpeg|gif|webp|svg|bmp|avif|mp3|wav|m4a|ogg|aac|flac|webm|mp4|mov|m4v)))",
         re.IGNORECASE,
     )
     _MARKDOWN_IMAGE_PATTERN = re.compile(r"!\[[^\]]*\]\((?P<url>https?://[^)\s]+)\)", re.IGNORECASE)
+    _MARKDOWN_MEDIA_LINK_PATTERN = re.compile(r"\[[^\]]+\]\((?P<url>[^)\s]+)\)", re.IGNORECASE)
     _SUPPORTED_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp", ".avif"}
     _SUPPORTED_AUDIO_EXTS = {".mp3", ".wav", ".m4a", ".ogg", ".aac", ".flac", ".webm"}
     _SUPPORTED_VIDEO_EXTS = {".mp4", ".mov", ".m4v", ".webm"}
@@ -286,6 +327,18 @@ class SoftnixAppChannel(BaseChannel):
             return self._remote_media_ref(media_ref)
         return self._relay_media_ref(sender_id, media_ref)
 
+    @classmethod
+    def _looks_like_supported_media_ref(cls, value: str) -> bool:
+        raw = str(value or "").strip()
+        if not raw:
+            return False
+        parsed = urlparse(raw)
+        if parsed.scheme in {"http", "https", "sandbox", "file"}:
+            suffix = Path(parsed.path).suffix.lower()
+        else:
+            suffix = Path(raw).suffix.lower()
+        return suffix in cls._SUPPORTED_IMAGE_EXTS | cls._SUPPORTED_AUDIO_EXTS | cls._SUPPORTED_VIDEO_EXTS
+
     def _extract_inline_media_refs(self, content: str) -> list[str]:
         if not content:
             return []
@@ -293,6 +346,10 @@ class SoftnixAppChannel(BaseChannel):
         for markdown_match in self._MARKDOWN_IMAGE_PATTERN.finditer(content):
             media_url = str(markdown_match.group("url") or "").strip()
             if media_url:
+                matches.append(media_url)
+        for markdown_match in self._MARKDOWN_MEDIA_LINK_PATTERN.finditer(content):
+            media_url = str(markdown_match.group("url") or "").strip()
+            if media_url and self._looks_like_supported_media_ref(media_url):
                 matches.append(media_url)
 
         for raw_match in self._INLINE_MEDIA_PATH_PATTERN.finditer(content):
@@ -302,6 +359,10 @@ class SoftnixAppChannel(BaseChannel):
             parsed = urlparse(raw_path)
             if parsed.scheme in {"http", "https"} and parsed.netloc:
                 matches.append(raw_path)
+                continue
+            if parsed.scheme in {"sandbox", "file"}:
+                if self._resolve_local_media_path(raw_path) is not None:
+                    matches.append(raw_path)
                 continue
             candidate_paths = []
             candidate = Path(raw_path).expanduser()

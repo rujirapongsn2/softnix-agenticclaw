@@ -15,6 +15,7 @@ let unreadReplyCount = 0;
 let shouldAutoFollowLatest = true;
 let isSidebarCollapsed = false;
 let typingIndicatorTimer = null;
+let activeAudioPlayer = null;
 const baseDocumentTitle = document.title;
 
 const state = {
@@ -91,6 +92,7 @@ async function tryBootstrap() {
 async function beginLogin() {
   stopPolling();
   clearLoginTimers();
+  stopActiveAudioPlayback();
   setLoginMode(true);
   $("login-status").textContent = "Preparing secure login…";
   $("login-expiry").textContent = "";
@@ -417,7 +419,12 @@ function renderActiveConversation(options = {}) {
   const conversation = state.conversations[state.activeSessionId] || { messages: [] };
   const followLatest = options.followLatest !== false;
   const preserveScrollTop = Number.isFinite(options.preserveScrollTop) ? options.preserveScrollTop : target.scrollTop;
+  const playbackState = captureActiveAudioPlaybackState();
+  if (activeAudioPlayer?.audio instanceof HTMLAudioElement) {
+    activeAudioPlayer.audio.pause();
+  }
   $("conversation-label").textContent = state.activeSessionId || "";
+  activeAudioPlayer = null;
   target.innerHTML = "";
   const groupState = createProcessingGroupState(target);
   conversation.messages.forEach((message) => {
@@ -425,6 +432,7 @@ function renderActiveConversation(options = {}) {
   });
   finalizeProcessingGroup(groupState);
   window.requestAnimationFrame(() => {
+    restoreActiveAudioPlaybackState(playbackState, target);
     if (followLatest) {
       unreadReplyCount = 0;
       shouldAutoFollowLatest = true;
@@ -970,47 +978,350 @@ function finalizeProcessingGroup(groupState) {
 
 function normalizeAttachments(items) {
   if (!Array.isArray(items)) return [];
-  return items.map((item) => ({
-    name: item?.name || item?.file_name || item?.fileName || "attachment",
-    fileName: item?.file_name || item?.fileName || item?.name || "attachment",
-    mimeType: item?.mime_type || item?.mimeType || "application/octet-stream",
-    size: Number(item?.size || 0),
-    previewUrl: item?.previewUrl || "",
-    url: item?.url || item?.previewUrl || "",
-    kind: item?.kind || inferAttachmentKind(item?.mime_type || item?.mimeType || "", item?.file_name || item?.fileName || item?.name || ""),
-  }));
+  return items
+    .filter((item) => item && typeof item === "object")
+    .map((item) => {
+      const mimeType = item?.mime_type || item?.mimeType || "application/octet-stream";
+      const fileName = item?.file_name || item?.fileName || item?.name || "attachment";
+      const senderId = item?.sender_id || item?.senderId || state.device?.device_id || "";
+      let url = item?.url || item?.previewUrl || "";
+      const looksLikeLocalPath = typeof url === "string" && url && !/^(https?:|blob:|data:|\/admin\/mobile\/media)/i.test(url);
+      if ((looksLikeLocalPath || !url) && state.device?.instance_id && senderId) {
+        url = `/admin/mobile/media?instance_id=${encodeURIComponent(state.device.instance_id)}&sender_id=${encodeURIComponent(senderId)}&file=${encodeURIComponent(fileName)}`;
+      }
+      return {
+        name: item?.name || fileName,
+        fileName,
+        mimeType,
+        size: Number(item?.size || 0),
+        previewUrl: item?.previewUrl || url,
+        url,
+        senderId,
+        duration: Number(item?.duration || item?.audio_duration || 0) || 0,
+        kind: item?.kind || inferAttachmentKind(mimeType, fileName),
+      };
+    });
 }
 
 function renderAttachmentList(attachments) {
   const wrapper = document.createElement("div");
   wrapper.className = "attachment-list";
   attachments.forEach((item) => {
-    const mediaUrl = item.url || item.previewUrl || "";
-    if (item.kind === "image" && mediaUrl) {
-      const image = document.createElement("img");
-      image.src = mediaUrl;
-      image.alt = item.name;
-      wrapper.appendChild(image);
+    if ((item.kind || "") === "audio") {
+      wrapper.appendChild(createAudioAttachmentPlayer(item));
       return;
     }
-    if (item.kind === "audio" && mediaUrl) {
-      const audio = document.createElement("audio");
-      audio.controls = true;
-      audio.src = mediaUrl;
-      wrapper.appendChild(audio);
-      return;
-    }
-    const chip = document.createElement(mediaUrl ? "a" : "span");
-    chip.className = "attachment-chip";
-    if (mediaUrl) {
-      chip.href = mediaUrl;
-      chip.target = "_blank";
-      chip.rel = "noreferrer";
-    }
-    chip.textContent = item.size ? `${item.name} (${formatBytes(item.size)})` : item.name;
-    wrapper.appendChild(chip);
+    wrapper.appendChild(createAttachmentCard(item));
   });
   return wrapper;
+}
+
+function createAttachmentCard(attachment) {
+  const mediaUrl = attachment.url || attachment.previewUrl || "";
+  const element = document.createElement(mediaUrl ? "a" : "div");
+  element.className = `attachment-card attachment-card--${attachment.kind || "file"}`;
+  if (mediaUrl) {
+    element.href = mediaUrl;
+    element.target = "_blank";
+    element.rel = "noreferrer";
+  }
+
+  if (attachment.kind === "image" && mediaUrl) {
+    const image = document.createElement("img");
+    image.src = attachment.previewUrl || mediaUrl;
+    image.alt = attachment.name || "Attachment";
+    image.loading = "lazy";
+    if (/logo/i.test(String(attachment.name || attachment.fileName || ""))) {
+      image.classList.add("attachment-image--logo");
+    }
+    element.appendChild(image);
+  } else {
+    const icon = document.createElement("span");
+    icon.className = `attachment-icon${attachment.kind === "audio" ? " attachment-icon--audio" : ""}`;
+    icon.textContent = attachment.kind === "video" ? "Video" : "File";
+    element.appendChild(icon);
+  }
+
+  const meta = document.createElement("span");
+  meta.className = "attachment-meta";
+  meta.innerHTML = `
+    <strong>${escapeHtml(attachment.name || "Attachment")}</strong>
+    <span>${escapeHtml(formatBytes(attachment.size || 0))}</span>
+  `;
+  element.appendChild(meta);
+  return element;
+}
+
+function createAudioAttachmentPlayer(attachment) {
+  const card = document.createElement("div");
+  card.className = "attachment-card attachment-card--audio attachment-audio-card";
+  const src = attachment.url || attachment.previewUrl || "";
+  const attachmentName = attachment.name || "Audio";
+  const sourceKey = src || attachment.fileName || attachment.name || "";
+
+  card.innerHTML = `
+    <div class="attachment-audio-header">
+      <span class="attachment-icon attachment-icon--audio">Audio</span>
+      <div class="attachment-audio-copy">
+        <strong>${escapeHtml(attachmentName)}</strong>
+        <span>${escapeHtml(formatBytes(attachment.size || 0))}</span>
+      </div>
+    </div>
+    <div class="attachment-audio-controls">
+      <button type="button" class="attachment-audio-button attachment-audio-button--play" aria-label="Play audio">Play</button>
+      <button type="button" class="attachment-audio-button attachment-audio-button--stop" aria-label="Stop audio">Stop</button>
+      <span class="attachment-audio-time">0:00 / 0:00</span>
+    </div>
+    <div class="attachment-audio-progress" aria-hidden="true">
+      <div class="attachment-audio-progress-bar"></div>
+    </div>
+    <audio preload="none" playsinline></audio>
+  `;
+
+  const audio = card.querySelector("audio");
+  const playButton = card.querySelector(".attachment-audio-button--play");
+  const stopButton = card.querySelector(".attachment-audio-button--stop");
+  const timeLabel = card.querySelector(".attachment-audio-time");
+  const progressBar = card.querySelector(".attachment-audio-progress-bar");
+  if (!(audio instanceof HTMLAudioElement)
+      || !(playButton instanceof HTMLButtonElement)
+      || !(stopButton instanceof HTMLButtonElement)
+      || !(timeLabel instanceof HTMLElement)
+      || !(progressBar instanceof HTMLElement)) {
+    return card;
+  }
+  audio.dataset.mediaSourceKey = sourceKey;
+  audio.dataset.directUrl = src;
+
+  let blobLoaded = false;
+  let blobLoading = false;
+  let blobUrl = "";
+  let directSourceReady = false;
+  let blobFallbackAttempted = false;
+
+  const ensureDirectSource = () => {
+    if (!src) return false;
+    if (!directSourceReady || !audio.src) {
+      audio.src = src;
+      directSourceReady = true;
+    }
+    return true;
+  };
+
+  const resetAudioSource = () => {
+    audio.pause();
+    audio.removeAttribute("src");
+    audio.load();
+    directSourceReady = false;
+  };
+
+  const loadAudioBlob = async () => {
+    if (blobLoaded || blobLoading || !src) return true;
+    blobLoading = true;
+    timeLabel.textContent = "Loading...";
+    try {
+      const response = await fetch(src);
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const blob = await response.blob();
+      blobUrl = URL.createObjectURL(blob);
+      audio.src = blobUrl;
+      blobLoaded = true;
+      await new Promise((resolve, reject) => {
+        const onReady = () => { cleanup(); resolve(); };
+        const onError = () => { cleanup(); reject(audio.error); };
+        const cleanup = () => {
+          audio.removeEventListener("canplay", onReady);
+          audio.removeEventListener("loadedmetadata", onReady);
+          audio.removeEventListener("error", onError);
+        };
+        audio.addEventListener("canplay", onReady, { once: true });
+        audio.addEventListener("loadedmetadata", onReady, { once: true });
+        audio.addEventListener("error", onError, { once: true });
+        audio.load();
+      });
+      return true;
+    } catch (_) {
+      blobLoading = false;
+      return false;
+    } finally {
+      blobLoading = false;
+    }
+  };
+
+  const controller = {
+    audio,
+    sourceKey,
+    sessionId: state.activeSessionId,
+    stop(reset = true) {
+      audio.pause();
+      if (reset) {
+        audio.currentTime = 0;
+      }
+      updateUI();
+    },
+  };
+
+  const formatClock = (seconds) => {
+    const value = Number.isFinite(seconds) && seconds > 0 ? seconds : 0;
+    const mins = Math.floor(value / 60);
+    const secs = Math.floor(value % 60);
+    return `${mins}:${String(secs).padStart(2, "0")}`;
+  };
+
+  const updateUI = () => {
+    const duration = Number.isFinite(audio.duration) ? audio.duration : Number(attachment.duration || 0);
+    const current = Number.isFinite(audio.currentTime) ? audio.currentTime : 0;
+    const ratio = duration > 0 ? Math.max(0, Math.min(1, current / duration)) : 0;
+    const isPlaying = !audio.paused && !audio.ended;
+
+    playButton.textContent = isPlaying ? "Pause" : "Play";
+    playButton.setAttribute("aria-label", isPlaying ? "Pause audio" : "Play audio");
+    stopButton.disabled = !isPlaying && current === 0;
+    timeLabel.textContent = `${formatClock(current)} / ${formatClock(duration)}`;
+    progressBar.style.width = `${Math.max(0, Math.min(100, ratio * 100))}%`;
+    card.classList.toggle("is-playing", isPlaying);
+  };
+
+  const activate = async () => {
+    if (activeAudioPlayer && activeAudioPlayer !== controller) {
+      activeAudioPlayer.stop(true);
+    }
+    activeAudioPlayer = controller;
+    try {
+      if (!ensureDirectSource()) {
+        timeLabel.textContent = "Unable to load audio";
+        card.classList.add("is-error");
+        return;
+      }
+      await audio.play();
+    } catch (error) {
+      if (!blobFallbackAttempted && !blobLoaded && src) {
+        blobFallbackAttempted = true;
+        resetAudioSource();
+        const loaded = await loadAudioBlob();
+        if (loaded) {
+          try {
+            await audio.play();
+            return;
+          } catch (blobError) {
+            error = blobError;
+          }
+        }
+      }
+      showToast(`Unable to play audio: ${error?.message || "Playback failed"}`, true);
+    }
+  };
+
+  playButton.addEventListener("click", () => {
+    if (audio.paused) {
+      void activate();
+    } else {
+      audio.pause();
+      updateUI();
+    }
+  });
+
+  stopButton.addEventListener("click", () => {
+    controller.stop(true);
+    if (activeAudioPlayer === controller) {
+      activeAudioPlayer = null;
+    }
+  });
+
+  audio.addEventListener("loadedmetadata", updateUI);
+  audio.addEventListener("timeupdate", updateUI);
+  audio.addEventListener("play", updateUI);
+  audio.addEventListener("pause", () => {
+    updateUI();
+    if (audio.currentTime === 0 && activeAudioPlayer === controller) {
+      activeAudioPlayer = null;
+    }
+  });
+  audio.addEventListener("ended", () => {
+    audio.currentTime = 0;
+    updateUI();
+    if (activeAudioPlayer === controller) {
+      activeAudioPlayer = null;
+    }
+  });
+  audio.addEventListener("error", () => {
+    if (!blobLoaded && !blobLoading) {
+      return;
+    }
+    playButton.disabled = true;
+    stopButton.disabled = true;
+    const code = audio.error ? audio.error.code : 0;
+    const reasons = { 1: "aborted", 2: "network error", 3: "decode error", 4: "format not supported" };
+    timeLabel.textContent = `Unable to load audio${reasons[code] ? ` (${reasons[code]})` : ""}`;
+    card.classList.add("is-error");
+    if (activeAudioPlayer === controller) {
+      activeAudioPlayer = null;
+    }
+  });
+
+  updateUI();
+  return card;
+}
+
+function captureActiveAudioPlaybackState() {
+  const controller = activeAudioPlayer;
+  const audio = controller?.audio;
+  if (!(audio instanceof HTMLAudioElement)) return null;
+  const sourceKey = String(controller?.sourceKey || audio.dataset.mediaSourceKey || "").trim();
+  if (!sourceKey) return null;
+  return {
+    sessionId: String(controller?.sessionId || state.activeSessionId || ""),
+    sourceKey,
+    directUrl: String(audio.dataset.directUrl || audio.currentSrc || audio.src || "").trim(),
+    currentTime: Number.isFinite(audio.currentTime) ? audio.currentTime : 0,
+    wasPlaying: !audio.paused && !audio.ended,
+  };
+}
+
+function restoreActiveAudioPlaybackState(playbackState, container) {
+  if (!playbackState || playbackState.sessionId !== state.activeSessionId) return;
+  const candidates = Array.from(container.querySelectorAll("audio[data-media-source-key]"));
+  const audio = candidates.find((item) => String(item.dataset.mediaSourceKey || "") === playbackState.sourceKey);
+  if (!(audio instanceof HTMLAudioElement)) return;
+  const directUrl = String(audio.dataset.directUrl || playbackState.directUrl || "").trim();
+  if (!directUrl) return;
+  if (!audio.src) {
+    audio.src = directUrl;
+  }
+  const seekToSavedTime = () => {
+    if (Number.isFinite(playbackState.currentTime) && playbackState.currentTime > 0) {
+      try {
+        audio.currentTime = playbackState.currentTime;
+      } catch (_) {
+        // Ignore seek failures before metadata is ready.
+      }
+    }
+    if (playbackState.wasPlaying) {
+      void audio.play().then(() => {
+        activeAudioPlayer = {
+          audio,
+          sourceKey: playbackState.sourceKey,
+          sessionId: playbackState.sessionId,
+          stop(reset = true) {
+            audio.pause();
+            if (reset) {
+              audio.currentTime = 0;
+            }
+          },
+        };
+      }).catch(() => {});
+    }
+  };
+  if (audio.readyState >= 1) {
+    seekToSavedTime();
+    return;
+  }
+  const onReady = () => {
+    audio.removeEventListener("loadedmetadata", onReady);
+    seekToSavedTime();
+  };
+  audio.addEventListener("loadedmetadata", onReady, { once: true });
+  audio.load();
 }
 
 function handleAttachClick() {
@@ -1126,6 +1437,7 @@ async function sendMessage() {
 
 function startNewConversation() {
   if (!state.device) return;
+  stopActiveAudioPlayback();
   showTypingIndicator(false);
   unreadReplyCount = 0;
   shouldAutoFollowLatest = true;
@@ -1153,6 +1465,7 @@ async function persistActiveSession() {
 }
 
 async function logoutWebChat() {
+  stopActiveAudioPlayback();
   await fetch("/admin/web-chat/logout", {
     method: "POST",
     credentials: "same-origin",
@@ -1192,6 +1505,18 @@ function showToast(message, isError = false) {
   }, 3000);
 }
 
+function stopActiveAudioPlayback() {
+  if (activeAudioPlayer?.audio instanceof HTMLAudioElement) {
+    activeAudioPlayer.audio.pause();
+    try {
+      activeAudioPlayer.audio.currentTime = 0;
+    } catch (_) {
+      // Ignore reset failures while the element is being replaced.
+    }
+  }
+  activeAudioPlayer = null;
+}
+
 function showTypingIndicator(show) {
   const container = $("messages");
   if (!container) return;
@@ -1228,12 +1553,14 @@ function formatTimestamp(value) {
 }
 
 function inferAttachmentKind(mimeType, fileName) {
-  const mime = String(mimeType || "");
+  const mime = String(mimeType || "").toLowerCase();
   if (mime.startsWith("image/")) return "image";
   if (mime.startsWith("audio/")) return "audio";
+  if (mime.startsWith("video/")) return "video";
   const suffix = String(fileName || "").toLowerCase();
   if (/\.(png|jpg|jpeg|gif|webp|svg|bmp|avif)$/.test(suffix)) return "image";
   if (/\.(mp3|wav|m4a|ogg|aac|flac|webm)$/.test(suffix)) return "audio";
+  if (/\.(mp4|mov|m4v|webm)$/.test(suffix)) return "video";
   return "file";
 }
 

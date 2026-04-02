@@ -794,25 +794,238 @@ textarea {
 
 .attachment-list {
   margin-top: 10px;
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
   gap: 10px;
 }
 
-.attachment-chip,
-.attachment-list img {
-  max-width: 220px;
-  border-radius: 14px;
-}
-
-.attachment-chip {
-  display: inline-flex;
+.attachment-card {
+  display: flex;
   align-items: center;
   gap: 8px;
-  padding: 10px 12px;
+  min-width: 0;
+  max-width: min(520px, 100%);
+  padding: 10px;
+  border-radius: 16px;
+  border: 1px solid rgba(16, 35, 50, 0.08);
+  background: rgba(255, 255, 255, 0.82);
   text-decoration: none;
   color: inherit;
+  transition: transform 0.16s ease, box-shadow 0.16s ease, border-color 0.16s ease;
+}
+
+.attachment-card:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 12px 26px rgba(16, 35, 50, 0.08);
+  border-color: rgba(21, 108, 134, 0.18);
+}
+
+.message.user .attachment-card {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.12);
+}
+
+.assistant-entry .attachment-card {
+  background: rgba(16, 35, 50, 0.04);
+}
+
+.attachment-card--audio {
+  display: grid;
+  gap: 10px;
+  cursor: default;
+}
+
+.attachment-card--audio:hover {
+  transform: none;
+}
+
+.attachment-card img {
+  width: 72px;
+  height: 72px;
+  border-radius: 14px;
+  object-fit: cover;
+  flex-shrink: 0;
+  border: 1px solid rgba(16, 35, 50, 0.08);
+}
+
+.attachment-card img.attachment-image--logo {
+  object-fit: contain;
+  padding: 8px;
+  background: #102332;
+}
+
+.attachment-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 72px;
+  height: 72px;
+  border-radius: 14px;
   background: rgba(16, 35, 50, 0.06);
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 700;
+  text-transform: uppercase;
+  flex-shrink: 0;
+}
+
+.attachment-icon--audio {
+  background: linear-gradient(135deg, rgba(21, 108, 134, 0.22), rgba(16, 35, 50, 0.06));
+}
+
+.message.user .attachment-icon {
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+}
+
+.attachment-meta {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.attachment-meta strong,
+.attachment-meta span {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.attachment-meta strong {
+  font-size: 14px;
+}
+
+.attachment-meta span {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.message.user .attachment-meta span {
+  color: rgba(255, 255, 255, 0.72);
+}
+
+.attachment-audio-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.attachment-audio-copy {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+}
+
+.attachment-audio-copy strong,
+.attachment-audio-copy span {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.attachment-audio-copy strong {
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.attachment-audio-copy span {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.message.user .attachment-audio-copy span {
+  color: rgba(255, 255, 255, 0.72);
+}
+
+.attachment-audio-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.attachment-audio-button {
+  appearance: none;
+  border: 1px solid rgba(16, 35, 50, 0.12);
+  background: rgba(255, 255, 255, 0.74);
+  color: var(--text);
+  border-radius: 999px;
+  padding: 8px 12px;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+  transition: transform 0.15s ease, background 0.15s ease, border-color 0.15s ease;
+}
+
+.attachment-audio-button--play {
+  background: linear-gradient(180deg, rgba(21, 108, 134, 0.18), rgba(21, 108, 134, 0.08));
+  border-color: rgba(21, 108, 134, 0.26);
+}
+
+.attachment-audio-button:active {
+  transform: translateY(1px);
+}
+
+.attachment-audio-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.message.user .attachment-audio-button {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.12);
+  color: #fff;
+}
+
+.message.user .attachment-audio-button--play {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.18), rgba(255, 255, 255, 0.08));
+}
+
+.attachment-audio-time {
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+}
+
+.message.user .attachment-audio-time {
+  color: rgba(255, 255, 255, 0.72);
+}
+
+.attachment-audio-progress {
+  width: 100%;
+  height: 4px;
+  border-radius: 999px;
+  background: rgba(16, 35, 50, 0.08);
+  overflow: hidden;
+}
+
+.message.user .attachment-audio-progress {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.attachment-audio-progress-bar {
+  width: 0%;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, rgba(21, 108, 134, 0.95), rgba(21, 108, 134, 0.72));
+  transition: width 0.12s linear;
+}
+
+.attachment-audio-card.is-playing .attachment-audio-progress {
+  background: rgba(21, 108, 134, 0.18);
+}
+
+.attachment-audio-card audio {
+  display: none;
+}
+
+.attachment-audio-card.is-error {
+  border-color: rgba(146, 40, 40, 0.24);
 }
 
 .agent-group {
@@ -916,11 +1129,6 @@ textarea {
 @keyframes softnix-pulse {
   0%, 100% { transform: scale(0.92); opacity: 0.5; }
   50% { transform: scale(1); opacity: 1; }
-}
-
-.attachment-list img {
-  display: block;
-  border: 1px solid rgba(16, 35, 50, 0.1);
 }
 
 .composer {
