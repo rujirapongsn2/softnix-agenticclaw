@@ -58,6 +58,21 @@ def _accessible_instance_ids(context: dict[str, Any] | None) -> set[str] | None:
     return cleaned
 
 
+def _request_accessible_instance_ids(
+    path: str,
+    *,
+    context: dict[str, Any] | None,
+    mobile_instance_ids: set[str] | None = None,
+    web_chat_instance_ids: set[str] | None = None,
+) -> set[str] | None:
+    normalized_path = (urlparse(path).path.rstrip("/") or "/")
+    if normalized_path.startswith("/admin/mobile/"):
+        return mobile_instance_ids or _accessible_instance_ids(context)
+    if normalized_path.startswith("/admin/web-chat/"):
+        return web_chat_instance_ids
+    return _accessible_instance_ids(context)
+
+
 def _mask_token(value: str | None, keep: int = 4) -> str:
     raw = str(value or "").strip()
     if not raw:
@@ -1372,10 +1387,11 @@ def create_admin_server(host: str, port: int, service: AdminService) -> Threadin
                 if not self._authorize_mobile_request():
                     return
                 self._set_audit_context(context)
-                accessible_ids = (
-                    self._mobile_accessible_instance_ids()
-                    or self._web_chat_accessible_instance_ids()
-                    or _accessible_instance_ids(context)
+                accessible_ids = _request_accessible_instance_ids(
+                    self.path,
+                    context=context,
+                    mobile_instance_ids=self._mobile_accessible_instance_ids(),
+                    web_chat_instance_ids=self._web_chat_accessible_instance_ids(),
                 )
                 current_user_id = str((context.get("user") or {}).get("id") or "").strip() or None
                 status, payload = resolve_admin_get(
@@ -1470,10 +1486,11 @@ def create_admin_server(host: str, port: int, service: AdminService) -> Threadin
                 _mobile_unauthenticated = self.path.startswith("/admin/mobile/") and not self.path.rstrip("/").endswith("/pair")
                 if not _mobile_unauthenticated and not self._authorize_user_mutation(method="POST", path=self.path, payload=payload, context=context):
                     return
-                accessible_ids = (
-                    self._mobile_accessible_instance_ids(payload)
-                    or self._web_chat_accessible_instance_ids()
-                    or _accessible_instance_ids(context)
+                accessible_ids = _request_accessible_instance_ids(
+                    self.path,
+                    context=context,
+                    mobile_instance_ids=self._mobile_accessible_instance_ids(payload),
+                    web_chat_instance_ids=self._web_chat_accessible_instance_ids(),
                 )
                 current_user_id = str((context.get("user") or {}).get("id") or "").strip() or None
                 status, response = resolve_admin_post(

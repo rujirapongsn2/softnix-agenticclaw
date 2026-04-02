@@ -14,6 +14,7 @@ from http import HTTPStatus
 from nanobot.admin.server import (
     create_admin_server,
     _read_file_response,
+    _request_accessible_instance_ids,
     resolve_admin_delete,
     resolve_admin_get,
     resolve_admin_patch,
@@ -2430,6 +2431,41 @@ def test_admin_server_owner_can_manage_users_and_reset_password(tmp_path) -> Non
         server.shutdown()
         server.server_close()
         thread.join(timeout=3)
+
+
+def test_request_accessible_instance_ids_ignores_web_chat_scope_for_admin_routes() -> None:
+    context = {
+        "user": {
+            "id": "owner-1",
+            "username": "owner",
+            "role": "owner",
+            "instance_ids": None,
+        }
+    }
+
+    admin_scope = _request_accessible_instance_ids(
+        "/admin/overview",
+        context=context,
+        mobile_instance_ids={"prod"},
+        web_chat_instance_ids={"missing-instance"},
+    )
+    assert admin_scope is None
+
+    mobile_scope = _request_accessible_instance_ids(
+        "/admin/mobile/events?instance_id=prod",
+        context=context,
+        mobile_instance_ids={"prod"},
+        web_chat_instance_ids={"missing-instance"},
+    )
+    assert mobile_scope == {"prod"}
+
+    web_chat_scope = _request_accessible_instance_ids(
+        "/admin/web-chat/bootstrap",
+        context=context,
+        mobile_instance_ids={"prod"},
+        web_chat_instance_ids={"prod"},
+    )
+    assert web_chat_scope == {"prod"}
 
 
 def test_admin_server_unauthenticated_unknown_patch_returns_401(tmp_path) -> None:
