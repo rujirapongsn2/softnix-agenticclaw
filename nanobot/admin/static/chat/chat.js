@@ -14,6 +14,7 @@ let isSending = false;
 let unreadReplyCount = 0;
 let shouldAutoFollowLatest = true;
 let isSidebarCollapsed = false;
+let typingIndicatorTimer = null;
 const baseDocumentTitle = document.title;
 
 const state = {
@@ -274,6 +275,7 @@ async function exchangeLoginTicket(loginTicket) {
 
 function applyBootstrap(payload) {
   clearLoginTimers();
+  showTypingIndicator(false);
   unreadReplyCount = 0;
   shouldAutoFollowLatest = true;
   const shared = window.SoftnixChatShared;
@@ -909,6 +911,7 @@ function updateProcessingGroupLabel(groupState) {
 }
 
 function appendProcessingStep(groupState, message) {
+  showTypingIndicator(false);
   ensureProcessingGroup(groupState);
   const step = document.createElement("div");
   step.className = "tool-step";
@@ -936,6 +939,7 @@ function settleProcessingGroupSpinner(groupState) {
 }
 
 function appendAgentAnswer(groupState, message) {
+  showTypingIndicator(false);
   if (groupState.wrapper) {
     const answer = renderAssistantMessage(message);
     settleProcessingGroupSpinner(groupState);
@@ -1066,10 +1070,12 @@ async function sendMessage() {
   upsertMessage(message);
   renderConversationList();
   renderActiveConversation({ followLatest: true });
+  showTypingIndicator(true);
   if (input) {
     input.value = "";
     autoResizeInput(input);
   }
+  await new Promise((resolve) => window.requestAnimationFrame(() => resolve()));
   selectedAttachments = [];
   renderComposerMeta();
   updateSendButton();
@@ -1100,6 +1106,7 @@ async function sendMessage() {
     releaseSelectedAttachments(pendingAttachments);
     renderConversationList();
     renderActiveConversation({ followLatest: true });
+    showTypingIndicator(true);
   } catch (error) {
     removeMessage(message.messageId);
     if (input) {
@@ -1119,6 +1126,7 @@ async function sendMessage() {
 
 function startNewConversation() {
   if (!state.device) return;
+  showTypingIndicator(false);
   unreadReplyCount = 0;
   shouldAutoFollowLatest = true;
   state.activeSessionId = `mobile-${state.device.device_id}-${crypto.randomUUID()}`;
@@ -1159,6 +1167,7 @@ async function logoutWebChat() {
   state.conversations = {};
   state.activeSessionId = null;
   state.lastEventId = null;
+  showTypingIndicator(false);
   unreadReplyCount = 0;
   shouldAutoFollowLatest = true;
   releaseSelectedAttachments();
@@ -1181,6 +1190,35 @@ function showToast(message, isError = false) {
   toastTimer = window.setTimeout(() => {
     toast.classList.remove("is-visible");
   }, 3000);
+}
+
+function showTypingIndicator(show) {
+  const container = $("messages");
+  if (!container) return;
+  if (typingIndicatorTimer) {
+    window.clearTimeout(typingIndicatorTimer);
+    typingIndicatorTimer = null;
+  }
+  let element = container.querySelector(".typing-indicator");
+  if (!show) {
+    if (element) element.remove();
+    return;
+  }
+  if (!element) {
+    element = document.createElement("div");
+    element.className = "typing-indicator";
+    element.setAttribute("role", "status");
+    element.setAttribute("aria-live", "polite");
+    element.innerHTML = `
+      <span class="typing-indicator__dots" aria-hidden="true">
+        <span></span><span></span><span></span>
+      </span>
+      <span class="typing-indicator__text">Agent is typing</span>
+    `;
+    container.appendChild(element);
+  }
+  element.classList.add("is-visible");
+  scrollMessagesToLatest({ smooth: false });
 }
 
 function formatTimestamp(value) {
