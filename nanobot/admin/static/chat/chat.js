@@ -11,6 +11,11 @@ let loginState = null;
 let toastTimer = null;
 let selectedAttachments = [];
 let isSending = false;
+let isVoiceRecording = false;
+let isVoiceTranscribing = false;
+let voiceRecorder = null;
+let voiceStream = null;
+let voiceChunks = [];
 let unreadReplyCount = 0;
 let shouldAutoFollowLatest = true;
 let isSidebarCollapsed = false;
@@ -44,6 +49,7 @@ function bindEvents() {
   $("btn-logout")?.addEventListener("click", () => void logoutWebChat());
   $("btn-new-chat")?.addEventListener("click", () => startNewConversation());
   $("btn-attach")?.addEventListener("click", handleAttachClick);
+  $("btn-voice")?.addEventListener("click", () => void handleVoiceButton());
   $("btn-toggle-sidebar")?.addEventListener("click", () => toggleSidebar());
   $("btn-latest")?.addEventListener("click", () => scrollMessagesToLatest({ smooth: true }));
   $("reply-banner-action")?.addEventListener("click", () => scrollMessagesToLatest({ smooth: true }));
@@ -1406,6 +1412,221 @@ async function handleAttachmentInput(event) {
   updateSendButton();
 }
 
+async function handleVoiceButton() {
+  if (!state.device || isSending) return;
+  if (isVoiceTranscribing) return;
+  if (isVoiceRecording) {
+    stopVoiceRecording();
+    return;
+  }
+  await startVoiceRecording();
+}
+
+async function startVoiceRecording() {
+  if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
+    showToast("Voice recording is not supported in this browser.", true);
+    return;
+  }
+  if (!state.device) return;
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const mimeType = pickVoiceRecorderMimeType();
+    const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
+    voiceStream = stream;
+    voiceRecorder = recorder;
+    voiceChunks = [];
+    isVoiceRecording = true;
+    syncVoiceButtonState();
+    updateSendButton();
+
+    recorder.addEventListener("dataavailable", (event) => {
+      if (event.data && event.data.size > 0) {
+        voiceChunks.push(event.data);
+      }
+    });
+
+    recorder.addEventListener("error", () => {
+      stopVoiceRecording(true);
+      showToast("Recording failed. Please try again.", true);
+    });
+
+    recorder.addEventListener("stop", () => {
+      const streamToStop = voiceStream;
+      voiceStream = null;
+      voiceRecorder = null;
+      isVoiceRecording = false;
+      syncVoiceButtonState();
+      updateSendButton();
+      if (streamToStop) {
+        streamToStop.getTracks().forEach((track) => track.stop());
+      }
+      const mime = recorder.mimeType || mimeType || "audio/webm";
+      const blob = new Blob(voiceChunks, { type: mime });
+      voiceChunks = [];
+      void transcribeVoiceBlob(blob, mime);
+    }, { once: true });
+
+    recorder.start();
+  } catch (error) {
+    cleanupVoiceRecording();
+    showToast(`Unable to access microphone: ${error?.message || "permission denied"}`, true);
+  }
+}
+
+function stopVoiceRecording(silent = false) {
+  if (!voiceRecorder) return;
+  try {
+    if (voiceRecorder.state !== "inactive") {
+      voiceRecorder.stop();
+    }
+  } catch (_) {
+    cleanupVoiceRecording();
+    if (!silent) {
+      showToast("Recording stopped unexpectedly.", true);
+    }
+  }
+}
+
+function cleanupVoiceRecording() {
+  isVoiceRecording = false;
+  voiceChunks = [];
+  if (voiceStream) {
+    voiceStream.getTracks().forEach((track) => track.stop());
+  }
+  voiceStream = null;
+  voiceRecorder = null;
+  syncVoiceButtonState();
+  updateSendButton();
+}
+
+async function transcribeVoiceBlob(blob, mimeType) {
+  if (!state.device || !blob || blob.size === 0) {
+    return;
+  }
+  isVoiceTranscribing = true;
+  syncVoiceButtonState();
+  updateSendButton();
+  try {
+    const fileName = `voice-${Date.now()}${extensionForMimeType(mimeType)}`;
+    const audio = {
+      name: fileName,
+      type: mimeType || blob.type || "audio/webm",
+      size: blob.size,
+      data_base64: await blobToBase64(blob),
+    };
+    const response = await fetch("/admin/mobile/transcribe", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        instance_id: state.device.instance_id,
+        sender_id: state.device.device_id,
+        audio,
+      }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      const err = new Error(payload.error || `Transcription failed (${response.status})`);
+      err.code = payload.error_code || "";
+      throw err;
+    }
+    const transcript = String(payload.transcript || "").trim();
+    if (!transcript) {
+      showToast("No speech detected.", true);
+      return;
+    }
+    const input = $("compose-input");
+    if (input) {
+      const current = input.value.trim();
+      input.value = current ? `${current}${current.endsWith(" ") ? "" : " "}${transcript}` : transcript;
+      autoResizeInput(input);
+      updateSendButton();
+      input.focus();
+    }
+  } catch (error) {
+    const errorText = String(error?.message || "Unknown error");
+    if (error?.code === "groq_key_missing" || /Groq API key is not configured for transcription/i.test(errorText)) {
+      showToast("Voice transcription is not configured for this instance. Ask an admin to set the Groq API key in Providers.", true);
+    } else {
+      showToast(`Unable to transcribe audio: ${errorText}`, true);
+    }
+  } finally {
+    isVoiceTranscribing = false;
+    syncVoiceButtonState();
+    updateSendButton();
+  }
+}
+
+function syncVoiceButtonState() {
+  const button = $("btn-voice");
+  if (!(button instanceof HTMLButtonElement)) return;
+  button.disabled = isVoiceTranscribing || isSending || !state.device || !state.session?.csrf_token;
+  button.classList.toggle("is-recording", isVoiceRecording);
+  button.classList.toggle("is-transcribing", isVoiceTranscribing);
+  button.setAttribute("aria-pressed", String(isVoiceRecording));
+  button.setAttribute("aria-busy", String(isVoiceTranscribing));
+  button.title = isVoiceTranscribing
+    ? "Transcribing audio"
+    : isVoiceRecording
+      ? "Stop recording"
+      : "Record voice";
+  button.innerHTML = isVoiceRecording
+    ? `
+      <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+        <rect x="7" y="7" width="10" height="10" rx="2"></rect>
+      </svg>
+    `
+    : `
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+        <rect x="9" y="3" width="6" height="11" rx="3"></rect>
+        <path d="M5 11a7 7 0 0 0 14 0"></path>
+        <path d="M12 18v3"></path>
+        <path d="M8 21h8"></path>
+      </svg>
+    `;
+}
+
+function pickVoiceRecorderMimeType() {
+  const candidates = [
+    "audio/mp4",
+    "audio/mp4;codecs=mp4a.40.2",
+    "audio/webm;codecs=opus",
+    "audio/webm",
+    "audio/ogg;codecs=opus",
+  ];
+  for (const candidate of candidates) {
+    if (window.MediaRecorder?.isTypeSupported?.(candidate)) {
+      return candidate;
+    }
+  }
+  return "";
+}
+
+function extensionForMimeType(mimeType) {
+  const normalized = String(mimeType || "").toLowerCase();
+  if (normalized.includes("mp4") || normalized.includes("m4a")) return ".m4a";
+  if (normalized.includes("webm")) return ".webm";
+  if (normalized.includes("ogg")) return ".ogg";
+  if (normalized.includes("wav")) return ".wav";
+  if (normalized.includes("mpeg") || normalized.includes("mp3")) return ".mp3";
+  return ".audio";
+}
+
+function blobToBase64(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = String(reader.result || "");
+      const marker = result.indexOf(",");
+      resolve(marker >= 0 ? result.slice(marker + 1) : result);
+    };
+    reader.onerror = () => reject(reader.error || new Error("Failed to read audio"));
+    reader.readAsDataURL(blob);
+  });
+}
+
 async function sendMessage() {
   const input = $("compose-input");
   const rawText = String(input?.value || "");
@@ -1522,6 +1743,7 @@ async function persistActiveSession() {
 
 async function logoutWebChat() {
   stopActiveAudioPlayback();
+  cleanupVoiceRecording();
   await fetch("/admin/web-chat/logout", {
     method: "POST",
     credentials: "same-origin",
@@ -1630,11 +1852,15 @@ function updateSendButton() {
   const input = $("compose-input");
   const sendButton = $("btn-send");
   const attachButton = $("btn-attach");
+  const voiceButton = $("btn-voice");
   if (!sendButton) return;
   const hasText = String(input?.value || "").trim().length > 0;
-  sendButton.disabled = !(hasText || selectedAttachments.length > 0) || isSending || !state.session?.csrf_token;
+  sendButton.disabled = !(hasText || selectedAttachments.length > 0) || isSending || isVoiceRecording || isVoiceTranscribing || !state.session?.csrf_token;
   if (attachButton) {
-    attachButton.disabled = isSending || !state.session?.csrf_token;
+    attachButton.disabled = isSending || isVoiceRecording || isVoiceTranscribing || !state.session?.csrf_token;
+  }
+  if (voiceButton) {
+    syncVoiceButtonState();
   }
 }
 
