@@ -1187,6 +1187,45 @@ textarea {
   padding-inline: 15px;
 }
 
+.voice-btn:disabled {
+  opacity: 0.42;
+  cursor: default;
+}
+
+.voice-btn {
+  width: 42px;
+  height: 42px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  align-self: center;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 0.15s, color 0.15s, transform 0.15s;
+}
+
+.voice-btn svg {
+  width: 22px;
+  height: 22px;
+}
+
+.voice-btn.is-recording {
+  color: #fff;
+  background: #d64747;
+  box-shadow: 0 0 0 4px rgba(214, 71, 71, 0.18);
+  transform: scale(1.02);
+}
+
+.voice-btn.is-transcribing {
+  color: var(--text);
+  background: rgba(16, 35, 50, 0.08);
+  animation: voice-pulse 1.2s ease-in-out infinite;
+}
+
 .compose-attachments {
   display: flex;
   flex-wrap: wrap;
@@ -1286,6 +1325,18 @@ textarea {
 .toast.is-visible {
   opacity: 1;
   transform: translateY(0);
+}
+
+@keyframes voice-pulse {
+  0%,
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  50% {
+    transform: scale(1.04);
+    opacity: 0.78;
+  }
 }
 
 .image-lightbox {
