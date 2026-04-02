@@ -813,6 +813,17 @@ textarea {
   transition: transform 0.16s ease, box-shadow 0.16s ease, border-color 0.16s ease;
 }
 
+.attachment-card--image {
+  appearance: none;
+  display: grid;
+  gap: 12px;
+  width: 100%;
+  max-width: min(760px, 100%);
+  padding: 14px;
+  text-align: left;
+  align-items: stretch;
+}
+
 .attachment-card:hover {
   transform: translateY(-1px);
   box-shadow: 0 12px 26px rgba(16, 35, 50, 0.08);
@@ -838,6 +849,10 @@ textarea {
   transform: none;
 }
 
+.attachment-card--image:hover {
+  cursor: zoom-in;
+}
+
 .attachment-card img {
   width: 72px;
   height: 72px;
@@ -845,6 +860,16 @@ textarea {
   object-fit: cover;
   flex-shrink: 0;
   border: 1px solid rgba(16, 35, 50, 0.08);
+}
+
+.attachment-card--image img {
+  width: 100%;
+  max-width: 100%;
+  height: auto;
+  max-height: min(56vh, 420px);
+  border-radius: 18px;
+  object-fit: contain;
+  background: linear-gradient(180deg, rgba(16, 35, 50, 0.05), rgba(16, 35, 50, 0.02));
 }
 
 .attachment-card img.attachment-image--logo {
@@ -884,6 +909,10 @@ textarea {
   gap: 2px;
 }
 
+.attachment-card--image .attachment-meta {
+  gap: 4px;
+}
+
 .attachment-meta strong,
 .attachment-meta span {
   white-space: nowrap;
@@ -898,6 +927,13 @@ textarea {
 .attachment-meta span {
   font-size: 12px;
   color: var(--muted);
+}
+
+.attachment-card--image .attachment-meta strong,
+.attachment-card--image .attachment-meta span {
+  white-space: normal;
+  overflow: visible;
+  text-overflow: initial;
 }
 
 .message.user .attachment-meta span {
@@ -1252,6 +1288,99 @@ textarea {
   transform: translateY(0);
 }
 
+.image-lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: grid;
+  place-items: center;
+  padding: 28px;
+}
+
+.image-lightbox__backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(9, 20, 30, 0.74);
+  backdrop-filter: blur(12px);
+}
+
+.image-lightbox__panel {
+  position: relative;
+  z-index: 1;
+  width: min(1120px, calc(100vw - 56px));
+  max-height: calc(100vh - 56px);
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 16px;
+  padding: 18px;
+  border-radius: 28px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(12, 22, 32, 0.92);
+  color: #fff;
+  box-shadow: 0 32px 90px rgba(0, 0, 0, 0.35);
+}
+
+.image-lightbox__toolbar {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.image-lightbox__meta {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.image-lightbox__meta strong,
+.image-lightbox__meta span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.image-lightbox__meta span {
+  color: rgba(255, 255, 255, 0.72);
+  font-size: 13px;
+}
+
+.image-lightbox__actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.image-lightbox__download {
+  text-decoration: none;
+}
+
+.image-lightbox__close,
+.image-lightbox__download {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.image-lightbox__stage {
+  min-height: 0;
+  display: grid;
+  place-items: center;
+  overflow: auto;
+  border-radius: 22px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.image-lightbox__image {
+  display: block;
+  max-width: 100%;
+  max-height: calc(100vh - 180px);
+  object-fit: contain;
+}
+
+body.is-lightbox-open {
+  overflow: hidden;
+}
+
 @media (max-width: 980px) {
   .login-panel,
   .chat-shell {
@@ -1290,5 +1419,28 @@ textarea {
   .primary-btn {
     width: 100%;
     justify-content: center;
+  }
+
+  .attachment-card--image img {
+    max-height: min(44vh, 320px);
+  }
+
+  .image-lightbox {
+    padding: 16px;
+  }
+
+  .image-lightbox__panel {
+    width: min(100vw - 32px, 100%);
+    max-height: calc(100vh - 32px);
+    padding: 14px;
+  }
+
+  .image-lightbox__toolbar {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .image-lightbox__actions {
+    justify-content: space-between;
   }
 }

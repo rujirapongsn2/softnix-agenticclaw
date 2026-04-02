@@ -91,6 +91,24 @@
   </div>
 
   <div id="toast" class="toast" aria-live="polite"></div>
+  <div id="image-lightbox" class="image-lightbox is-hidden" role="dialog" aria-modal="true" aria-labelledby="image-lightbox-title">
+    <div id="image-lightbox-backdrop" class="image-lightbox__backdrop"></div>
+    <div class="image-lightbox__panel">
+      <div class="image-lightbox__toolbar">
+        <div class="image-lightbox__meta">
+          <strong id="image-lightbox-title">Image preview</strong>
+          <span id="image-lightbox-subtitle"></span>
+        </div>
+        <div class="image-lightbox__actions">
+          <a id="image-lightbox-download" class="secondary-btn image-lightbox__download" href="#" target="_blank" rel="noreferrer">Open original</a>
+          <button id="image-lightbox-close" class="ghost-btn image-lightbox__close" type="button" aria-label="Close image preview">Close</button>
+        </div>
+      </div>
+      <div class="image-lightbox__stage">
+        <img id="image-lightbox-image" class="image-lightbox__image" alt="Expanded attachment preview">
+      </div>
+    </div>
+  </div>
 
   <script src="/chat/shared.js"></script>
   <script src="/chat/chat.js"></script>

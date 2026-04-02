@@ -16,6 +16,7 @@ let shouldAutoFollowLatest = true;
 let isSidebarCollapsed = false;
 let typingIndicatorTimer = null;
 let activeAudioPlayer = null;
+let activeLightboxTrigger = null;
 const baseDocumentTitle = document.title;
 
 const state = {
@@ -46,6 +47,8 @@ function bindEvents() {
   $("btn-toggle-sidebar")?.addEventListener("click", () => toggleSidebar());
   $("btn-latest")?.addEventListener("click", () => scrollMessagesToLatest({ smooth: true }));
   $("reply-banner-action")?.addEventListener("click", () => scrollMessagesToLatest({ smooth: true }));
+  $("image-lightbox-close")?.addEventListener("click", closeImageLightbox);
+  $("image-lightbox-backdrop")?.addEventListener("click", closeImageLightbox);
   $("attachment-input")?.addEventListener("change", (event) => void handleAttachmentInput(event));
   $("composer")?.addEventListener("submit", (event) => {
     event.preventDefault();
@@ -62,6 +65,14 @@ function bindEvents() {
     }
   });
   $("messages")?.addEventListener("scroll", handleMessagesScroll, { passive: true });
+  document.addEventListener("keydown", handleGlobalKeydown);
+}
+
+function handleGlobalKeydown(event) {
+  if (event.key === "Escape" && !$("image-lightbox")?.classList.contains("is-hidden")) {
+    event.preventDefault();
+    closeImageLightbox();
+  }
 }
 
 async function init() {
@@ -1018,15 +1029,23 @@ function renderAttachmentList(attachments) {
 
 function createAttachmentCard(attachment) {
   const mediaUrl = attachment.url || attachment.previewUrl || "";
-  const element = document.createElement(mediaUrl ? "a" : "div");
+  const isImage = attachment.kind === "image" && mediaUrl;
+  const element = document.createElement(isImage ? "button" : mediaUrl ? "a" : "div");
   element.className = `attachment-card attachment-card--${attachment.kind || "file"}`;
-  if (mediaUrl) {
+  if (isImage) {
+    element.type = "button";
+    element.setAttribute("aria-label", `Open image ${attachment.name || "attachment"}`);
+    element.addEventListener("click", (event) => {
+      event.preventDefault();
+      openImageLightbox(attachment, element);
+    });
+  } else if (mediaUrl) {
     element.href = mediaUrl;
     element.target = "_blank";
     element.rel = "noreferrer";
   }
 
-  if (attachment.kind === "image" && mediaUrl) {
+  if (isImage) {
     const image = document.createElement("img");
     image.src = attachment.previewUrl || mediaUrl;
     image.alt = attachment.name || "Attachment";
@@ -1050,6 +1069,43 @@ function createAttachmentCard(attachment) {
   `;
   element.appendChild(meta);
   return element;
+}
+
+function openImageLightbox(attachment, triggerElement) {
+  const overlay = $("image-lightbox");
+  const image = $("image-lightbox-image");
+  const title = $("image-lightbox-title");
+  const subtitle = $("image-lightbox-subtitle");
+  const download = $("image-lightbox-download");
+  const mediaUrl = attachment?.url || attachment?.previewUrl || "";
+  if (!overlay || !(image instanceof HTMLImageElement) || !title || !subtitle || !(download instanceof HTMLAnchorElement) || !mediaUrl) {
+    return;
+  }
+  activeLightboxTrigger = triggerElement instanceof HTMLElement ? triggerElement : null;
+  image.src = attachment.previewUrl || mediaUrl;
+  image.alt = attachment.name || "Expanded attachment preview";
+  title.textContent = attachment.name || "Image preview";
+  subtitle.textContent = formatBytes(attachment.size || 0);
+  download.href = mediaUrl;
+  download.download = attachment.fileName || attachment.name || "attachment";
+  overlay.classList.remove("is-hidden");
+  document.body.classList.add("is-lightbox-open");
+  $("image-lightbox-close")?.focus();
+}
+
+function closeImageLightbox() {
+  const overlay = $("image-lightbox");
+  const image = $("image-lightbox-image");
+  if (!overlay || overlay.classList.contains("is-hidden")) return;
+  overlay.classList.add("is-hidden");
+  document.body.classList.remove("is-lightbox-open");
+  if (image instanceof HTMLImageElement) {
+    image.removeAttribute("src");
+  }
+  if (activeLightboxTrigger instanceof HTMLElement) {
+    activeLightboxTrigger.focus();
+  }
+  activeLightboxTrigger = null;
 }
 
 function createAudioAttachmentPlayer(attachment) {
