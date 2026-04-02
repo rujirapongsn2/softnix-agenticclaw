@@ -391,6 +391,7 @@ class InstanceTarget:
 
 class AdminService:
     """Collect operational data and safe config updates for the admin API."""
+    max_mobile_attachment_bytes = 15 * 1024 * 1024
 
     def __init__(
         self,
@@ -539,6 +540,239 @@ class AdminService:
         media_dir.mkdir(parents=True, exist_ok=True)
         return media_dir
 
+    def _mobile_event_log_path(self, target: InstanceTarget, sender_id: str) -> Path:
+        events_dir = self._mobile_relay_dir(target) / "events"
+        events_dir.mkdir(parents=True, exist_ok=True)
+        return events_dir / f"{self._safe_filename(sender_id)}.jsonl"
+
+    def _append_mobile_chat_event(
+        self,
+        *,
+        target: InstanceTarget,
+        sender_id: str,
+        role: str,
+        session_id: str,
+        message_id: str,
+        text: str,
+        msg_type: str,
+        direction: str,
+        reply_to: str | None = None,
+        thread_root_id: str | None = None,
+        attachments: list[dict[str, Any]] | None = None,
+        timestamp: str | None = None,
+    ) -> dict[str, Any]:
+        event = {
+            "event_id": f"mobevt-{secrets.token_hex(8)}",
+            "instance_id": target.id,
+            "device_id": sender_id,
+            "role": role,
+            "direction": direction,
+            "type": msg_type,
+            "session_id": session_id,
+            "message_id": message_id,
+            "reply_to": reply_to,
+            "thread_root_id": thread_root_id,
+            "text": text,
+            "attachments": list(attachments or []),
+            "timestamp": timestamp or iso_now(),
+        }
+        log_path = self._mobile_event_log_path(target, sender_id)
+        with log_path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(event, ensure_ascii=False) + "\n")
+        return event
+
+    @staticmethod
+    def _mobile_event_signature(item: dict[str, Any]) -> tuple[str, str, str, str, str, str]:
+        return (
+            str(item.get("session_id") or "").strip(),
+            str(item.get("role") or "").strip(),
+            str(item.get("message_id") or "").strip(),
+            str(item.get("text") or item.get("content") or "").strip(),
+            str(item.get("reply_to") or "").strip(),
+            str(item.get("thread_root_id") or "").strip(),
+        )
+
+    @staticmethod
+    def _event_text_preview(value: str | None, *, limit: int = 140) -> str:
+        text = str(value or "").strip().replace("\r\n", "\n").replace("\r", "\n")
+        text = re.sub(r"\s+", " ", text)
+        if len(text) <= limit:
+            return text
+        return text[: max(0, limit - 1)].rstrip() + "…"
+
+    @staticmethod
+    def _extract_session_message_text(value: Any) -> str:
+        if isinstance(value, str):
+            return value
+        if isinstance(value, list):
+            chunks: list[str] = []
+            for item in value:
+                if not isinstance(item, dict):
+                    continue
+                if item.get("type") == "text":
+                    text = str(item.get("text") or "").strip()
+                    if text:
+                        chunks.append(text)
+            return "\n".join(chunks).strip()
+        return str(value or "").strip()
+
+    def _load_mobile_device_events(self, *, target: InstanceTarget, sender_id: str) -> list[dict[str, Any]]:
+        events: list[dict[str, Any]] = []
+        path = self._mobile_event_log_path(target, sender_id)
+        if path.exists():
+            try:
+                for line in path.read_text(encoding="utf-8").splitlines():
+                    if not line.strip():
+                        continue
+                    data = json.loads(line)
+                    if isinstance(data, dict):
+                        events.append(data)
+            except Exception:
+                logger.exception("Failed to read mobile chat events for {}/{}", target.id, sender_id)
+
+        outbound_events = self._load_mobile_outbound_events(target=target, sender_id=sender_id)
+        seen_signatures = {self._mobile_event_signature(item) for item in events if isinstance(item, dict)}
+        seen_message_ids = {
+            str(item.get("message_id") or "").strip()
+            for item in events
+            if isinstance(item, dict) and str(item.get("message_id") or "").strip()
+        }
+        for item in outbound_events:
+            if not isinstance(item, dict):
+                continue
+            signature = self._mobile_event_signature(item)
+            message_id = str(item.get("message_id") or "").strip()
+            if signature in seen_signatures or (message_id and message_id in seen_message_ids):
+                continue
+            seen_signatures.add(signature)
+            if message_id:
+                seen_message_ids.add(message_id)
+            events.append(item)
+
+        seen_signatures = {self._mobile_event_signature(item) for item in events if isinstance(item, dict)}
+        modern_session_ids = {
+            str(item.get("session_id") or "").strip()
+            for item in events
+            if isinstance(item, dict) and str(item.get("session_id") or "").strip()
+        }
+        manager = SessionManager(target.workspace_path)
+        session_prefixes = (
+            f"softnix_app:mobile-{sender_id}",
+            f"mobile-{sender_id}",
+        )
+        for session_info in manager.list_sessions():
+            key = str(session_info.get("key") or "").strip()
+            if not any(key.startswith(prefix) for prefix in session_prefixes):
+                continue
+            session_id = key.split("softnix_app:", 1)[-1] if key.startswith("softnix_app:") else key
+            if session_id in modern_session_ids:
+                continue
+            session = manager.get_or_create(key)
+            for index, message in enumerate(session.messages):
+                if not isinstance(message, dict):
+                    continue
+                role = str(message.get("role") or "").strip()
+                if role not in {"user", "assistant"}:
+                    continue
+                text = self._extract_session_message_text(message.get("content"))
+                event = {
+                    "event_id": f"legacy-{self._safe_filename(session_id)}-{index}",
+                    "instance_id": target.id,
+                    "device_id": sender_id,
+                    "role": "agent" if role == "assistant" else "user",
+                    "direction": "outbound" if role == "assistant" else "inbound",
+                    "type": "answer" if role == "assistant" else "message",
+                    "session_id": session_id,
+                    "message_id": f"legacy-{index}",
+                    "reply_to": None,
+                    "thread_root_id": None,
+                    "text": text,
+                    "attachments": [],
+                    "timestamp": str(message.get("timestamp") or session_info.get("updated_at") or ""),
+                    "legacy": True,
+                }
+                signature = self._mobile_event_signature(event)
+                if signature in seen_signatures:
+                    continue
+                seen_signatures.add(signature)
+                events.append(event)
+
+        events.sort(key=lambda item: (str(item.get("timestamp") or ""), str(item.get("event_id") or "")))
+        return events
+
+    def _load_mobile_outbound_events(self, *, target: InstanceTarget, sender_id: str) -> list[dict[str, Any]]:
+        outbound_file = self._mobile_relay_dir(target) / "outbound.jsonl"
+        if not outbound_file.exists():
+            return []
+
+        normalized_sender_id = self._normalize_mobile_sender_identity(sender_id)
+        session_prefix = f"mobile-{normalized_sender_id}" if normalized_sender_id else ""
+        events: list[dict[str, Any]] = []
+        try:
+            for line in outbound_file.read_text(encoding="utf-8").splitlines():
+                if not line.strip():
+                    continue
+                data = json.loads(line)
+                if not isinstance(data, dict):
+                    continue
+                data_sender_id = self._normalize_mobile_sender_identity(str(data.get("sender_id") or ""))
+                data_session_id = str(data.get("session_id") or "").strip()
+                if not (
+                    data_sender_id == normalized_sender_id
+                    or data_session_id == sender_id
+                    or (session_prefix and data_session_id.startswith(session_prefix))
+                ):
+                    continue
+                message_id = str(data.get("message_id") or "").strip() or f"outbound-{secrets.token_hex(8)}"
+                events.append(
+                    {
+                        "event_id": str(data.get("event_id") or "").strip() or f"outbound-{message_id}",
+                        "instance_id": target.id,
+                        "device_id": data_sender_id or sender_id,
+                        "role": "agent",
+                        "direction": "outbound",
+                        "type": str(data.get("type") or "answer"),
+                        "session_id": data_session_id or f"mobile-{sender_id}",
+                        "message_id": message_id,
+                        "reply_to": str(data.get("reply_to") or "").strip() or None,
+                        "thread_root_id": str(data.get("thread_root_id") or "").strip() or None,
+                        "text": str(data.get("text") or ""),
+                        "attachments": list(data.get("attachments") or []),
+                        "timestamp": str(data.get("timestamp") or ""),
+                    }
+                )
+        except Exception:
+            logger.exception("Failed to read outbound mobile events for {}/{}", target.id, sender_id)
+        return events
+
+    def _build_mobile_conversation_summaries(self, events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        conversations: dict[str, dict[str, Any]] = {}
+        for item in events:
+            session_id = str(item.get("session_id") or "").strip()
+            if not session_id:
+                continue
+            bucket = conversations.setdefault(
+                session_id,
+                {
+                    "session_id": session_id,
+                    "message_count": 0,
+                    "updated_at": "",
+                    "preview": "",
+                    "has_agent_reply": False,
+                    "has_user_message": False,
+                },
+            )
+            bucket["message_count"] += 1
+            ts = str(item.get("timestamp") or "")
+            if ts >= str(bucket.get("updated_at") or ""):
+                bucket["updated_at"] = ts
+                bucket["preview"] = self._event_text_preview(item.get("text"))
+            if str(item.get("role") or "") == "agent":
+                bucket["has_agent_reply"] = True
+            if str(item.get("role") or "") == "user":
+                bucket["has_user_message"] = True
+        return sorted(conversations.values(), key=lambda item: str(item.get("updated_at") or ""), reverse=True)
+
     def _mobile_push_supported(self) -> bool:
         try:
             import pywebpush  # noqa: F401
@@ -603,6 +837,251 @@ class AdminService:
             "supported": keys is not None,
             "public_key": keys.get("public_key") if keys else None,
             "requires_standalone": True,
+        }
+
+    def create_web_chat_login(
+        self,
+        *,
+        ip: str | None = None,
+        user_agent: str | None = None,
+    ) -> dict[str, Any]:
+        expires_at = (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat()
+        ticket = f"wclogin-{secrets.token_urlsafe(18)}"
+        self.auth_store.create_web_chat_login_ticket(
+            ticket=ticket,
+            expires_at=expires_at,
+            ip=ip,
+            user_agent=user_agent,
+        )
+        self.auth_store.append_audit(
+            event_type="auth.web_chat_login_created",
+            category="authentication",
+            outcome="success",
+            actor={"ip": ip, "user_agent": (user_agent or "")[:300] or None},
+            payload={"expires_at": expires_at},
+        )
+        return {
+            "login_ticket": ticket,
+            "expires_at": expires_at,
+            "qr_payload": f"softnix://web-chat-login?ticket={ticket}",
+        }
+
+    def get_web_chat_login_status(self, *, login_ticket: str) -> dict[str, Any]:
+        ticket = self.auth_store.get_web_chat_login_ticket(login_ticket)
+        if ticket is None:
+            return {"status": "expired", "login_ticket": str(login_ticket or "").strip()}
+        return {
+            "status": str(ticket.get("status") or "pending"),
+            "login_ticket": str(ticket.get("ticket") or "").strip(),
+            "expires_at": ticket.get("expires_at"),
+            "instance_id": ticket.get("instance_id"),
+            "device_id": ticket.get("device_id"),
+            "device_label": ticket.get("device_label"),
+            "active_session_id": ticket.get("active_session_id"),
+            "approved_at": ticket.get("approved_at"),
+        }
+
+    def approve_web_chat_login(
+        self,
+        *,
+        login_ticket: str,
+        device: dict[str, Any],
+        active_session_id: str | None = None,
+        accessible_instance_ids: set[str] | list[str] | tuple[str, ...] | None = None,
+    ) -> dict[str, Any]:
+        instance_id = str(device.get("instance_id") or "").strip()
+        device_id = str(device.get("device_id") or "").strip()
+        if not instance_id or not device_id:
+            raise ValueError("Mobile device context is incomplete")
+        target = self._get_target(instance_id)
+        self._require_target_access(target, accessible_instance_ids)
+        config = self._load_target_config(target)
+        if device_id not in list(config.channels.softnix_app.allow_from or []):
+            raise PermissionError("This mobile device is not approved for chat access")
+        updated = self.auth_store.approve_web_chat_login_ticket(
+            ticket=login_ticket,
+            instance_id=instance_id,
+            device_id=device_id,
+            device_label=str(device.get("label") or device_id),
+            active_session_id=str(active_session_id or "").strip() or None,
+        )
+        if updated is None:
+            raise ValueError("Invalid or expired web chat login ticket")
+        self.auth_store.append_audit(
+            event_type="auth.web_chat_login_approved",
+            category="authentication",
+            outcome="success",
+            resource={"type": "instance", "id": instance_id},
+            payload={"device_id": device_id, "active_session_id": updated.get("active_session_id")},
+        )
+        return {
+            "status": "approved",
+            "instance_id": instance_id,
+            "device_id": device_id,
+            "device_label": updated.get("device_label"),
+            "active_session_id": updated.get("active_session_id"),
+        }
+
+    def exchange_web_chat_login(
+        self,
+        *,
+        login_ticket: str,
+        ip: str | None = None,
+        user_agent: str | None = None,
+    ) -> dict[str, Any]:
+        ticket = self.auth_store.consume_web_chat_login_ticket(login_ticket)
+        if ticket is None:
+            raise ValueError("Invalid or unapproved web chat login ticket")
+        csrf_token = new_csrf_token()
+        session = self.auth_store.create_web_chat_session(
+            session_id=new_session_id(),
+            instance_id=str(ticket.get("instance_id") or ""),
+            device_id=str(ticket.get("device_id") or ""),
+            device_label=str(ticket.get("device_label") or "") or None,
+            active_session_id=str(ticket.get("active_session_id") or "") or None,
+            ip=ip,
+            user_agent=user_agent,
+            csrf_token=csrf_token,
+        )
+        self.auth_store.append_audit(
+            event_type="auth.web_chat_session_created",
+            category="authentication",
+            outcome="success",
+            resource={"type": "instance", "id": session["instance_id"]},
+            payload={"device_id": session["device_id"], "session_id": session["id"]},
+        )
+        return {
+            "device": {
+                "instance_id": session["instance_id"],
+                "device_id": session["device_id"],
+                "label": session.get("device_label") or session["device_id"],
+            },
+            "session": {
+                "id": session["id"],
+                "expires_at": session.get("expires_at"),
+                "idle_expires_at": session.get("idle_expires_at"),
+                "csrf_token": session.get("csrf_token"),
+                "active_session_id": session.get("active_session_id"),
+            },
+        }
+
+    def get_authenticated_web_chat_session(self, *, session_id: str) -> dict[str, Any] | None:
+        session = self.auth_store.get_web_chat_session(session_id)
+        if session is None:
+            return None
+        instance_id = str(session.get("instance_id") or "").strip()
+        device_id = str(session.get("device_id") or "").strip()
+        if not instance_id or not device_id:
+            self.auth_store.revoke_web_chat_session(session_id)
+            return None
+        target = self._get_target(instance_id)
+        device = self.auth_store.get_mobile_device(instance_id, device_id)
+        if device is None:
+            self.auth_store.revoke_web_chat_session(session_id)
+            return None
+        config = self._load_target_config(target)
+        if device_id not in list(config.channels.softnix_app.allow_from or []):
+            self.auth_store.revoke_web_chat_session(session_id)
+            return None
+        csrf_token = str(session.get("csrf_token") or "")
+        if not csrf_token:
+            csrf_token = new_csrf_token()
+        session = self.auth_store.touch_web_chat_session(session_id, csrf_token=csrf_token) or session
+        return {
+            "device": {
+                "instance_id": instance_id,
+                "device_id": device_id,
+                "label": device.get("label") or device_id,
+                "approval_status": "approved",
+            },
+            "session": {
+                "id": session.get("id"),
+                "expires_at": session.get("expires_at"),
+                "idle_expires_at": session.get("idle_expires_at"),
+                "csrf_token": session.get("csrf_token"),
+                "active_session_id": session.get("active_session_id"),
+            },
+        }
+
+    def logout_web_chat_session(self, *, session_id: str) -> dict[str, Any]:
+        revoked = self.auth_store.revoke_web_chat_session(session_id)
+        return {"ok": revoked}
+
+    def set_web_chat_active_session(
+        self,
+        *,
+        session_id: str,
+        active_session_id: str,
+    ) -> dict[str, Any]:
+        context = self.get_authenticated_web_chat_session(session_id=session_id)
+        if context is None:
+            raise PermissionError("Web chat session is not authenticated")
+        updated = self.auth_store.touch_web_chat_session(
+            session_id,
+            active_session_id=str(active_session_id or "").strip() or None,
+        )
+        if updated is None:
+            raise PermissionError("Web chat session is not authenticated")
+        return {
+            "ok": True,
+            "active_session_id": updated.get("active_session_id"),
+        }
+
+    def get_mobile_chat_events(
+        self,
+        instance_id: str,
+        sender_id: str,
+        *,
+        after_event_id: str | None = None,
+        accessible_instance_ids: set[str] | list[str] | tuple[str, ...] | None = None,
+    ) -> list[dict[str, Any]]:
+        target = self._get_target(instance_id)
+        self._require_target_access(target, accessible_instance_ids)
+        events = self._load_mobile_device_events(target=target, sender_id=sender_id)
+        marker = str(after_event_id or "").strip()
+        if not marker:
+            return events
+        seen_marker = False
+        filtered: list[dict[str, Any]] = []
+        for item in events:
+            if seen_marker:
+                filtered.append(item)
+                continue
+            if str(item.get("event_id") or "") == marker:
+                seen_marker = True
+        return filtered if seen_marker else events
+
+    def get_mobile_chat_bootstrap(
+        self,
+        instance_id: str,
+        sender_id: str,
+        *,
+        preferred_active_session_id: str | None = None,
+        accessible_instance_ids: set[str] | list[str] | tuple[str, ...] | None = None,
+    ) -> dict[str, Any]:
+        target = self._get_target(instance_id)
+        self._require_target_access(target, accessible_instance_ids)
+        device = self.auth_store.get_mobile_device(instance_id, sender_id)
+        if device is None:
+            raise ValueError("Mobile device not found")
+        events = self._load_mobile_device_events(target=target, sender_id=sender_id)
+        conversations = self._build_mobile_conversation_summaries(events)
+        active_session_id = str(preferred_active_session_id or "").strip()
+        if active_session_id and not any(item.get("session_id") == active_session_id for item in conversations):
+            active_session_id = ""
+        if not active_session_id:
+            active_session_id = str(conversations[0]["session_id"]) if conversations else f"mobile-{sender_id}"
+        return {
+            "device": {
+                "device_id": sender_id,
+                "instance_id": instance_id,
+                "label": device.get("label") or sender_id,
+                "approval_status": "approved",
+                "already_allowed": True,
+            },
+            "active_session_id": active_session_id,
+            "conversations": conversations,
+            "events": events,
         }
 
     def create_mobile_session_transfer(
@@ -832,6 +1311,7 @@ class AdminService:
         for index, item in enumerate(attachments):
             if not isinstance(item, dict):
                 continue
+            name = self._safe_filename(str(item.get("name") or f"attachment-{index + 1}"))
             encoded = str(item.get("data_base64") or "").strip()
             if not encoded:
                 continue
@@ -839,7 +1319,10 @@ class AdminService:
                 payload = base64.b64decode(encoded, validate=True)
             except (ValueError, binascii.Error) as exc:
                 raise ValueError(f"Attachment #{index + 1} is not valid base64") from exc
-            name = self._safe_filename(str(item.get("name") or f"attachment-{index + 1}"))
+            if len(payload) > self.max_mobile_attachment_bytes:
+                raise ValueError(
+                    f"Attachment '{name}' exceeds the maximum size of {self.max_mobile_attachment_bytes} bytes"
+                )
             stem = Path(name).stem or f"attachment-{index + 1}"
             suffix = Path(name).suffix
             stored_name = f"{int(time.time() * 1000)}-{secrets.token_hex(4)}-{self._safe_filename(stem)}{suffix}"
@@ -966,24 +1449,73 @@ class AdminService:
         with inbound_file.open("a", encoding="utf-8") as f:
             f.write(json.dumps(data) + "\n")
 
+        response_attachments = [
+            {
+                **item,
+                "sender_id": sender_id,
+                "url": (
+                    f"/admin/mobile/media?instance_id={instance_id}"
+                    f"&sender_id={sender_id}&file={item['stored_name']}"
+                ),
+            }
+            for item in attachment_meta
+        ]
+        self._append_mobile_chat_event(
+            target=target,
+            sender_id=sender_id,
+            role="user",
+            session_id=resolved_session_id,
+            message_id=resolved_message_id,
+            text=text,
+            msg_type="message",
+            direction="inbound",
+            reply_to=(reply_to or "").strip() or None,
+            thread_root_id=(thread_root_id or "").strip() or None,
+            attachments=response_attachments,
+            timestamp=data["timestamp"],
+        )
+
         return {
             "status": "relayed",
             "instance_id": instance_id,
             "message_id": resolved_message_id,
             "session_id": resolved_session_id,
             "attachment_count": len(attachment_meta),
-            "attachments": [
-                {
-                    **item,
-                    "sender_id": sender_id,
-                    "url": (
-                        f"/admin/mobile/media?instance_id={instance_id}"
-                        f"&sender_id={sender_id}&file={item['stored_name']}"
-                    ),
-                }
-                for item in attachment_meta
-            ],
+            "attachments": response_attachments,
         }
+
+    def relay_web_chat_message(
+        self,
+        *,
+        web_session_id: str,
+        text: str,
+        chat_session_id: str | None = None,
+        message_id: str | None = None,
+        reply_to: str | None = None,
+        thread_root_id: str | None = None,
+        attachments: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        context = self.get_authenticated_web_chat_session(session_id=web_session_id)
+        if context is None:
+            raise PermissionError("Web chat session is not authenticated")
+        instance_id = str(context["device"]["instance_id"] or "").strip()
+        device_id = str(context["device"]["device_id"] or "").strip()
+        resolved_chat_session_id = str(chat_session_id or "").strip() or str(context["session"].get("active_session_id") or "") or f"mobile-{device_id}"
+        self.auth_store.touch_web_chat_session(
+            web_session_id,
+            active_session_id=resolved_chat_session_id,
+        )
+        return self.relay_mobile_message(
+            instance_id,
+            device_id,
+            text,
+            session_id=resolved_chat_session_id,
+            message_id=message_id,
+            reply_to=reply_to,
+            thread_root_id=thread_root_id,
+            attachments=attachments,
+            accessible_instance_ids={instance_id},
+        )
 
     def get_mobile_replies(
         self,
@@ -1373,6 +1905,10 @@ class AdminService:
         """Remove a mobile device from auth store and config allow_from."""
         target = self._get_target(instance_id)
         self._require_target_access(target, accessible_instance_ids)
+        revoked_web_sessions = self.auth_store.revoke_web_chat_sessions_for_device(
+            instance_id=instance_id,
+            device_id=device_id,
+        )
         self.auth_store.delete_mobile_device(instance_id, device_id)
         restart_result: dict[str, Any] | None = None
         config = self._load_target_config(target)
@@ -1390,12 +1926,14 @@ class AdminService:
             resource={"type": "instance", "id": instance_id},
             payload={
                 "device_id": device_id,
+                "revoked_web_sessions": revoked_web_sessions,
                 "instance_restarted": bool(restart_result and restart_result.get("ok")),
                 "restart_returncode": restart_result.get("returncode") if restart_result else None,
             },
         )
         return {
             "status": "deleted",
+            "revoked_web_sessions": revoked_web_sessions,
             "instance_restart": {
                 "attempted": restart_result is not None,
                 **(restart_result or {}),

@@ -44,6 +44,8 @@ class AdminAuthStore:
         self.security_dir = ensure_dir(self.base_dir / "security")
         self.users_path = self.security_dir / "users.json"
         self.sessions_path = self.security_dir / "sessions.json"
+        self.web_chat_login_tickets_path = self.security_dir / "web_chat_login_tickets.json"
+        self.web_chat_sessions_path = self.security_dir / "web_chat_sessions.json"
         self.audit_path = self.security_dir / "auth_audit.jsonl"
 
     @classmethod
@@ -243,6 +245,263 @@ class AdminAuthStore:
             self._save_json(self.sessions_path, payload)
         return count
 
+    # ── Web Chat delegated login ───────────────────────────────
+
+    def create_web_chat_login_ticket(
+        self,
+        *,
+        ticket: str,
+        expires_at: str,
+        ip: str | None = None,
+        user_agent: str | None = None,
+    ) -> dict[str, Any]:
+        payload = self._load_json(self.web_chat_login_tickets_path, {"tickets": []})
+        tickets = [
+            item
+            for item in payload.get("tickets", [])
+            if isinstance(item, dict)
+            and not bool(item.get("revoked"))
+            and not bool(item.get("consumed"))
+            and not is_session_expired(item.get("expires_at"))
+        ]
+        record = {
+            "ticket": str(ticket or "").strip(),
+            "status": "pending",
+            "created_at": iso_now(),
+            "expires_at": expires_at,
+            "ip": str(ip or "").strip() or None,
+            "user_agent": str(user_agent or "").strip()[:500] or None,
+            "instance_id": None,
+            "device_id": None,
+            "device_label": None,
+            "approved_at": None,
+            "approved_by_device_id": None,
+            "active_session_id": None,
+            "consumed": False,
+            "consumed_at": None,
+            "revoked": False,
+        }
+        tickets = [item for item in tickets if str(item.get("ticket") or "") != record["ticket"]]
+        tickets.append(record)
+        payload["tickets"] = tickets
+        self._save_json(self.web_chat_login_tickets_path, payload)
+        return record
+
+    def get_web_chat_login_ticket(self, ticket: str) -> dict[str, Any] | None:
+        key = str(ticket or "").strip()
+        if not key:
+            return None
+        payload = self._load_json(self.web_chat_login_tickets_path, {"tickets": []})
+        tickets = [item for item in payload.get("tickets", []) if isinstance(item, dict)]
+        dirty = False
+        active_tickets: list[dict[str, Any]] = []
+        found: dict[str, Any] | None = None
+        for item in tickets:
+            expired = is_session_expired(item.get("expires_at"))
+            if bool(item.get("revoked")) or expired:
+                dirty = True
+                continue
+            if str(item.get("ticket") or "") == key:
+                found = dict(item)
+            active_tickets.append(item)
+        if dirty:
+            payload["tickets"] = active_tickets
+            self._save_json(self.web_chat_login_tickets_path, payload)
+        return found
+
+    def approve_web_chat_login_ticket(
+        self,
+        *,
+        ticket: str,
+        instance_id: str,
+        device_id: str,
+        device_label: str | None = None,
+        active_session_id: str | None = None,
+    ) -> dict[str, Any] | None:
+        payload = self._load_json(self.web_chat_login_tickets_path, {"tickets": []})
+        tickets = [item for item in payload.get("tickets", []) if isinstance(item, dict)]
+        found: dict[str, Any] | None = None
+        next_tickets: list[dict[str, Any]] = []
+        for item in tickets:
+            if str(item.get("ticket") or "") != str(ticket or "").strip():
+                next_tickets.append(item)
+                continue
+            if bool(item.get("revoked")) or bool(item.get("consumed")) or is_session_expired(item.get("expires_at")):
+                continue
+            updated = dict(item)
+            updated["status"] = "approved"
+            updated["instance_id"] = str(instance_id or "").strip()
+            updated["device_id"] = str(device_id or "").strip()
+            updated["device_label"] = str(device_label or "").strip() or None
+            updated["approved_at"] = iso_now()
+            updated["approved_by_device_id"] = str(device_id or "").strip()
+            updated["active_session_id"] = str(active_session_id or "").strip() or None
+            found = updated
+            next_tickets.append(updated)
+        payload["tickets"] = next_tickets
+        self._save_json(self.web_chat_login_tickets_path, payload)
+        return found
+
+    def consume_web_chat_login_ticket(self, ticket: str) -> dict[str, Any] | None:
+        payload = self._load_json(self.web_chat_login_tickets_path, {"tickets": []})
+        tickets = [item for item in payload.get("tickets", []) if isinstance(item, dict)]
+        found: dict[str, Any] | None = None
+        next_tickets: list[dict[str, Any]] = []
+        for item in tickets:
+            expired = is_session_expired(item.get("expires_at"))
+            if bool(item.get("revoked")) or expired:
+                continue
+            if str(item.get("ticket") or "") != str(ticket or "").strip():
+                next_tickets.append(item)
+                continue
+            if bool(item.get("consumed")) or str(item.get("status") or "") != "approved":
+                next_tickets.append(item)
+                continue
+            updated = dict(item)
+            updated["consumed"] = True
+            updated["consumed_at"] = iso_now()
+            updated["status"] = "exchanged"
+            found = updated
+            next_tickets.append(updated)
+        payload["tickets"] = next_tickets
+        self._save_json(self.web_chat_login_tickets_path, payload)
+        return found
+
+    def create_web_chat_session(
+        self,
+        *,
+        session_id: str,
+        instance_id: str,
+        device_id: str,
+        device_label: str | None = None,
+        active_session_id: str | None = None,
+        ip: str | None = None,
+        user_agent: str | None = None,
+        csrf_token: str | None = None,
+    ) -> dict[str, Any]:
+        payload = self._load_json(self.web_chat_sessions_path, {"sessions": []})
+        sessions = [
+            item
+            for item in payload.get("sessions", [])
+            if isinstance(item, dict)
+            and not bool(item.get("revoked"))
+            and not is_session_expired(item.get("expires_at"))
+            and not is_session_expired(item.get("idle_expires_at"))
+        ]
+        record = {
+            "id": str(session_id or "").strip(),
+            "instance_id": str(instance_id or "").strip(),
+            "device_id": str(device_id or "").strip(),
+            "device_label": str(device_label or "").strip() or None,
+            "active_session_id": str(active_session_id or "").strip() or None,
+            "created_at": iso_now(),
+            "last_seen_at": iso_now(),
+            "expires_at": iso_in(days=7),
+            "idle_expires_at": iso_in(hours=12),
+            "ip": str(ip or "").strip() or None,
+            "user_agent": str(user_agent or "").strip()[:500] or None,
+            "csrf_token": csrf_token,
+            "revoked": False,
+        }
+        sessions = [item for item in sessions if str(item.get("id") or "") != record["id"]]
+        sessions.append(record)
+        payload["sessions"] = sessions
+        self._save_json(self.web_chat_sessions_path, payload)
+        return record
+
+    def get_web_chat_session(self, session_id: str) -> dict[str, Any] | None:
+        key = str(session_id or "").strip()
+        if not key:
+            return None
+        payload = self._load_json(self.web_chat_sessions_path, {"sessions": []})
+        sessions = [item for item in payload.get("sessions", []) if isinstance(item, dict)]
+        dirty = False
+        active_sessions: list[dict[str, Any]] = []
+        found: dict[str, Any] | None = None
+        for item in sessions:
+            expired = is_session_expired(item.get("expires_at")) or is_session_expired(item.get("idle_expires_at"))
+            if bool(item.get("revoked")) or expired:
+                dirty = True
+                continue
+            if str(item.get("id") or "") == key:
+                found = dict(item)
+            active_sessions.append(item)
+        if dirty:
+            payload["sessions"] = active_sessions
+            self._save_json(self.web_chat_sessions_path, payload)
+        return found
+
+    def touch_web_chat_session(
+        self,
+        session_id: str,
+        *,
+        csrf_token: str | None = None,
+        active_session_id: str | None = None,
+    ) -> dict[str, Any] | None:
+        payload = self._load_json(self.web_chat_sessions_path, {"sessions": []})
+        sessions = [item for item in payload.get("sessions", []) if isinstance(item, dict)]
+        found: dict[str, Any] | None = None
+        next_sessions: list[dict[str, Any]] = []
+        for item in sessions:
+            if str(item.get("id") or "") != str(session_id or "").strip():
+                next_sessions.append(item)
+                continue
+            expired = is_session_expired(item.get("expires_at")) or is_session_expired(item.get("idle_expires_at"))
+            if bool(item.get("revoked")) or expired:
+                continue
+            updated = dict(item)
+            updated["last_seen_at"] = iso_now()
+            updated["idle_expires_at"] = iso_in(hours=12)
+            if csrf_token is not None:
+                updated["csrf_token"] = csrf_token
+            if active_session_id is not None:
+                updated["active_session_id"] = str(active_session_id or "").strip() or None
+            found = updated
+            next_sessions.append(updated)
+        payload["sessions"] = next_sessions
+        self._save_json(self.web_chat_sessions_path, payload)
+        return found
+
+    def revoke_web_chat_session(self, session_id: str) -> bool:
+        payload = self._load_json(self.web_chat_sessions_path, {"sessions": []})
+        sessions = [item for item in payload.get("sessions", []) if isinstance(item, dict)]
+        changed = False
+        next_sessions: list[dict[str, Any]] = []
+        for item in sessions:
+            if str(item.get("id") or "") == str(session_id or "").strip():
+                updated = dict(item)
+                updated["revoked"] = True
+                next_sessions.append(updated)
+                changed = True
+            else:
+                next_sessions.append(item)
+        if changed:
+            payload["sessions"] = next_sessions
+            self._save_json(self.web_chat_sessions_path, payload)
+        return changed
+
+    def revoke_web_chat_sessions_for_device(self, *, instance_id: str, device_id: str) -> int:
+        payload = self._load_json(self.web_chat_sessions_path, {"sessions": []})
+        sessions = [item for item in payload.get("sessions", []) if isinstance(item, dict)]
+        count = 0
+        next_sessions: list[dict[str, Any]] = []
+        for item in sessions:
+            if (
+                str(item.get("instance_id") or "") == str(instance_id or "").strip()
+                and str(item.get("device_id") or "") == str(device_id or "").strip()
+                and not bool(item.get("revoked"))
+            ):
+                updated = dict(item)
+                updated["revoked"] = True
+                next_sessions.append(updated)
+                count += 1
+            else:
+                next_sessions.append(item)
+        if count:
+            payload["sessions"] = next_sessions
+            self._save_json(self.web_chat_sessions_path, payload)
+        return count
+
     def append_audit(
         self,
         *,
@@ -395,6 +654,8 @@ class AdminAuthStore:
                 "devices_removed": 0,
                 "push_subscriptions_removed": 0,
                 "transfer_tokens_removed": 0,
+                "web_chat_tickets_removed": 0,
+                "web_chat_sessions_removed": 0,
             }
 
         pairing_payload = self._load_json(self.pairing_tokens_path, {"tokens": []})
@@ -438,11 +699,29 @@ class AdminAuthStore:
             transfer_payload["tokens"] = next_transfer_tokens
             self._save_json(self.mobile_transfer_tokens_path, transfer_payload)
 
+        web_ticket_payload = self._load_json(self.web_chat_login_tickets_path, {"tickets": []})
+        web_tickets = [item for item in web_ticket_payload.get("tickets", []) if isinstance(item, dict)]
+        next_web_tickets = [item for item in web_tickets if item.get("instance_id") != key]
+        web_chat_tickets_removed = len(web_tickets) - len(next_web_tickets)
+        if web_chat_tickets_removed:
+            web_ticket_payload["tickets"] = next_web_tickets
+            self._save_json(self.web_chat_login_tickets_path, web_ticket_payload)
+
+        web_session_payload = self._load_json(self.web_chat_sessions_path, {"sessions": []})
+        web_sessions = [item for item in web_session_payload.get("sessions", []) if isinstance(item, dict)]
+        next_web_sessions = [item for item in web_sessions if item.get("instance_id") != key]
+        web_chat_sessions_removed = len(web_sessions) - len(next_web_sessions)
+        if web_chat_sessions_removed:
+            web_session_payload["sessions"] = next_web_sessions
+            self._save_json(self.web_chat_sessions_path, web_session_payload)
+
         return {
             "pairing_tokens_removed": pairing_removed,
             "devices_removed": devices_removed,
             "push_subscriptions_removed": subscriptions_removed,
             "transfer_tokens_removed": transfer_removed,
+            "web_chat_tickets_removed": web_chat_tickets_removed,
+            "web_chat_sessions_removed": web_chat_sessions_removed,
         }
 
     def update_device_last_seen(self, instance_id: str, device_id: str) -> None:

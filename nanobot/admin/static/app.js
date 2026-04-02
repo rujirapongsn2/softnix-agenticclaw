@@ -59,7 +59,6 @@ const state = {
   busyKey: "",
   liveInstanceFilter: "all",
   liveActivityVisibleCount: 20,
-  overviewOpsInstanceId: "all",
   liveExpandedEvents: {},
   instanceCreateOpen: false,
   runtimeAudit: {
@@ -1897,33 +1896,12 @@ function renderSummary() {
 function renderOverviewDashboard() {
   const instanceTarget = document.getElementById("overview-instance-metrics");
   const topUsageTarget = document.getElementById("overview-top-usage");
-  const opsTarget = document.getElementById("overview-ops-table");
-  const opsFilterEl = document.getElementById("overview-ops-instance-filter");
-  if (!instanceTarget || !topUsageTarget || !opsTarget) {
+  if (!instanceTarget || !topUsageTarget) {
     return;
   }
 
   const runtimeByInstance = state.overviewRuntimeAuditByInstance || {};
   const instances = state.overview.instances || [];
-
-  if (opsFilterEl) {
-    const currentValue = state.overviewOpsInstanceId;
-    opsFilterEl.innerHTML = `
-      <option value="all" ${currentValue === "all" ? "selected" : ""}>All Instances</option>
-      ${instances.map(inst => `<option value="${escapeHtml(inst.id)}" ${currentValue === inst.id ? "selected" : ""}>${escapeHtml(inst.name)}</option>`).join("")}
-    `;
-    if (!opsFilterEl.onchange) {
-      opsFilterEl.onchange = (e) => {
-        state.overviewOpsInstanceId = e.target.value;
-        renderOverviewDashboard();
-      };
-    }
-  }
-
-  const allEvents = Object.values(runtimeByInstance).flatMap((entry) => entry?.events || []);
-  const filteredEvents = state.overviewOpsInstanceId === "all" 
-    ? allEvents 
-    : (runtimeByInstance[state.overviewOpsInstanceId]?.events || []);
 
   const topModels = new Map();
   const topChannels = new Map();
@@ -2035,41 +2013,6 @@ function renderOverviewDashboard() {
         <h4>Top Channels</h4>
         ${topBarRows(topChannels, "No channel events yet")}
       </div>
-    </div>
-  `;
-
-  const operationBuckets = new Map();
-  filteredEvents.forEach((event) => {
-    const instanceId = String(event.instance_id || "unknown");
-    const operation = String(event.operation || "unknown");
-    const key = `${instanceId}::${operation}`;
-    const bucket = operationBuckets.get(key) || { instanceId, operation, ok: 0, error: 0, running: 0 };
-    const status = String(event.status || "ok");
-    if (status === "error") bucket.error += 1;
-    else if (status === "running") bucket.running += 1;
-    else bucket.ok += 1;
-    operationBuckets.set(key, bucket);
-  });
-  const operationRows = [...operationBuckets.values()]
-    .sort((left, right) => (right.ok + right.error + right.running) - (left.ok + left.error + left.running))
-    .slice(0, 40);
-  opsTarget.innerHTML = `
-    <div class="table-wrap">
-      <table class="instances-table">
-        <thead><tr><th>Instance</th><th>Operation</th><th>OK</th><th>Error</th><th>Running</th><th>Total</th></tr></thead>
-        <tbody>
-          ${operationRows.map((row) => `
-            <tr>
-              <td>${escapeHtml(row.instanceId)}</td>
-              <td>${escapeHtml(row.operation)}</td>
-              <td>${escapeHtml(String(row.ok))}</td>
-              <td>${escapeHtml(String(row.error))}</td>
-              <td>${escapeHtml(String(row.running))}</td>
-              <td>${escapeHtml(String(row.ok + row.error + row.running))}</td>
-            </tr>
-          `).join("") || `<tr><td colspan="6" class="table-empty">No operation data yet</td></tr>`}
-        </tbody>
-      </table>
     </div>
   `;
 }

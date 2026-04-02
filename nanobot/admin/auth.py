@@ -36,6 +36,7 @@ def clear_request_audit_context() -> None:
     _audit_request_ctx.actor = None
 
 ADMIN_SESSION_COOKIE = "softnix_admin_session"
+WEB_CHAT_SESSION_COOKIE = "softnix_web_chat_session"
 ADMIN_ROLE_ORDER = ("viewer", "operator", "admin", "owner")
 ADMIN_ROLE_PERMISSIONS: dict[str, set[str]] = {
     "viewer": {
