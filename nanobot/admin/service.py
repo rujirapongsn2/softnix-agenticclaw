@@ -1426,6 +1426,97 @@ class AdminService:
             )
         return saved_paths, saved_meta
 
+    @staticmethod
+    def _is_audio_attachment(path: Path, mime_type: str) -> bool:
+        normalized_mime = str(mime_type or "").strip().lower()
+        if normalized_mime.startswith("audio/"):
+            return True
+        return path.suffix.lower() in {".mp3", ".m4a", ".mp4", ".aac", ".wav", ".flac", ".ogg", ".webm"}
+
+    def _transcribe_audio_path(
+        self,
+        *,
+        target: InstanceTarget,
+        source_path: Path,
+        mime_type: str,
+    ) -> str:
+        transcribe_path = source_path
+        detected_mime = self._detect_audio_mime(source_path) or mime_type
+        supported_audio_types = {
+            "audio/mpeg",
+            "audio/mp4",
+            "audio/aac",
+            "audio/wav",
+            "audio/flac",
+            "audio/x-m4a",
+        }
+        if detected_mime not in supported_audio_types:
+            transcoded = self._transcode_to_mp3(source_path)
+            if transcoded is not None:
+                transcribe_path = transcoded
+
+        config = self._load_target_config(target)
+        groq_cfg = getattr(config.providers, "groq", None)
+        api_key = str(getattr(groq_cfg, "api_key", "") or "").strip()
+        if not api_key:
+            raise ValueError("Groq API key is not configured for transcription")
+
+        from nanobot.providers.transcription import GroqTranscriptionProvider
+
+        async def _run_transcription() -> str:
+            transcriber = GroqTranscriptionProvider(api_key=api_key)
+            return await transcriber.transcribe(transcribe_path)
+
+        return asyncio.run(_run_transcription()).strip()
+
+    def _build_audio_attachment_transcripts(
+        self,
+        *,
+        target: InstanceTarget,
+        media_paths: list[str],
+        attachment_meta: list[dict[str, Any]],
+    ) -> list[str]:
+        transcript_blocks: list[str] = []
+        for path_str, meta in zip(media_paths, attachment_meta):
+            path = Path(path_str)
+            mime_type = str(meta.get("mime_type") or "")
+            if not path.is_file() or not self._is_audio_attachment(path, mime_type):
+                continue
+            try:
+                transcript = self._transcribe_audio_path(
+                    target=target,
+                    source_path=path,
+                    mime_type=mime_type,
+                )
+            except ValueError as exc:
+                logger.info(
+                    "mobile.audio_transcription.skipped {}",
+                    {
+                        "instance_id": target.id,
+                        "file": path.name,
+                        "reason": str(exc),
+                    },
+                )
+                continue
+            except Exception as exc:
+                logger.warning(
+                    "mobile.audio_transcription.failed {}",
+                    {
+                        "instance_id": target.id,
+                        "file": path.name,
+                        "error": str(exc),
+                    },
+                )
+                continue
+            if not transcript:
+                continue
+            transcript_blocks.append(
+                "[Extracted Audio Transcript]\n"
+                f"File: {meta.get('name') or path.name}\n"
+                f"{transcript}"
+            )
+        return transcript_blocks
+
     def transcribe_mobile_audio(
         self,
         instance_id: str,
@@ -1456,33 +1547,11 @@ class AdminService:
 
         transcribe_path = source_path
         try:
-            detected_mime = self._detect_audio_mime(source_path) or mime_type
-            supported_audio_types = {
-                "audio/mpeg",
-                "audio/mp4",
-                "audio/aac",
-                "audio/wav",
-                "audio/flac",
-                "audio/x-m4a",
-            }
-            if detected_mime not in supported_audio_types:
-                transcoded = self._transcode_to_mp3(source_path)
-                if transcoded is not None:
-                    transcribe_path = transcoded
-
-            config = self._load_target_config(target)
-            groq_cfg = getattr(config.providers, "groq", None)
-            api_key = str(getattr(groq_cfg, "api_key", "") or "").strip()
-            if not api_key:
-                raise ValueError("Groq API key is not configured for transcription")
-
-            from nanobot.providers.transcription import GroqTranscriptionProvider
-
-            async def _run_transcription() -> str:
-                transcriber = GroqTranscriptionProvider(api_key=api_key)
-                return await transcriber.transcribe(transcribe_path)
-
-            transcript = asyncio.run(_run_transcription()).strip()
+            transcript = self._transcribe_audio_path(
+                target=target,
+                source_path=transcribe_path,
+                mime_type=mime_type,
+            )
             return {
                 "transcript": transcript,
                 "name": name,
@@ -1518,10 +1587,21 @@ class AdminService:
             sender_id=sender_id,
             attachments=attachments,
         )
+        transcript_blocks = self._build_audio_attachment_transcripts(
+            target=target,
+            media_paths=media_paths,
+            attachment_meta=attachment_meta,
+        )
+        normalized_text = (text or "").strip()
+        if transcript_blocks:
+            normalized_text = normalized_text or "Please use the uploaded audio attachment."
+            agent_text = normalized_text + "\n\n" + "\n\n".join(transcript_blocks)
+        else:
+            agent_text = text
         resolved_session_id = (session_id or "").strip() or f"mobile-{sender_id}"
         resolved_message_id = (message_id or "").strip() or f"mobile-{secrets.token_hex(8)}"
         data = {
-            "text": text,
+            "text": agent_text,
             "sender_id": sender_id,
             "session_id": resolved_session_id,
             "message_id": resolved_message_id,

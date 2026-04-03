@@ -178,43 +178,73 @@ Reply directly with text for conversations. Only use the 'message' tool to send 
         ]
 
     def _build_user_content(self, text: str, media: list[str] | None) -> str | list[dict[str, Any]]:
-        """Build user message content with optional base64-encoded images."""
+        """Build user message content with optional attachment grounding and images."""
         if not media:
             return text
 
         images = []
-        image_names: list[str] = []
+        attachment_details: list[dict[str, str]] = []
         for path in media:
             p = Path(path)
             if not p.is_file():
                 continue
+            display_path = self._display_media_path(p)
             raw = p.read_bytes()
             # Detect real MIME type from magic bytes; fallback to filename guess
             mime = detect_image_mime(raw) or mimetypes.guess_type(path)[0]
+            attachment_details.append(
+                {
+                    "name": p.name,
+                    "path": display_path,
+                    "kind": "image" if mime and mime.startswith("image/") else "file",
+                }
+            )
             if not mime or not mime.startswith("image/"):
                 continue
             b64 = base64.b64encode(raw).decode()
             images.append({"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}})
-            image_names.append(p.name)
 
-        if not images:
+        if not attachment_details:
             return text
-        grounding_text = self._build_attachment_grounding_text(text, image_names)
+        grounding_text = self._build_attachment_grounding_text(text, attachment_details)
+        if not images:
+            return grounding_text
         return images + [{"type": "text", "text": grounding_text}]
 
+    def _display_media_path(self, path: Path) -> str:
+        try:
+            relative = path.resolve().relative_to(self.workspace.resolve())
+        except ValueError:
+            return str(path)
+        return f"workspace/{relative.as_posix()}"
+
     @staticmethod
-    def _build_attachment_grounding_text(text: str, image_names: list[str]) -> str:
-        """Add clear grounding instructions when images are attached."""
-        normalized = (text or "").strip() or "Please analyze the attached image(s)."
-        file_list = ", ".join(image_names) if image_names else "unnamed image"
+    def _build_attachment_grounding_text(text: str, attachments: list[dict[str, str]]) -> str:
+        """Add clear grounding instructions when files are attached."""
+        normalized = (text or "").strip() or "Please analyze the attached file(s)."
+        image_count = sum(1 for item in attachments if item.get("kind") == "image")
+        file_lines = "\n".join(
+            f"- {item.get('name') or 'attachment'} at {item.get('path') or 'unknown path'}"
+            for item in attachments
+        )
+        instructions = [
+            f"The user attached {len(attachments)} file(s).",
+            "These files are available inside the workspace at the paths below.",
+            "Use the listed workspace paths if you need to inspect or process the files with tools.",
+        ]
+        if image_count:
+            instructions.append("For image attachments, base your answer primarily on the attached image content.")
+            instructions.append("Base your answer primarily on the attached image content.")
         return (
             "[Attachment Context]\n"
-            f"The user attached {len(image_names)} image(s): {file_list}.\n"
-            "Base your answer primarily on the attached image content.\n"
-            "If the image is unreadable or insufficient, say that explicitly instead of guessing.\n"
-            "Do not answer from unrelated prior conversation context when the attachment is the main source.\n\n"
+            + "\n".join(instructions)
+            + "\n"
+            + file_lines
+            + "\n"
+            + "If an attachment is unreadable or insufficient, say that explicitly instead of guessing.\n"
+            + "Do not answer from unrelated prior conversation context when the attachment is the main source.\n\n"
             "[User Message]\n"
-            f"{normalized}"
+            + normalized
         )
 
     def add_tool_result(

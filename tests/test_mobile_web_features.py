@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
 
+from unittest.mock import AsyncMock, patch
+
 from nanobot.admin.service import AdminService
 from nanobot.bus.events import OutboundMessage
 from nanobot.bus.queue import MessageBus
@@ -8,17 +10,23 @@ from nanobot.channels.softnix_app import SoftnixAppChannel
 from nanobot.session.manager import SessionManager
 
 
-def _make_mobile_service(tmp_path: Path, *, allow_from: list[str] | None = None) -> tuple[AdminService, Path]:
+def _make_mobile_service(
+    tmp_path: Path,
+    *,
+    allow_from: list[str] | None = None,
+    groq_api_key: str | None = None,
+) -> tuple[AdminService, Path]:
     workspace = tmp_path / "workspace"
     workspace.mkdir(parents=True)
+    config: dict[str, object] = {
+        "agents": {"defaults": {"workspace": str(workspace)}},
+        "channels": {"softnix_app": {"enabled": True, "allow_from": allow_from or ["mob-1"]}},
+    }
+    if groq_api_key:
+        config["providers"] = {"groq": {"api_key": groq_api_key}}
     config_path = tmp_path / "config.json"
     config_path.write_text(
-        json.dumps(
-            {
-                "agents": {"defaults": {"workspace": str(workspace)}},
-                "channels": {"softnix_app": {"enabled": True, "allow_from": allow_from or ["mob-1"]}},
-            }
-        ),
+        json.dumps(config),
         encoding="utf-8",
     )
     registry_path = tmp_path / "instances.json"
@@ -123,6 +131,32 @@ def test_relay_mobile_message_rejects_oversized_attachment(tmp_path: Path) -> No
         assert "maximum size" in str(exc)
     else:
         raise AssertionError("Expected oversized attachment to be rejected")
+
+
+def test_relay_mobile_message_appends_uploaded_audio_transcript_to_agent_text(tmp_path: Path) -> None:
+    service, workspace = _make_mobile_service(tmp_path, groq_api_key="groq-test-key")
+
+    with patch("nanobot.providers.transcription.GroqTranscriptionProvider.transcribe", new=AsyncMock(return_value="Meeting transcript line 1")):
+        service.relay_mobile_message(
+            "prod",
+            "mob-1",
+            "ช่วยสรุปการประชุม",
+            attachments=[
+                {
+                    "name": "meeting.m4a",
+                    "type": "audio/x-m4a",
+                    "data_base64": "ZmFrZS1hdWRpby1ieXRlcw==",
+                }
+            ],
+            accessible_instance_ids={"prod"},
+        )
+
+    inbound_path = workspace / "mobile_relay" / "inbound.jsonl"
+    payload = json.loads(inbound_path.read_text(encoding="utf-8").splitlines()[0])
+    assert payload["text"].startswith("ช่วยสรุปการประชุม")
+    assert "[Extracted Audio Transcript]" in payload["text"]
+    assert "Meeting transcript line 1" in payload["text"]
+    assert payload["attachments"][0]["name"] == "meeting.m4a"
 
 
 async def test_softnix_app_channel_preserves_progress_and_tool_messages(tmp_path: Path) -> None:

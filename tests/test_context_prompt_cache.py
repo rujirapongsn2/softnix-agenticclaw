@@ -113,3 +113,26 @@ def test_image_messages_include_attachment_grounding_text(tmp_path) -> None:
     assert "receipt.png" in merged_text
     assert "สรุปข้อมูลนี้ให้หน่อย" in merged_text
     assert "The metadata above is not the user's request." in merged_text
+
+
+def test_file_attachments_include_workspace_paths_in_grounding_text(tmp_path) -> None:
+    workspace = _make_workspace(tmp_path)
+    builder = ContextBuilder(workspace)
+    attachment = workspace / "mobile_relay" / "uploads" / "mob-1" / "notes.txt"
+    attachment.parent.mkdir(parents=True, exist_ok=True)
+    attachment.write_text("meeting notes", encoding="utf-8")
+
+    messages = builder.build_messages(
+        history=[],
+        current_message="ช่วยสรุปไฟล์นี้",
+        media=[str(attachment)],
+        channel="softnix_app",
+        chat_id="mobile-device",
+    )
+
+    user_content = messages[-1]["content"]
+    assert isinstance(user_content, str)
+    assert "[Attachment Context]" in user_content
+    assert "workspace/mobile_relay/uploads/mob-1/notes.txt" in user_content
+    assert "Use the listed workspace paths if you need to inspect or process the files with tools." in user_content
+    assert "ช่วยสรุปไฟล์นี้" in user_content
