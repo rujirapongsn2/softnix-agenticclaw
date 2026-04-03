@@ -867,6 +867,7 @@ function createProcessingGroupState(container) {
     answerSlot: null,
     toolMessages: [],
     isExpanded: false,
+    isSettled: false,
   };
 }
 
@@ -903,6 +904,9 @@ function ensureProcessingGroup(groupState) {
       spinner.classList.remove("is-visible");
       spinner.style.display = "none";
     }
+    if (!groupState.isSettled) {
+      groupState.isSettled = true;
+    }
     updateProcessingGroupLabel(groupState);
   });
 
@@ -930,6 +934,10 @@ function ensureProcessingGroup(groupState) {
 function updateProcessingGroupLabel(groupState) {
   if (!groupState.toggleLabel) return;
   const count = groupState.toolMessages.length;
+  if (!groupState.isSettled) {
+    groupState.toggleLabel.textContent = `Agent processing (${count} step${count === 1 ? "" : "s"}) `;
+    return;
+  }
   groupState.toggleLabel.textContent = groupState.isExpanded
     ? `${count} tool step${count === 1 ? "" : "s"}`
     : `${count} tool step${count === 1 ? "" : "s"} (tap to view)`;
@@ -951,7 +959,13 @@ function appendProcessingStep(groupState, message) {
   step.appendChild(time);
   groupState.content.appendChild(step);
   groupState.toolMessages.push(message);
+  groupState.isSettled = false;
   groupState.panel.classList.remove("is-expanded");
+  if (groupState.spinner) {
+    groupState.spinner.classList.add("is-visible");
+    groupState.spinner.style.display = "";
+    groupState.spinner.setAttribute("aria-hidden", "false");
+  }
   updateProcessingGroupLabel(groupState);
 }
 
@@ -967,8 +981,10 @@ function appendAgentAnswer(groupState, message) {
   showTypingIndicator(false);
   if (groupState.wrapper) {
     const answer = renderAssistantMessage(message);
+    groupState.isSettled = true;
     settleProcessingGroupSpinner(groupState);
     groupState.answerSlot.appendChild(answer);
+    updateProcessingGroupLabel(groupState);
     finalizeProcessingGroup(groupState);
     return;
   }
@@ -991,6 +1007,7 @@ function finalizeProcessingGroup(groupState) {
   groupState.answerSlot = null;
   groupState.toolMessages = [];
   groupState.isExpanded = false;
+  groupState.isSettled = false;
 }
 
 function normalizeAttachments(items) {
