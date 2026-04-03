@@ -124,6 +124,36 @@ def _read_git_commit_short(repo_root: Path) -> str:
     return result.stdout.strip()
 
 
+def _read_git_ref_short(repo_root: Path, ref: str) -> str:
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--short", ref],
+            cwd=str(repo_root),
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return ""
+    return result.stdout.strip()
+
+
+def _get_git_update_status(repo_root: Path) -> dict[str, str]:
+    current_commit = _read_git_commit_short(repo_root)
+    latest_commit = _read_git_ref_short(repo_root, "origin/main")
+    if not current_commit or not latest_commit:
+        update_status = "unknown"
+    elif current_commit == latest_commit:
+        update_status = "up_to_date"
+    else:
+        update_status = "needs_update"
+    return {
+        "current_commit": current_commit,
+        "latest_commit": latest_commit,
+        "update_status": update_status,
+    }
+
+
 def _mask_secret(value: str, keep: int = 4) -> str:
     if not value:
         return ""
@@ -351,6 +381,22 @@ def _safe_parse_ts(raw: str) -> float | None:
         return None
 
 
+def _parse_iso_datetime(value: Any, *, default_tz: timezone | None = None) -> datetime | None:
+    """Parse an ISO-ish timestamp into an aware datetime, or *None* on failure."""
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    if raw.endswith("Z"):
+        raw = f"{raw[:-1]}+00:00"
+    try:
+        dt = datetime.fromisoformat(raw)
+    except Exception:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=default_tz or timezone.utc)
+    return dt
+
+
 def _safe_skill_name(name: str) -> str:
     """Validate and return a safe skill directory name."""
     normalized = (name or "").strip().replace("\\", "/").strip("/")
@@ -514,11 +560,14 @@ class AdminService:
         instances = self.list_instances()
         warnings = sum(len(item["security"]["findings"]) for item in instances)
         repo_root = Path(__file__).resolve().parents[2]
+        git_status = _get_git_update_status(repo_root)
         return {
             "status": "ok",
             "service": "nanobot-admin",
             "version": __version__,
-            "commit": _read_git_commit_short(repo_root),
+            "commit": git_status["current_commit"],
+            "latest_commit": git_status["latest_commit"],
+            "update_status": git_status["update_status"],
             "mode": "safe-config",
             "instance_count": len(instances),
             "warning_count": warnings,
@@ -4191,6 +4240,11 @@ class AdminService:
             "Sun": [0] * 24,
         }
         day_names = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+        weekday_user_questions = self._aggregate_user_questions_by_weekday(
+            instances=instances,
+            start_date=start_date,
+            end_date=now,
+        )
 
         # Aggregate events
         for event in all_events:
@@ -4239,6 +4293,7 @@ class AdminService:
             "heatmap": heatmap,
             "total_events": sum(timeline.values()),
             "instance_count": len(instances),
+            "weekday_user_questions": weekday_user_questions,
         }
 
     def list_schedules(
@@ -6674,6 +6729,104 @@ class AdminService:
 
         events.sort(key=lambda event: _ts_sort_key(event.get("ts")), reverse=True)
         return events[:limit]
+
+    def _aggregate_user_questions_by_weekday(
+        self,
+        *,
+        instances: list[dict[str, Any]],
+        start_date: datetime,
+        end_date: datetime,
+    ) -> dict[str, Any]:
+        local_tz = datetime.now().astimezone().tzinfo or timezone.utc
+        day_names = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+        buckets: dict[str, list[int]] = {
+            str(instance.get("id") or ""): [0] * 7
+            for instance in instances
+            if str(instance.get("id") or "").strip()
+        }
+        names = {
+            str(instance.get("id") or ""): str(instance.get("name") or instance.get("id") or "").strip()
+            for instance in instances
+            if str(instance.get("id") or "").strip()
+        }
+        total_questions = 0
+
+        for instance in instances:
+            instance_id = str(instance.get("id") or "").strip()
+            if not instance_id:
+                continue
+            sessions_dir = Path(str(instance.get("workspace_path") or "")) / "sessions"
+            if not sessions_dir.exists() or not sessions_dir.is_dir():
+                continue
+            try:
+                session_files = sorted(
+                    sessions_dir.glob("*.jsonl"),
+                    key=lambda item: item.stat().st_mtime,
+                    reverse=True,
+                )
+            except Exception:
+                continue
+
+            for session_path in session_files:
+                try:
+                    stat = session_path.stat()
+                except Exception:
+                    continue
+                file_mtime = datetime.fromtimestamp(stat.st_mtime, tz=local_tz)
+                if file_mtime < start_date.astimezone(local_tz):
+                    continue
+                try:
+                    raw_lines = session_path.read_text(encoding="utf-8").splitlines()
+                except Exception:
+                    continue
+
+                fallback_ts = file_mtime.isoformat()
+                for raw in raw_lines:
+                    text = raw.strip()
+                    if not text:
+                        continue
+                    try:
+                        data = json.loads(text)
+                    except Exception:
+                        continue
+                    if not isinstance(data, dict) or data.get("_type") == "metadata":
+                        continue
+                    role = self._extract_event_role(data)
+                    if role != "user":
+                        continue
+                    content = self._extract_event_content(data, role=role)
+                    if not content or content == "(empty)":
+                        continue
+                    ts = self._extract_event_timestamp(data, fallback=fallback_ts)
+                    dt = _parse_iso_datetime(ts, default_tz=local_tz)
+                    if dt is None:
+                        continue
+                    dt_local = dt.astimezone(local_tz)
+                    if dt_local < start_date.astimezone(local_tz) or dt_local > end_date.astimezone(local_tz):
+                        continue
+                    buckets[instance_id][dt_local.weekday()] += 1
+                    total_questions += 1
+
+        series = []
+        for instance in instances:
+            instance_id = str(instance.get("id") or "").strip()
+            if not instance_id:
+                continue
+            counts = buckets.get(instance_id, [0] * 7)
+            series.append(
+                {
+                    "instance_id": instance_id,
+                    "instance_name": names.get(instance_id) or instance_id,
+                    "counts": counts,
+                    "total": sum(counts),
+                }
+            )
+
+        return {
+            "days": day_names,
+            "series": series,
+            "total_questions": total_questions,
+        }
 
     @staticmethod
     def _extract_event_timestamp(data: dict[str, Any], *, fallback: str | None = None) -> str | None:

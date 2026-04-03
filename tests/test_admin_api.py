@@ -5,6 +5,7 @@ import signal
 import subprocess
 import threading
 import zipfile
+from datetime import datetime, timedelta, timezone
 from http.client import HTTPConnection
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
@@ -81,6 +82,26 @@ def _start_admin_server(service: AdminService) -> tuple[object, threading.Thread
     return server, thread, int(server.server_address[1])
 
 
+def _write_session_jsonl(workspace: Path, session_key: str, rows: list[dict[str, object]]) -> None:
+    sessions_dir = workspace / "sessions"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+    session_path = sessions_dir / f"{session_key.replace(':', '_', 1)}.jsonl"
+    created_at = str(rows[0].get("timestamp") or rows[0].get("ts") or "2026-01-01T00:00:00+00:00")
+    updated_at = str(rows[-1].get("timestamp") or rows[-1].get("ts") or created_at)
+    payload = [
+        json.dumps(
+            {
+                "_type": "metadata",
+                "key": session_key,
+                "created_at": created_at,
+                "updated_at": updated_at,
+            }
+        ),
+        *[json.dumps(row) for row in rows],
+    ]
+    session_path.write_text("\n".join(payload) + "\n", encoding="utf-8")
+
+
 def test_admin_service_overview_collects_workspace_state(tmp_path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -144,6 +165,8 @@ def test_admin_service_health_includes_git_commit(tmp_path) -> None:
 
     assert health["commit"] == expected_commit
     assert health["service"] == "nanobot-admin"
+    assert health["latest_commit"] == expected_commit
+    assert health["update_status"] == "up_to_date"
 
 
 def test_admin_service_health_prefers_build_commit_env(tmp_path, monkeypatch) -> None:
@@ -160,6 +183,23 @@ def test_admin_service_health_prefers_build_commit_env(tmp_path, monkeypatch) ->
     health = service.get_health()
 
     assert health["commit"] == "deadbee"
+
+
+def test_admin_service_health_marks_outdated_build_commit(tmp_path, monkeypatch) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    config_path = tmp_path / "config.json"
+
+    config = Config()
+    config.agents.defaults.workspace = str(workspace)
+    save_config(config, config_path)
+
+    monkeypatch.setenv("SOFTNIX_BUILD_COMMIT", "deadbee")
+    service = AdminService(config_path=config_path)
+    health = service.get_health()
+
+    assert health["commit"] == "deadbee"
+    assert health["update_status"] == "needs_update"
 
 
 def test_admin_role_can_create_instances() -> None:
@@ -2200,6 +2240,75 @@ def test_admin_server_resolves_activity_debug_endpoint(tmp_path) -> None:
     assert payload["count"] >= 1
     assert isinstance(payload["instances"], list)
     assert payload["instances"][0]["session_files_seen"] >= 1
+
+
+def test_admin_server_resolves_activity_heatmap_with_weekday_instance_stacks(tmp_path) -> None:
+    first_workspace = tmp_path / "workspace-prod"
+    second_workspace = tmp_path / "workspace-staging"
+    first_workspace.mkdir()
+    second_workspace.mkdir()
+    first_config = tmp_path / "prod.json"
+    second_config = tmp_path / "staging.json"
+    registry_path = tmp_path / "instances.json"
+
+    config1 = Config()
+    config1.agents.defaults.workspace = str(first_workspace)
+    save_config(config1, first_config)
+
+    config2 = Config()
+    config2.agents.defaults.workspace = str(second_workspace)
+    save_config(config2, second_config)
+
+    registry_path.write_text(
+        json.dumps(
+            {
+                "instances": [
+                    {"id": "prod", "name": "Production", "config": str(first_config)},
+                    {"id": "staging", "name": "Staging", "config": str(second_config)},
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    now = datetime.now(timezone.utc).replace(hour=10, minute=0, second=0, microsecond=0)
+    monday = now - timedelta(days=now.weekday())
+    tuesday = monday + timedelta(days=1)
+    old_day = monday - timedelta(days=40)
+
+    _write_session_jsonl(
+        first_workspace,
+        "telegram:owner",
+        [
+          {"role": "user", "content": "prod monday", "timestamp": monday.isoformat()},
+          {"role": "assistant", "content": "reply monday", "timestamp": (monday + timedelta(minutes=1)).isoformat()},
+          {"role": "user", "content": "prod tuesday", "timestamp": tuesday.isoformat()},
+          {"role": "user", "content": "too old", "timestamp": old_day.isoformat()},
+        ],
+    )
+    _write_session_jsonl(
+        second_workspace,
+        "telegram:owner",
+        [
+          {"role": "user", "content": "staging monday", "timestamp": (monday + timedelta(hours=2)).isoformat()},
+          {"role": "assistant", "content": "staging reply", "timestamp": (monday + timedelta(hours=2, minutes=1)).isoformat()},
+        ],
+    )
+
+    service = AdminService(registry_path=registry_path)
+    status, payload = resolve_admin_get(service, "/admin/analytics/activity-heatmap?days=30")
+
+    assert status == HTTPStatus.OK
+    weekday = payload["weekday_user_questions"]
+    assert weekday["days"] == ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+    assert weekday["total_questions"] == 3
+
+    by_instance = {item["instance_id"]: item for item in weekday["series"]}
+    assert by_instance["prod"]["counts"][0] == 1
+    assert by_instance["prod"]["counts"][1] == 1
+    assert by_instance["prod"]["total"] == 2
+    assert by_instance["staging"]["counts"][0] == 1
+    assert by_instance["staging"]["total"] == 1
 
 
 def test_admin_server_resolves_runtime_audit_endpoint(tmp_path) -> None:

@@ -19,6 +19,7 @@ const state = {
   securityTab: "policy",
   securityPolicySection: "rules",
   activity: null,
+  activityAnalytics: null,
   health: null,
   auth: {
     initialized: false,
@@ -59,6 +60,7 @@ const state = {
   busyKey: "",
   liveInstanceFilter: "all",
   liveActivityVisibleCount: 20,
+  overviewWeekdayInstanceFilter: [],
   liveExpandedEvents: {},
   instanceCreateOpen: false,
   runtimeAudit: {
@@ -2017,45 +2019,183 @@ function renderOverviewDashboard() {
   `;
 }
 
+const OVERVIEW_ACTIVITY_SERIES_PALETTE = [
+  "#2e8fcc",
+  "#18a999",
+  "#f59e0b",
+  "#8b5cf6",
+  "#ef4444",
+  "#0f766e",
+  "#d97706",
+  "#2563eb",
+  "#be185d",
+  "#6b7280",
+];
+
+function colorForOverviewInstanceSeries(instanceId, index = 0) {
+  const raw = String(instanceId || "");
+  let hash = 0;
+  for (let i = 0; i < raw.length; i += 1) {
+    hash = ((hash << 5) - hash) + raw.charCodeAt(i);
+    hash |= 0;
+  }
+  const paletteIndex = Math.abs(hash || index) % OVERVIEW_ACTIVITY_SERIES_PALETTE.length;
+  return OVERVIEW_ACTIVITY_SERIES_PALETTE[paletteIndex];
+}
+
+function getSelectedOverviewWeekdayInstanceIds(series) {
+  const availableIds = new Set(series.map((item) => item.instance_id));
+  const selected = (state.overviewWeekdayInstanceFilter || []).filter((item) => availableIds.has(item));
+  return selected.length ? selected : series.map((item) => item.instance_id);
+}
+
+function toggleOverviewWeekdayInstanceFilter(instanceId, availableIds) {
+  const ids = availableIds.filter(Boolean);
+  if (!instanceId || instanceId === "all") {
+    state.overviewWeekdayInstanceFilter = [];
+    renderActivityHeatmap();
+    return;
+  }
+  if (!(ids || []).includes(instanceId)) return;
+  const current = state.overviewWeekdayInstanceFilter.length
+    ? new Set(state.overviewWeekdayInstanceFilter)
+    : new Set(ids);
+  if (!state.overviewWeekdayInstanceFilter.length) {
+    state.overviewWeekdayInstanceFilter = [instanceId];
+    renderActivityHeatmap();
+    return;
+  }
+  if (current.has(instanceId)) {
+    current.delete(instanceId);
+  } else {
+    current.add(instanceId);
+  }
+  const next = ids.filter((item) => current.has(item));
+  state.overviewWeekdayInstanceFilter = next.length === ids.length ? [] : next;
+  if (!state.overviewWeekdayInstanceFilter.length) {
+    state.overviewWeekdayInstanceFilter = [];
+  }
+  renderActivityHeatmap();
+}
+
 async function renderActivityHeatmap() {
   const target = document.getElementById("overview-activity-heatmap");
   if (!target) return;
 
   try {
-    const response = await fetch("/admin/analytics/activity-heatmap?days=30");
-    const data = await response.json();
+    if (!state.activityAnalytics) {
+      const response = await fetch("/admin/analytics/activity-heatmap?days=30");
+      state.activityAnalytics = await response.json();
+    }
+    const data = state.activityAnalytics || {};
 
     const heatmap = data.heatmap || {};
     const allCellValues = Object.values(heatmap).flat();
     const maxHeatmapValue = Math.max(1, ...allCellValues);
     const totalEvents = data.total_events || 0;
-
-    // --- Bar Chart (by day of week, aggregated from heatmap) ---
-    const days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
-    const dayTotals = days.map(day =>
-      (heatmap[day] || []).reduce((sum, v) => sum + v, 0)
-    );
-    const maxDayTotal = Math.max(1, ...dayTotals);
-
-    const barChartHtml = `
-      <div class="act-barchart">
-        <div class="act-barchart-bars">
-          ${days.map((day, i) => {
-            const count = dayTotals[i];
-            const pct = Math.round((count / maxDayTotal) * 100);
-            return `
-              <div class="act-barchart-col">
-                <div class="act-barchart-count">${count > 0 ? count : ""}</div>
-                <div class="act-barchart-track">
-                  <div class="act-barchart-bar" style="height:${pct}%" title="${day}: ${count} event${count !== 1 ? "s" : ""}"></div>
-                </div>
-                <div class="act-barchart-label">${day}</div>
+    const questionData = data.weekday_user_questions || { days: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"], series: [], total_questions: 0 };
+    const days = Array.isArray(questionData.days) && questionData.days.length === 7
+      ? questionData.days
+      : ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+    const series = (questionData.series || []).map((item, index) => ({
+      ...item,
+      color: colorForOverviewInstanceSeries(item.instance_id, index),
+      counts: Array.isArray(item.counts) ? item.counts.map((value) => Number(value || 0)) : [0, 0, 0, 0, 0, 0, 0],
+    }));
+    const availableInstanceIds = series.map((item) => item.instance_id);
+    const selectedIds = new Set(getSelectedOverviewWeekdayInstanceIds(series));
+    const filteredSeries = series.filter((item) => selectedIds.has(item.instance_id));
+    const stackedDayTotals = days.map((_, dayIndex) => (
+      filteredSeries.reduce((sum, item) => sum + Number(item.counts?.[dayIndex] || 0), 0)
+    ));
+    const maxStackedTotal = Math.max(1, ...stackedDayTotals);
+    const axisTicks = [maxStackedTotal, Math.round(maxStackedTotal * 0.66), Math.round(maxStackedTotal * 0.33), 0]
+      .filter((value, index, array) => array.indexOf(value) === index)
+      .sort((left, right) => right - left);
+    const barChartHtml = series.length
+      ? `
+        <div class="act-weekday-stack">
+          <div class="act-stack-toolbar">
+            <div>
+              <div class="act-title">User Questions by Weekday</div>
+              <div class="act-subtitle">Last ${data.days} days &middot; <strong>${formatNumber(questionData.total_questions || 0)}</strong> user questions</div>
+            </div>
+            <div class="act-filter-group" aria-label="Filter by instance">
+              <button
+                class="act-filter-chip${state.overviewWeekdayInstanceFilter.length ? "" : " is-active"}"
+                type="button"
+                data-activity-weekday-filter="all"
+              >
+                All instances
+              </button>
+              ${series.map((item) => `
+                <button
+                  class="act-filter-chip${selectedIds.has(item.instance_id) ? " is-active" : ""}"
+                  type="button"
+                  data-activity-weekday-filter="${escapeHtml(item.instance_id)}"
+                >
+                  <span class="act-filter-dot" style="background:${item.color}"></span>
+                  ${escapeHtml(item.instance_name)}
+                </button>
+              `).join("")}
+            </div>
+          </div>
+          <div class="act-stack-layout">
+            <div class="act-stack-axis">
+              ${axisTicks.map((tick) => `<span>${escapeHtml(formatNumber(tick))}</span>`).join("")}
+            </div>
+            <div class="act-stack-chart">
+              <div class="act-stack-grid">
+                ${axisTicks.map(() => `<div class="act-stack-gridline"></div>`).join("")}
               </div>
-            `;
-          }).join("")}
+              <div class="act-stack-bars">
+                ${days.map((day, dayIndex) => {
+                  const total = stackedDayTotals[dayIndex];
+                  const totalPct = Math.max(0, Math.min(100, (total / maxStackedTotal) * 100));
+                  const daySeries = filteredSeries
+                    .map((item) => ({
+                      instance_id: item.instance_id,
+                      instance_name: item.instance_name,
+                      color: item.color,
+                      count: Number(item.counts?.[dayIndex] || 0),
+                    }))
+                    .filter((item) => item.count > 0);
+                  const tooltip = daySeries.length
+                    ? `${day}: ${total} question${total !== 1 ? "s" : ""} · ${daySeries.map((item) => `${item.instance_name} ${item.count}`).join(", ")}`
+                    : `${day}: 0 questions`;
+                  return `
+                    <div class="act-stack-col">
+                      <div class="act-stack-value">${total > 0 ? escapeHtml(formatNumber(total)) : "&nbsp;"}</div>
+                      <div class="act-stack-bar-shell" title="${escapeHtml(tooltip)}">
+                        <div class="act-stack-bar-fill" style="height:${totalPct.toFixed(2)}%">
+                          ${daySeries.map((item) => `
+                            <div
+                              class="act-stack-segment"
+                              style="height:${((item.count / total) * 100).toFixed(2)}%; background:${item.color}"
+                              title="${escapeHtml(`${item.instance_name}: ${item.count} question${item.count !== 1 ? "s" : ""}`)}"
+                            ></div>
+                          `).join("")}
+                        </div>
+                      </div>
+                      <div class="act-stack-label">${escapeHtml(day)}</div>
+                    </div>
+                  `;
+                }).join("")}
+              </div>
+            </div>
+          </div>
+          <div class="act-stack-legend">
+            ${filteredSeries.map((item) => `
+              <div class="act-stack-legend-item">
+                <span class="act-filter-dot" style="background:${item.color}"></span>
+                <span>${escapeHtml(item.instance_name)}</span>
+                <strong>${escapeHtml(formatNumber(item.total || 0))}</strong>
+              </div>
+            `).join("")}
+          </div>
         </div>
-      </div>
-    `;
+      `
+      : `<div class="act-weekday-stack"><p class="meta">No user question activity yet.</p></div>`;
 
     // --- Heatmap ---
     const hourLabels = Array.from({length: 24}, (_, i) =>
@@ -2086,16 +2226,25 @@ async function renderActivityHeatmap() {
       <div class="item-card act-card">
         <div class="act-header">
           <div>
-            <div class="act-title">Activity by Day and Hour</div>
+            <div class="act-title">Activity Analytics</div>
             <div class="act-subtitle">Last ${data.days} days &middot; <strong>${formatNumber(totalEvents)}</strong> total events</div>
           </div>
         </div>
         <div class="act-divider"></div>
         ${barChartHtml}
         <div class="act-divider"></div>
+        <div class="act-header act-header-secondary">
+          <div>
+            <div class="act-title">Activity by Day and Hour</div>
+            <div class="act-subtitle">All events across accessible instances</div>
+          </div>
+        </div>
         ${heatmapHtml}
       </div>
     `;
+    target.querySelectorAll("[data-activity-weekday-filter]").forEach((button) => {
+      button.addEventListener("click", () => toggleOverviewWeekdayInstanceFilter(button.dataset.activityWeekdayFilter, availableInstanceIds));
+    });
   } catch (error) {
     target.innerHTML = `<div class="item-card"><p class="meta">Failed to load activity data.</p></div>`;
   }
@@ -7787,7 +7936,41 @@ function setHealth() {
   healthPill.className = "health-pill";
   const sidebarCommit = document.getElementById("sidebar-commit-hash");
   if (sidebarCommit) {
-    sidebarCommit.textContent = health.commit ? health.commit : "commit unavailable";
+    const commit = health.commit ? health.commit : "commit unavailable";
+    const updateStatus = String(health.update_status || "");
+    const isUpToDate = updateStatus === "up_to_date";
+    const isNeedsUpdate = updateStatus === "needs_update";
+    sidebarCommit.textContent = health.commit
+      ? `${isUpToDate ? "✓" : isNeedsUpdate ? "⚠" : "•"} ${isUpToDate ? "up to date" : isNeedsUpdate ? "need to update" : "status unknown"} · ${commit}`
+      : "commit unavailable";
+    sidebarCommit.title = health.commit
+      ? (health.latest_commit
+          ? `Current: ${health.commit}${health.latest_commit ? ` | Latest: ${health.latest_commit}` : ""}`
+          : `Current: ${health.commit}`)
+      : "Latest update unavailable";
+    sidebarCommit.classList.toggle("is-up-to-date", isUpToDate);
+    sidebarCommit.classList.toggle("is-needs-update", isNeedsUpdate);
+    sidebarCommit.classList.toggle("is-unknown", !isUpToDate && !isNeedsUpdate);
+  }
+}
+
+async function refreshLatestUpdateStatus() {
+  const sidebarCommit = document.getElementById("sidebar-commit-hash");
+  if (sidebarCommit instanceof HTMLButtonElement) {
+    sidebarCommit.disabled = true;
+    sidebarCommit.dataset.previousLabel = sidebarCommit.textContent || "";
+    sidebarCommit.textContent = "Checking…";
+  }
+  try {
+    const health = await fetchJson("/admin/health");
+    state.health = health;
+    setHealth();
+  } catch (error) {
+    setBanner(`Unable to refresh latest update: ${error.message}`, "error");
+  } finally {
+    if (sidebarCommit instanceof HTMLButtonElement) {
+      sidebarCommit.disabled = false;
+    }
   }
 }
 
@@ -7866,12 +8049,16 @@ async function loadDashboard() {
       await loadGlobalPolicy({ force: true, silent: true });
     }
     state.activity = activity;
+    state.activityAnalytics = null;
     state.liveActivityVisibleCount = 20;
     state.accessRequests = accessRequests;
     state.overviewRuntimeAuditByInstance = Object.fromEntries(runtimeAuditEntries);
     if (state.liveInstanceFilter !== "all" && !state.overview.instances.some((instance) => instance.id === state.liveInstanceFilter)) {
       state.liveInstanceFilter = "all";
     }
+    state.overviewWeekdayInstanceFilter = (state.overviewWeekdayInstanceFilter || []).filter((instanceId) => (
+      state.overview.instances || []
+    ).some((instance) => instance.id === instanceId));
     if (state.selectedInstanceId && !state.overview.instances.some((instance) => instance.id === state.selectedInstanceId)) {
       state.selectedInstanceId = "";
       state.deleteCandidateId = "";
@@ -8990,6 +9177,7 @@ async function initializeApp() {
   restoreLocationState();
   bindScheduleActionHandlers();
   await loadAuthState();
+  document.getElementById("sidebar-commit-hash")?.addEventListener("click", () => void refreshLatestUpdateStatus());
   switchView(state.auth.authenticated ? state.currentView : "overview");
   if (state.auth.authenticated) {
     await loadDashboard();
