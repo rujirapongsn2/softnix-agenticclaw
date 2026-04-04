@@ -1,7 +1,7 @@
 "use strict";
 
 const POLL_INTERVAL_MS = 2000;
-const MAX_ATTACHMENT_BYTES = 15 * 1024 * 1024;
+const MAX_ATTACHMENT_BYTES = 50 * 1024 * 1024;
 const MESSAGE_FOLLOW_THRESHOLD_PX = 96;
 const SIDEBAR_STORAGE_KEY = "softnix.web-chat.sidebarCollapsed";
 let pollTimer = null;
@@ -1684,7 +1684,7 @@ async function sendMessage() {
   renderComposerMeta();
   updateSendButton();
   try {
-    const serializedAttachments = await serializeAttachments(pendingAttachments);
+    const uploadedAttachments = await uploadAttachments(pendingAttachments);
     const response = await fetch("/admin/web-chat/message", {
       method: "POST",
       credentials: "same-origin",
@@ -1696,7 +1696,7 @@ async function sendMessage() {
         text,
         message_id: message.messageId,
         session_id: message.sessionId,
-        attachments: serializedAttachments,
+        attachments: uploadedAttachments,
       }),
     });
     const payload = await response.json().catch(() => ({}));
@@ -1921,26 +1921,27 @@ function releaseSelectedAttachments(items = selectedAttachments) {
   (Array.isArray(items) ? items : []).forEach((item) => releaseAttachmentPreview(item));
 }
 
-async function serializeAttachments(items) {
-  return Promise.all((Array.isArray(items) ? items : []).map(async (item) => ({
-    name: item.file.name,
-    type: item.file.type || "application/octet-stream",
-    size: item.file.size,
-    data_base64: await fileToBase64(item.file),
-  })));
-}
-
-function fileToBase64(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      const result = String(reader.result || "");
-      const marker = result.indexOf(",");
-      resolve(marker >= 0 ? result.slice(marker + 1) : result);
-    };
-    reader.onerror = () => reject(reader.error || new Error("Failed to read file"));
-    reader.readAsDataURL(file);
+async function uploadAttachments(items) {
+  if (!Array.isArray(items) || items.length === 0) return [];
+  const formData = new FormData();
+  items.forEach((item) => {
+    if (item?.file instanceof File) {
+      formData.append("files", item.file, item.file.name);
+    }
   });
+  const response = await fetch("/admin/web-chat/upload", {
+    method: "POST",
+    credentials: "same-origin",
+    headers: {
+      "X-CSRF-Token": state.session.csrf_token,
+    },
+    body: formData,
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(payload.error || `Unable to upload attachments (${response.status})`);
+  }
+  return Array.isArray(payload.attachments) ? payload.attachments : [];
 }
 
 function removeMessage(messageId) {

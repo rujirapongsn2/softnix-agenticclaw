@@ -288,6 +288,80 @@ def test_relay_web_chat_message_persists_attachment_payloads(tmp_path: Path) -> 
     assert saved_path.read_text(encoding="utf-8") == "hello web"
 
 
+def test_web_chat_upload_stores_attachment_and_relays_by_reference(tmp_path: Path) -> None:
+    service, workspace = _make_mobile_service(tmp_path)
+    service.auth_store.upsert_mobile_device("prod", "mob-1", "Tester", device_token="mobtok-1")
+    login = service.create_web_chat_login()
+    service.approve_web_chat_login(
+        login_ticket=login["login_ticket"],
+        device=service.auth_store.get_mobile_device("prod", "mob-1") or {},
+        active_session_id="mobile-mob-1",
+        accessible_instance_ids={"prod"},
+    )
+    exchanged = service.exchange_web_chat_login(login_ticket=login["login_ticket"])
+
+    upload = service.upload_web_chat_attachments(
+        web_session_id=exchanged["session"]["id"],
+        files=[
+            {
+                "name": "meeting-notes.txt",
+                "type": "text/plain",
+                "payload": b"notes from web upload",
+            }
+        ],
+    )
+
+    assert upload["attachment_count"] == 1
+    attachment = upload["attachments"][0]
+    assert attachment["url"].startswith("/admin/mobile/media?instance_id=prod")
+    assert attachment["file_name"]
+
+    result = service.relay_web_chat_message(
+        web_session_id=exchanged["session"]["id"],
+        text="ช่วยสรุปไฟล์นี้",
+        chat_session_id="mobile-mob-1",
+        message_id="msg-desktop-upload-1",
+        attachments=[attachment],
+    )
+
+    assert result["attachment_count"] == 1
+    inbound_path = workspace / "mobile_relay" / "inbound.jsonl"
+    payload = json.loads(inbound_path.read_text(encoding="utf-8").splitlines()[0])
+    assert payload["attachments"][0]["stored_name"] == attachment["file_name"]
+    saved_path = Path(payload["media"][0])
+    assert saved_path.read_text(encoding="utf-8") == "notes from web upload"
+
+
+def test_web_chat_upload_enforces_larger_dedicated_limit(tmp_path: Path) -> None:
+    service, _workspace = _make_mobile_service(tmp_path)
+    service.max_web_chat_attachment_bytes = 8
+    service.auth_store.upsert_mobile_device("prod", "mob-1", "Tester", device_token="mobtok-1")
+    login = service.create_web_chat_login()
+    service.approve_web_chat_login(
+        login_ticket=login["login_ticket"],
+        device=service.auth_store.get_mobile_device("prod", "mob-1") or {},
+        active_session_id="mobile-mob-1",
+        accessible_instance_ids={"prod"},
+    )
+    exchanged = service.exchange_web_chat_login(login_ticket=login["login_ticket"])
+
+    try:
+        service.upload_web_chat_attachments(
+            web_session_id=exchanged["session"]["id"],
+            files=[
+                {
+                    "name": "too-big.txt",
+                    "type": "text/plain",
+                    "payload": b"123456789",
+                }
+            ],
+        )
+    except ValueError as exc:
+        assert "maximum size" in str(exc)
+    else:
+        raise AssertionError("Expected oversized web chat attachment to be rejected")
+
+
 async def test_mobile_chat_bootstrap_uses_event_log_and_after_cursor(tmp_path: Path) -> None:
     class _Config:
         allow_from = ["*"]

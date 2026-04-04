@@ -473,6 +473,7 @@ class InstanceTarget:
 class AdminService:
     """Collect operational data and safe config updates for the admin API."""
     max_mobile_attachment_bytes = 15 * 1024 * 1024
+    max_web_chat_attachment_bytes = 50 * 1024 * 1024
 
     def __init__(
         self,
@@ -1387,34 +1388,62 @@ class AdminService:
         target: InstanceTarget,
         sender_id: str,
         attachments: list[dict[str, Any]] | None,
+        max_attachment_bytes: int | None = None,
     ) -> tuple[list[str], list[dict[str, Any]]]:
         if not attachments:
             return [], []
         saved_paths: list[str] = []
         saved_meta: list[dict[str, Any]] = []
         upload_dir = self._mobile_upload_dir(target, sender_id)
+        limit_bytes = int(max_attachment_bytes or self.max_mobile_attachment_bytes)
 
         for index, item in enumerate(attachments):
             if not isinstance(item, dict):
                 continue
             name = self._safe_filename(str(item.get("name") or f"attachment-{index + 1}"))
+            stored_name = self._safe_filename(str(item.get("stored_name") or item.get("file_name") or ""))
             encoded = str(item.get("data_base64") or "").strip()
+            mime = str(
+                item.get("type")
+                or item.get("mime_type")
+                or item.get("mimeType")
+                or mimetypes.guess_type(name)[0]
+                or "application/octet-stream"
+            )
+            if stored_name and not encoded:
+                dest = (upload_dir / stored_name).resolve()
+                try:
+                    dest.relative_to(upload_dir.resolve())
+                except ValueError as exc:
+                    raise ValueError(f"Attachment '{name}' references an invalid stored file") from exc
+                if not dest.exists() or not dest.is_file():
+                    raise ValueError(f"Attachment '{name}' was not uploaded successfully")
+                size = dest.stat().st_size
+                if size > limit_bytes:
+                    raise ValueError(f"Attachment '{name}' exceeds the maximum size of {limit_bytes} bytes")
+                saved_paths.append(str(dest))
+                saved_meta.append(
+                    {
+                        "name": name,
+                        "stored_name": stored_name,
+                        "mime_type": mime,
+                        "size": size,
+                    }
+                )
+                continue
             if not encoded:
                 continue
             try:
                 payload = base64.b64decode(encoded, validate=True)
             except (ValueError, binascii.Error) as exc:
                 raise ValueError(f"Attachment #{index + 1} is not valid base64") from exc
-            if len(payload) > self.max_mobile_attachment_bytes:
-                raise ValueError(
-                    f"Attachment '{name}' exceeds the maximum size of {self.max_mobile_attachment_bytes} bytes"
-                )
+            if len(payload) > limit_bytes:
+                raise ValueError(f"Attachment '{name}' exceeds the maximum size of {limit_bytes} bytes")
             stem = Path(name).stem or f"attachment-{index + 1}"
             suffix = Path(name).suffix
             stored_name = f"{int(time.time() * 1000)}-{secrets.token_hex(4)}-{self._safe_filename(stem)}{suffix}"
             dest = upload_dir / stored_name
             dest.write_bytes(payload)
-            mime = str(item.get("type") or mimetypes.guess_type(name)[0] or "application/octet-stream")
             saved_paths.append(str(dest))
             saved_meta.append(
                 {
@@ -1425,6 +1454,70 @@ class AdminService:
                 }
             )
         return saved_paths, saved_meta
+
+    @staticmethod
+    def _build_mobile_attachment_response_item(
+        *,
+        instance_id: str,
+        sender_id: str,
+        item: dict[str, Any],
+    ) -> dict[str, Any]:
+        return {
+            **item,
+            "file_name": item.get("stored_name"),
+            "sender_id": sender_id,
+            "url": (
+                f"/admin/mobile/media?instance_id={instance_id}"
+                f"&sender_id={sender_id}&file={item['stored_name']}"
+            ),
+        }
+
+    def upload_web_chat_attachments(
+        self,
+        *,
+        web_session_id: str,
+        files: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        context = self.get_authenticated_web_chat_session(session_id=web_session_id)
+        if context is None:
+            raise PermissionError("Web chat session is not authenticated")
+        instance_id = str(context["device"]["instance_id"] or "").strip()
+        device_id = str(context["device"]["device_id"] or "").strip()
+        target = self._get_target(instance_id)
+
+        attachments: list[dict[str, Any]] = []
+        for index, item in enumerate(files):
+            if not isinstance(item, dict):
+                continue
+            name = self._safe_filename(str(item.get("name") or f"attachment-{index + 1}"))
+            payload = item.get("payload")
+            if not isinstance(payload, (bytes, bytearray)):
+                continue
+            mime_type = str(item.get("type") or mimetypes.guess_type(name)[0] or "application/octet-stream")
+            encoded = base64.b64encode(bytes(payload)).decode("ascii")
+            _, saved_meta = self._save_mobile_attachments(
+                target=target,
+                sender_id=device_id,
+                attachments=[{"name": name, "type": mime_type, "data_base64": encoded}],
+                max_attachment_bytes=self.max_web_chat_attachment_bytes,
+            )
+            if not saved_meta:
+                continue
+            attachments.append(
+                self._build_mobile_attachment_response_item(
+                    instance_id=instance_id,
+                    sender_id=device_id,
+                    item=saved_meta[0],
+                )
+            )
+
+        return {
+            "status": "uploaded",
+            "instance_id": instance_id,
+            "attachment_count": len(attachments),
+            "attachments": attachments,
+            "max_attachment_bytes": self.max_web_chat_attachment_bytes,
+        }
 
     @staticmethod
     def _is_audio_attachment(path: Path, mime_type: str) -> bool:
@@ -1573,6 +1666,7 @@ class AdminService:
         thread_root_id: str | None = None,
         attachments: list[dict[str, Any]] | None = None,
         accessible_instance_ids: set[str] | list[str] | tuple[str, ...] | None = None,
+        max_attachment_bytes: int | None = None,
     ) -> dict[str, Any]:
         """Relay a message from a mobile app to a specific instance via file-based queue."""
         target = next((t for t in self._load_targets() if t.id == instance_id), None)
@@ -1586,6 +1680,7 @@ class AdminService:
             target=target,
             sender_id=sender_id,
             attachments=attachments,
+            max_attachment_bytes=max_attachment_bytes,
         )
         transcript_blocks = self._build_audio_attachment_transcripts(
             target=target,
@@ -1616,14 +1711,11 @@ class AdminService:
             f.write(json.dumps(data) + "\n")
 
         response_attachments = [
-            {
-                **item,
-                "sender_id": sender_id,
-                "url": (
-                    f"/admin/mobile/media?instance_id={instance_id}"
-                    f"&sender_id={sender_id}&file={item['stored_name']}"
-                ),
-            }
+            self._build_mobile_attachment_response_item(
+                instance_id=instance_id,
+                sender_id=sender_id,
+                item=item,
+            )
             for item in attachment_meta
         ]
         self._append_mobile_chat_event(
@@ -1681,6 +1773,7 @@ class AdminService:
             thread_root_id=thread_root_id,
             attachments=attachments,
             accessible_instance_ids={instance_id},
+            max_attachment_bytes=self.max_web_chat_attachment_bytes,
         )
 
     def get_mobile_replies(

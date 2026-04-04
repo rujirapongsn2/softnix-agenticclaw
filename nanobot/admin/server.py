@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import threading
 import time
+from email.parser import BytesParser
+from email.policy import default as email_policy
 from http import HTTPStatus
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -27,6 +29,7 @@ WEB_CHAT_RATE_LIMITS: dict[str, tuple[int, int]] = {
     "/admin/web-chat/login/init": (12, 300),
     "/admin/web-chat/login/status": (120, 300),
     "/admin/web-chat/login/exchange": (24, 300),
+    "/admin/web-chat/upload": (120, 300),
     "/admin/mobile/web-login/approve": (30, 300),
 }
 
@@ -1516,6 +1519,8 @@ def create_admin_server(host: str, port: int, service: AdminService) -> Threadin
             try:
                 if self._redirect_public_http():
                     return
+                if self._handle_web_chat_upload():
+                    return
                 payload = self._read_json_body()
                 if payload is None:
                     return self._send_json({"error": "Invalid JSON body"}, status=HTTPStatus.BAD_REQUEST)
@@ -1800,6 +1805,75 @@ def create_admin_server(host: str, port: int, service: AdminService) -> Threadin
                 self._send_json(result, status=HTTPStatus.OK)
                 return True
             return False
+
+        def _handle_web_chat_upload(self) -> bool:
+            parsed = urlparse(self.path)
+            path = parsed.path.rstrip("/") or "/"
+            if path != "/admin/web-chat/upload":
+                return False
+            if not self._enforce_web_chat_rate_limit(path):
+                return True
+            context = self._web_chat_context()
+            if context is None:
+                self._send_json({"error": "Authentication required"}, status=HTTPStatus.UNAUTHORIZED)
+                return True
+            if not self._validate_web_chat_csrf(context):
+                return True
+            content_type = str(self.headers.get("Content-Type") or "")
+            if "multipart/form-data" not in content_type.lower():
+                self._send_json({"error": "multipart/form-data is required"}, status=HTTPStatus.BAD_REQUEST)
+                return True
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+            except ValueError:
+                self._send_json({"error": "Invalid Content-Length"}, status=HTTPStatus.BAD_REQUEST)
+                return True
+            try:
+                raw = self.rfile.read(length) if length > 0 else b""
+                message = BytesParser(policy=email_policy).parsebytes(
+                    (
+                        f"Content-Type: {content_type}\r\n"
+                        "MIME-Version: 1.0\r\n\r\n"
+                    ).encode("utf-8")
+                    + raw
+                )
+            except Exception:
+                self._send_json({"error": "Invalid multipart body"}, status=HTTPStatus.BAD_REQUEST)
+                return True
+            if not message.is_multipart():
+                self._send_json({"error": "Invalid multipart body"}, status=HTTPStatus.BAD_REQUEST)
+                return True
+            files: list[dict[str, Any]] = []
+            for field in message.iter_parts():
+                if field.get_content_disposition() != "form-data":
+                    continue
+                field_name = str(field.get_param("name", header="content-disposition") or "").strip()
+                if field_name != "files":
+                    continue
+                filename = str(field.get_filename() or "").strip()
+                if not filename:
+                    continue
+                payload = field.get_payload(decode=True) or b""
+                files.append(
+                    {
+                        "name": filename,
+                        "type": str(field.get_content_type() or ""),
+                        "payload": payload,
+                    }
+                )
+            if not files:
+                self._send_json({"error": "files are required"}, status=HTTPStatus.BAD_REQUEST)
+                return True
+            try:
+                result = service.upload_web_chat_attachments(
+                    web_session_id=str(context["session"]["id"] or ""),
+                    files=files,
+                )
+            except (PermissionError, ValueError) as exc:
+                self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+                return True
+            self._send_json(result, status=HTTPStatus.OK)
+            return True
 
         def _enforce_web_chat_rate_limit(self, bucket: str) -> bool:
             rule = WEB_CHAT_RATE_LIMITS.get(str(bucket or "").strip())
