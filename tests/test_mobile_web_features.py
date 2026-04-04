@@ -48,6 +48,120 @@ def _make_mobile_service(
     return AdminService(registry_path=registry_path), workspace
 
 
+def test_mobile_push_scan_persists_offsets_across_admin_restart(tmp_path: Path) -> None:
+    softnix_home = tmp_path / ".softnix"
+    admin_dir = softnix_home / "admin"
+    instance_home = softnix_home / "instances" / "prod"
+    workspace = instance_home / "workspace"
+    workspace.mkdir(parents=True, exist_ok=True)
+
+    config_path = instance_home / "config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "agents": {"defaults": {"workspace": str(workspace)}},
+                "channels": {"softnix_app": {"enabled": True, "allow_from": ["mob-1"]}},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    registry_path = admin_dir / "instances.json"
+    registry_path.parent.mkdir(parents=True, exist_ok=True)
+    registry_path.write_text(
+        json.dumps(
+            {
+                "instances": [
+                    {
+                        "id": "prod",
+                        "name": "Production",
+                        "config": str(config_path),
+                        "workspace": str(workspace),
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    outbound_path = workspace / "mobile_relay" / "outbound.jsonl"
+    outbound_path.parent.mkdir(parents=True, exist_ok=True)
+    outbound_path.write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "message_id": "mobr-answer-1",
+                        "text": "first reply",
+                        "type": "answer",
+                        "sender_id": "mob-1",
+                        "session_id": "mobile-mob-1",
+                        "timestamp": "2026-04-04T00:00:00+00:00",
+                    }
+                ),
+                json.dumps(
+                    {
+                        "message_id": "mobr-answer-2",
+                        "text": "second reply",
+                        "type": "answer",
+                        "sender_id": "mob-1",
+                        "session_id": "mobile-mob-1",
+                        "timestamp": "2026-04-04T00:00:01+00:00",
+                    }
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    with patch.object(AdminService, "_start_mobile_push_worker", lambda self: None):
+        service = AdminService(registry_path=registry_path)
+    first_dispatches: list[tuple[str, str]] = []
+    service._mobile_push_supported = lambda: True
+    service._dispatch_mobile_push = lambda instance_id, payload: first_dispatches.append(
+        (instance_id, str(payload.get("message_id") or ""))
+    )
+
+    service._scan_mobile_push_events()
+
+    assert first_dispatches == [
+        ("prod", "mobr-answer-1"),
+        ("prod", "mobr-answer-2"),
+    ]
+
+    with patch.object(AdminService, "_start_mobile_push_worker", lambda self: None):
+        restarted_service = AdminService(registry_path=registry_path)
+    restarted_dispatches: list[tuple[str, str]] = []
+    restarted_service._mobile_push_supported = lambda: True
+    restarted_service._dispatch_mobile_push = lambda instance_id, payload: restarted_dispatches.append(
+        (instance_id, str(payload.get("message_id") or ""))
+    )
+
+    restarted_service._scan_mobile_push_events()
+
+    assert restarted_dispatches == []
+
+    with outbound_path.open("a", encoding="utf-8") as handle:
+        handle.write(
+            json.dumps(
+                {
+                    "message_id": "mobr-answer-3",
+                    "text": "third reply",
+                    "type": "answer",
+                    "sender_id": "mob-1",
+                    "session_id": "mobile-mob-1",
+                    "timestamp": "2026-04-04T00:00:02+00:00",
+                }
+            )
+            + "\n"
+        )
+
+    restarted_service._scan_mobile_push_events()
+
+    assert restarted_dispatches == [("prod", "mobr-answer-3")]
+
+
 def test_relay_mobile_message_persists_thread_and_attachments(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir(parents=True)

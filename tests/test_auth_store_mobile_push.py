@@ -30,6 +30,24 @@ def test_mobile_push_subscription_round_trip(tmp_path: Path) -> None:
     assert store.list_mobile_push_subscriptions("demo", "mob-1") == []
 
 
+def test_mobile_push_offsets_round_trip(tmp_path: Path) -> None:
+    store = AdminAuthStore(tmp_path)
+
+    saved = store.save_mobile_push_offsets(
+        {
+            "/tmp/one/outbound.jsonl": 128,
+            "/tmp/two/outbound.jsonl": -5,
+            "": 9,
+        }
+    )
+
+    assert saved == {
+        "/tmp/one/outbound.jsonl": 128,
+        "/tmp/two/outbound.jsonl": 0,
+    }
+    assert store.get_mobile_push_offsets() == saved
+
+
 def test_mobile_transfer_token_round_trip(tmp_path: Path) -> None:
     store = AdminAuthStore(tmp_path)
     store.create_mobile_transfer_token(

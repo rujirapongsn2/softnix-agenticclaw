@@ -552,6 +552,10 @@ class AdminAuthStore:
         return self.security_dir / "mobile_push_subscriptions.json"
 
     @property
+    def mobile_push_offsets_path(self) -> Path:
+        return self.security_dir / "mobile_push_offsets.json"
+
+    @property
     def mobile_transfer_tokens_path(self) -> Path:
         return self.security_dir / "mobile_transfer_tokens.json"
 
@@ -818,6 +822,43 @@ class AdminAuthStore:
             payload["subscriptions"] = next_subscriptions
             self._save_json(self.mobile_push_subscriptions_path, payload)
         return changed
+
+    def get_mobile_push_offsets(self) -> dict[str, int]:
+        payload = self._load_json(self.mobile_push_offsets_path, {"offsets": {}})
+        raw_offsets = payload.get("offsets")
+        if not isinstance(raw_offsets, dict):
+            return {}
+        offsets: dict[str, int] = {}
+        for key, value in raw_offsets.items():
+            normalized_key = str(key or "").strip()
+            if not normalized_key:
+                continue
+            try:
+                normalized_offset = int(value)
+            except Exception:
+                continue
+            offsets[normalized_key] = max(normalized_offset, 0)
+        return offsets
+
+    def save_mobile_push_offsets(self, offsets: dict[str, int]) -> dict[str, int]:
+        cleaned: dict[str, int] = {}
+        for key, value in (offsets or {}).items():
+            normalized_key = str(key or "").strip()
+            if not normalized_key:
+                continue
+            try:
+                normalized_offset = int(value)
+            except Exception:
+                continue
+            cleaned[normalized_key] = max(normalized_offset, 0)
+        self._save_json(
+            self.mobile_push_offsets_path,
+            {
+                "offsets": cleaned,
+                "updated_at": iso_now(),
+            },
+        )
+        return cleaned
 
     def create_mobile_transfer_token(self, *, token: str, payload: dict[str, Any], expires_at: str) -> None:
         store = self._load_json(self.mobile_transfer_tokens_path, {"tokens": []})

@@ -486,7 +486,7 @@ class AdminService:
         self.workspace_override = _expand_path(workspace)
         self.registry_path = registry_path
         self.auth_store = self._create_auth_store()
-        self._mobile_push_offsets: dict[str, int] = {}
+        self._mobile_push_offsets: dict[str, int] = self.auth_store.get_mobile_push_offsets()
         self._mobile_push_stop = threading.Event()
         self._mobile_push_worker: threading.Thread | None = None
         self._sync_workspace_identities()
@@ -1288,6 +1288,12 @@ class AdminService:
         )
         self._mobile_push_worker.start()
 
+    def _persist_mobile_push_offsets(self) -> None:
+        try:
+            self._mobile_push_offsets = self.auth_store.save_mobile_push_offsets(self._mobile_push_offsets)
+        except Exception as exc:
+            logger.debug("Failed to persist mobile push offsets: {}", exc)
+
     def _mobile_push_loop(self) -> None:
         while not self._mobile_push_stop.wait(2.0):
             try:
@@ -1298,30 +1304,48 @@ class AdminService:
     def _scan_mobile_push_events(self) -> None:
         if not self._mobile_push_supported():
             return
-        for target in self._load_targets():
-            outbound_file = self._mobile_relay_dir(target) / "outbound.jsonl"
-            offset_key = str(outbound_file.resolve())
-            if not outbound_file.exists():
-                self._mobile_push_offsets[offset_key] = 0
-                continue
-            size = outbound_file.stat().st_size
-            offset = self._mobile_push_offsets.get(offset_key, 0)
-            if size < offset:
-                offset = 0
-            if size == offset:
-                continue
-            with outbound_file.open("r", encoding="utf-8") as handle:
-                handle.seek(offset)
-                lines = handle.readlines()
-                self._mobile_push_offsets[offset_key] = handle.tell()
-            for line in lines:
-                if not line.strip():
+        offsets_dirty = False
+        try:
+            for target in self._load_targets():
+                outbound_file = self._mobile_relay_dir(target) / "outbound.jsonl"
+                offset_key = str(outbound_file.resolve())
+                if not outbound_file.exists():
+                    if offset_key in self._mobile_push_offsets:
+                        self._mobile_push_offsets.pop(offset_key, None)
+                        offsets_dirty = True
                     continue
-                try:
-                    payload = json.loads(line)
-                except Exception:
+
+                size = outbound_file.stat().st_size
+                stored_offset = max(int(self._mobile_push_offsets.get(offset_key, 0) or 0), 0)
+                offset = stored_offset
+                if size < offset:
+                    offset = 0
+                if offset != stored_offset:
+                    self._mobile_push_offsets[offset_key] = offset
+                    offsets_dirty = True
+                if size == offset:
                     continue
-                self._dispatch_mobile_push(target.id, payload)
+
+                with outbound_file.open("r", encoding="utf-8") as handle:
+                    handle.seek(offset)
+                    lines = handle.readlines()
+                    next_offset = handle.tell()
+
+                if next_offset != int(self._mobile_push_offsets.get(offset_key, 0) or 0):
+                    self._mobile_push_offsets[offset_key] = next_offset
+                    offsets_dirty = True
+
+                for line in lines:
+                    if not line.strip():
+                        continue
+                    try:
+                        payload = json.loads(line)
+                    except Exception:
+                        continue
+                    self._dispatch_mobile_push(target.id, payload)
+        finally:
+            if offsets_dirty:
+                self._persist_mobile_push_offsets()
 
     def _dispatch_mobile_push(self, instance_id: str, payload: dict[str, Any]) -> None:
         sender_id = self._normalize_mobile_sender_identity(
