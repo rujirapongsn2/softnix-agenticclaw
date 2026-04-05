@@ -936,6 +936,31 @@ textarea {
   text-overflow: initial;
 }
 
+.live-snapshot-controls {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
+.live-snapshot-rate {
+  appearance: none;
+  border: 1px solid rgba(16, 35, 50, 0.1);
+  background: rgba(16, 35, 50, 0.04);
+  color: var(--muted);
+  border-radius: 999px;
+  padding: 6px 10px;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.live-snapshot-rate.is-active {
+  background: rgba(21, 108, 134, 0.14);
+  border-color: rgba(21, 108, 134, 0.26);
+  color: var(--text);
+}
+
 .message.user .attachment-meta span {
   color: rgba(255, 255, 255, 0.72);
 }

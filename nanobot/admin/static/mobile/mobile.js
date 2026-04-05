@@ -5,6 +5,8 @@ const STORAGE_KEY = "softnix_mobile_v1";
 const POLL_INTERVAL_MS = 2000;
 const APPROVAL_STATUS_POLL_MS = 4000;
 const MAX_ATTACHMENT_BYTES = 15 * 1024 * 1024;
+const LIVE_SNAPSHOT_REFRESH_MS = 5000;
+const LIVE_SNAPSHOT_RATE_STORAGE_KEY = "softnix.mobile.liveSnapshotRefreshMs";
 const REPLY_CONTEXT_WINDOW = 4;
 const MAX_STORED_MESSAGES = 200;
 const THEME_MODES = ["system", "light", "dark"];
@@ -572,6 +574,7 @@ function normalizeAttachments(items, senderId = null) {
         const querySenderId = mediaSenderId || device.device_id;
         url = `/admin/mobile/media?instance_id=${encodeURIComponent(device.instance_id)}&sender_id=${encodeURIComponent(querySenderId)}&file=${encodeURIComponent(fileName)}${device.device_token ? `&mobile_token=${encodeURIComponent(device.device_token)}` : ""}`;
       }
+      const sourceUrl = item.source_url || item.sourceUrl || "";
       return {
         name: item.name || fileName,
         fileName,
@@ -580,9 +583,91 @@ function normalizeAttachments(items, senderId = null) {
         kind: item.kind || attachmentKind(mimeType, fileName),
         url,
         previewUrl: item.previewUrl || url,
+        senderId: mediaSenderId,
+        sourceUrl,
+        isLiveSnapshot: mediaSenderId === "rtsp"
+          || /^rtsp(s)?:\/\//i.test(String(sourceUrl || ""))
+          || /[?&]sender_id=rtsp(?:&|$)/i.test(String(url || "")),
         duration: Number(item.duration || item.audio_duration || 0) || 0,
       };
     });
+}
+
+function withCacheBuster(url) {
+  const raw = String(url || "");
+  if (!raw) return "";
+  const separator = raw.includes("?") ? "&" : "?";
+  return `${raw}${separator}_ts=${Date.now()}`;
+}
+
+function getLiveSnapshotRefreshMs() {
+  const stored = Number(window.localStorage?.getItem(LIVE_SNAPSHOT_RATE_STORAGE_KEY) || LIVE_SNAPSHOT_REFRESH_MS);
+  return [1000, 5000, 10000].includes(stored) ? stored : LIVE_SNAPSHOT_REFRESH_MS;
+}
+
+function setLiveSnapshotRefreshMs(value) {
+  const normalized = [1000, 5000, 10000].includes(Number(value)) ? Number(value) : LIVE_SNAPSHOT_REFRESH_MS;
+  window.localStorage?.setItem(LIVE_SNAPSHOT_RATE_STORAGE_KEY, String(normalized));
+  return normalized;
+}
+
+function createLiveSnapshotControls(attachment, onRateChange) {
+  const controls = document.createElement("div");
+  controls.className = "live-snapshot-controls";
+  [1000, 5000, 10000].forEach((value) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "live-snapshot-rate";
+    button.dataset.refreshMs = String(value);
+    button.textContent = `${value / 1000}s`;
+    if (value === getLiveSnapshotRefreshMs()) {
+      button.classList.add("is-active");
+    }
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      controls.querySelectorAll(".live-snapshot-rate").forEach((item) => item.classList.remove("is-active"));
+      button.classList.add("is-active");
+      attachment.refreshMs = setLiveSnapshotRefreshMs(value);
+      onRateChange(attachment.refreshMs);
+    });
+    controls.appendChild(button);
+  });
+  return controls;
+}
+
+function attachLiveSnapshotRefresh(target, attachment, updateHref = null) {
+  if (!(target instanceof HTMLImageElement) || !attachment?.isLiveSnapshot) return null;
+  const baseUrl = attachment.url || attachment.previewUrl || "";
+  if (!baseUrl) return null;
+  let refreshTimer = null;
+  const startTimer = (intervalMs) => {
+    if (refreshTimer) {
+      window.clearInterval(refreshTimer);
+    }
+    refreshTimer = window.setInterval(refresh, intervalMs);
+  };
+  const refresh = () => {
+    if (!target.isConnected) {
+      if (refreshTimer) {
+        window.clearInterval(refreshTimer);
+      }
+      return;
+    }
+    if (document.hidden) return;
+    const nextUrl = withCacheBuster(baseUrl);
+    target.src = nextUrl;
+    attachment.previewUrl = nextUrl;
+    if (typeof updateHref === "function") {
+      updateHref(nextUrl);
+    }
+  };
+  startTimer(Number(attachment.refreshMs || getLiveSnapshotRefreshMs()));
+  return {
+    setIntervalMs(value) {
+      startTimer(Number(value) || getLiveSnapshotRefreshMs());
+    },
+  };
 }
 
 function hydrateMessageAttachments(message) {
@@ -966,6 +1051,16 @@ function createAttachmentList(attachments) {
         image.classList.add("msg-attachment-image--logo");
       }
       link.appendChild(image);
+      const liveSnapshotController = attachLiveSnapshotRefresh(image, attachment, (nextUrl) => {
+        link.href = nextUrl;
+      });
+      if (attachment.isLiveSnapshot && liveSnapshotController) {
+        wrapper.appendChild(
+          createLiveSnapshotControls(attachment, (value) => {
+            liveSnapshotController.setIntervalMs(value);
+          }),
+        );
+      }
     } else {
       const icon = document.createElement("span");
       icon.className = "msg-attachment-icon";

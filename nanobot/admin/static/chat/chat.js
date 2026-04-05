@@ -2,8 +2,10 @@
 
 const POLL_INTERVAL_MS = 2000;
 const MAX_ATTACHMENT_BYTES = 50 * 1024 * 1024;
+const LIVE_SNAPSHOT_REFRESH_MS = 5000;
 const MESSAGE_FOLLOW_THRESHOLD_PX = 96;
 const SIDEBAR_STORAGE_KEY = "softnix.web-chat.sidebarCollapsed";
+const LIVE_SNAPSHOT_RATE_STORAGE_KEY = "softnix.web-chat.liveSnapshotRefreshMs";
 let pollTimer = null;
 let loginTimer = null;
 let loginExpiryTimer = null;
@@ -1023,6 +1025,7 @@ function normalizeAttachments(items) {
       if ((looksLikeLocalPath || !url) && state.device?.instance_id && senderId) {
         url = `/admin/mobile/media?instance_id=${encodeURIComponent(state.device.instance_id)}&sender_id=${encodeURIComponent(senderId)}&file=${encodeURIComponent(fileName)}`;
       }
+      const sourceUrl = item?.source_url || item?.sourceUrl || "";
       return {
         name: item?.name || fileName,
         fileName,
@@ -1031,10 +1034,91 @@ function normalizeAttachments(items) {
         previewUrl: item?.previewUrl || url,
         url,
         senderId,
+        sourceUrl,
+        isLiveSnapshot: senderId === "rtsp"
+          || /^rtsp(s)?:\/\//i.test(String(sourceUrl || ""))
+          || /[?&]sender_id=rtsp(?:&|$)/i.test(String(url || "")),
         duration: Number(item?.duration || item?.audio_duration || 0) || 0,
         kind: item?.kind || inferAttachmentKind(mimeType, fileName),
       };
     });
+}
+
+function withCacheBuster(url) {
+  const raw = String(url || "");
+  if (!raw) return "";
+  const separator = raw.includes("?") ? "&" : "?";
+  return `${raw}${separator}_ts=${Date.now()}`;
+}
+
+function getLiveSnapshotRefreshMs() {
+  const stored = Number(window.localStorage?.getItem(LIVE_SNAPSHOT_RATE_STORAGE_KEY) || LIVE_SNAPSHOT_REFRESH_MS);
+  return [1000, 5000, 10000].includes(stored) ? stored : LIVE_SNAPSHOT_REFRESH_MS;
+}
+
+function setLiveSnapshotRefreshMs(value) {
+  const normalized = [1000, 5000, 10000].includes(Number(value)) ? Number(value) : LIVE_SNAPSHOT_REFRESH_MS;
+  window.localStorage?.setItem(LIVE_SNAPSHOT_RATE_STORAGE_KEY, String(normalized));
+  return normalized;
+}
+
+function createLiveSnapshotControls(attachment, onRateChange) {
+  const controls = document.createElement("div");
+  controls.className = "live-snapshot-controls";
+  [1000, 5000, 10000].forEach((value) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "live-snapshot-rate";
+    button.dataset.refreshMs = String(value);
+    button.textContent = `${value / 1000}s`;
+    if (value === getLiveSnapshotRefreshMs()) {
+      button.classList.add("is-active");
+    }
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      controls.querySelectorAll(".live-snapshot-rate").forEach((item) => item.classList.remove("is-active"));
+      button.classList.add("is-active");
+      attachment.refreshMs = setLiveSnapshotRefreshMs(value);
+      onRateChange(attachment.refreshMs);
+    });
+    controls.appendChild(button);
+  });
+  return controls;
+}
+
+function attachLiveSnapshotRefresh(target, attachment, updateHref = null) {
+  if (!(target instanceof HTMLImageElement) || !attachment?.isLiveSnapshot) return null;
+  const baseUrl = attachment.url || attachment.previewUrl || "";
+  if (!baseUrl) return null;
+  let refreshTimer = null;
+  const startTimer = (intervalMs) => {
+    if (refreshTimer) {
+      window.clearInterval(refreshTimer);
+    }
+    refreshTimer = window.setInterval(refresh, intervalMs);
+  };
+  const refresh = () => {
+    if (!target.isConnected) {
+      if (refreshTimer) {
+        window.clearInterval(refreshTimer);
+      }
+      return;
+    }
+    if (document.hidden) return;
+    const nextUrl = withCacheBuster(baseUrl);
+    target.src = nextUrl;
+    attachment.previewUrl = nextUrl;
+    if (typeof updateHref === "function") {
+      updateHref(nextUrl);
+    }
+  };
+  startTimer(Number(attachment.refreshMs || getLiveSnapshotRefreshMs()));
+  return {
+    setIntervalMs(value) {
+      startTimer(Number(value) || getLiveSnapshotRefreshMs());
+    },
+  };
 }
 
 function renderAttachmentList(attachments) {
@@ -1077,6 +1161,20 @@ function createAttachmentCard(attachment) {
       image.classList.add("attachment-image--logo");
     }
     element.appendChild(image);
+    const liveSnapshotController = attachLiveSnapshotRefresh(
+      image,
+      attachment,
+      typeof element.href === "string" ? (nextUrl) => {
+        element.href = nextUrl;
+      } : null,
+    );
+    if (attachment.isLiveSnapshot && liveSnapshotController) {
+      element.appendChild(
+        createLiveSnapshotControls(attachment, (value) => {
+          liveSnapshotController.setIntervalMs(value);
+        }),
+      );
+    }
   } else {
     const icon = document.createElement("span");
     icon.className = `attachment-icon${attachment.kind === "audio" ? " attachment-icon--audio" : ""}`;

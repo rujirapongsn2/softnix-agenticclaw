@@ -866,6 +866,33 @@ async def test_softnix_app_channel_supports_remote_image_urls(tmp_path: Path) ->
     assert not (workspace / "mobile_relay" / "outbound_media" / "mob-12").exists()
 
 
+async def test_softnix_app_channel_maps_rtsp_urls_to_snapshot_media(tmp_path: Path) -> None:
+    class _Config:
+        allow_from = ["*"]
+
+    workspace = tmp_path / "workspace"
+    channel = SoftnixAppChannel(_Config(), MessageBus(), workspace)
+
+    await channel.send(
+        OutboundMessage(
+            channel="softnix_app",
+            chat_id="mobile-mob-15",
+            content="กล้องสด rtsp://camera.local/live/stream",
+            metadata={"sender_id": "mob-15"},
+        )
+    )
+
+    outbound_path = workspace / "mobile_relay" / "outbound.jsonl"
+    payload = json.loads(outbound_path.read_text(encoding="utf-8").splitlines()[0])
+    attachment = payload["attachments"][0]
+    assert attachment["kind"] == "image"
+    assert attachment["mime_type"] == "image/jpeg"
+    assert attachment["url"].startswith("/admin/mobile/media?instance_id=workspace&sender_id=rtsp&file=")
+    mapping_path = workspace / "mobile_relay" / "rtsp_sources.json"
+    mapping = json.loads(mapping_path.read_text(encoding="utf-8"))
+    assert attachment["file_name"] in mapping["sources"]
+
+
 async def test_softnix_app_channel_extracts_sender_id_from_mobile_session_id(tmp_path: Path) -> None:
     class _Config:
         allow_from = ["*"]

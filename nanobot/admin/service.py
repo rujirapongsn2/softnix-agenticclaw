@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import hashlib
 import io
 import json
 import hmac
@@ -474,6 +475,7 @@ class AdminService:
     """Collect operational data and safe config updates for the admin API."""
     max_mobile_attachment_bytes = 15 * 1024 * 1024
     max_web_chat_attachment_bytes = 50 * 1024 * 1024
+    rtsp_snapshot_cache_seconds = 5
 
     def __init__(
         self,
@@ -1907,6 +1909,76 @@ class AdminService:
             pass
         return None
 
+    @staticmethod
+    def _validate_rtsp_url(value: str) -> str:
+        raw = str(value or "").strip()
+        parsed = urlparse(raw)
+        if parsed.scheme not in {"rtsp", "rtsps"} or not parsed.netloc:
+            raise ValueError("rtsp_url must use rtsp:// or rtsps://")
+        return raw
+
+    def _rtsp_sources_path(self, target: InstanceTarget) -> Path:
+        return self._mobile_relay_dir(target) / "rtsp_sources.json"
+
+    def _lookup_rtsp_source(self, target: InstanceTarget, file_name: str) -> str | None:
+        path = self._rtsp_sources_path(target)
+        if not path.exists():
+            return None
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return None
+        sources = payload.get("sources")
+        if not isinstance(sources, dict):
+            return None
+        record = sources.get(file_name)
+        if isinstance(record, dict):
+            return str(record.get("url") or "").strip() or None
+        if isinstance(record, str):
+            return str(record).strip() or None
+        return None
+
+    def _capture_rtsp_snapshot(self, *, rtsp_url: str, output_path: Path) -> None:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        result = subprocess.run(
+            [
+                "ffmpeg",
+                "-y",
+                "-rtsp_transport",
+                "tcp",
+                "-i",
+                rtsp_url,
+                "-frames:v",
+                "1",
+                "-q:v",
+                "2",
+                str(output_path),
+            ],
+            capture_output=True,
+            timeout=20,
+        )
+        if result.returncode != 0 or not output_path.exists():
+            stderr = result.stderr.decode("utf-8", errors="ignore").strip()[:300]
+            raise ValueError(f"Unable to capture RTSP snapshot{': ' + stderr if stderr else ''}")
+
+    def _ensure_rtsp_snapshot_file(self, *, target: InstanceTarget, file_name: str) -> Path:
+        rtsp_url = self._lookup_rtsp_source(target, file_name)
+        if not rtsp_url:
+            raise ValueError("RTSP snapshot source not found")
+        rtsp_url = self._validate_rtsp_url(rtsp_url)
+        digest = hashlib.sha256(rtsp_url.encode("utf-8")).hexdigest()[:24]
+        expected_file_name = f"{digest}.jpg"
+        if file_name != expected_file_name:
+            raise ValueError("RTSP snapshot file is invalid")
+        snapshot_dir = self._mobile_upload_dir(target, "rtsp")
+        snapshot_path = snapshot_dir / expected_file_name
+        if snapshot_path.exists():
+            age_seconds = max(0.0, time.time() - snapshot_path.stat().st_mtime)
+            if age_seconds <= float(self.rtsp_snapshot_cache_seconds):
+                return snapshot_path
+        self._capture_rtsp_snapshot(rtsp_url=rtsp_url, output_path=snapshot_path)
+        return snapshot_path
+
     # MIME types that iOS Safari can play natively
     _IOS_PLAYABLE_AUDIO = {"audio/mpeg", "audio/mp4", "audio/aac", "audio/wav", "audio/flac", "audio/x-m4a"}
 
@@ -1976,6 +2048,18 @@ class AdminService:
                     },
                 )
                 return candidate, content_type
+        if safe_sender == "rtsp":
+            snapshot_path = self._ensure_rtsp_snapshot_file(target=target, file_name=safe_name)
+            logger.info(
+                "mobile.media.lookup.rtsp {}",
+                {
+                    "instance_id": instance_id,
+                    "file": file_name,
+                    "resolved_path": str(snapshot_path),
+                    "content_type": "image/jpeg",
+                },
+            )
+            return snapshot_path, "image/jpeg"
         logger.warning(
             "mobile.media.lookup.miss {}",
             {

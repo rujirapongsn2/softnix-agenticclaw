@@ -1903,6 +1903,31 @@ body {
   opacity: 0.7;
 }
 
+.live-snapshot-controls {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
+.live-snapshot-rate {
+  appearance: none;
+  border: 1px solid var(--border);
+  background: rgba(255,255,255,0.08);
+  color: var(--fg-secondary);
+  border-radius: 999px;
+  padding: 6px 10px;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.live-snapshot-rate.is-active {
+  background: linear-gradient(135deg, rgba(var(--accent-soft-rgb), 0.22), rgba(var(--accent-soft-rgb), 0.12));
+  border-color: rgba(var(--accent-soft-rgb), 0.32);
+  color: var(--fg);
+}
+
 /* ── HTML Table in Messages ─────────────────── */
 .msg-table-wrap {
   margin: 10px -4px;

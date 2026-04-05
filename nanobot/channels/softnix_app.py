@@ -1,6 +1,7 @@
 """Native Softnix Mobile App channel implementation with file-based relay."""
 
 import asyncio
+import hashlib
 import json
 import mimetypes
 import os
@@ -10,7 +11,7 @@ import secrets
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 from loguru import logger
 
@@ -283,7 +284,7 @@ class SoftnixAppChannel(BaseChannel):
             handle.write(json.dumps(event, ensure_ascii=False) + "\n")
 
     _INLINE_MEDIA_PATH_PATTERN = re.compile(
-        r"(?P<path>(?:https?://[^\s`\"'<>|)]+|sandbox:/[^\s`\"'<>|)]+|file://[^\s`\"'<>|)]+|(?:[A-Za-z]:[\\/]|/|\.{1,2}[\\/]|workspace[\\/])?[^\s`\"'<>|]+\.(?:png|jpg|jpeg|gif|webp|svg|bmp|avif|mp3|wav|m4a|ogg|aac|flac|webm|mp4|mov|m4v)))",
+        r"(?P<path>(?:(?:https?|rtsp|rtsps)://[^\s`\"'<>|)]+|sandbox:/[^\s`\"'<>|)]+|file://[^\s`\"'<>|)]+|(?:[A-Za-z]:[\\/]|/|\.{1,2}[\\/]|workspace[\\/])?[^\s`\"'<>|]+\.(?:png|jpg|jpeg|gif|webp|svg|bmp|avif|mp3|wav|m4a|ogg|aac|flac|webm|mp4|mov|m4v)))",
         re.IGNORECASE,
     )
     _MARKDOWN_IMAGE_PATTERN = re.compile(r"!\[[^\]]*\]\((?P<url>https?://[^)\s]+)\)", re.IGNORECASE)
@@ -291,6 +292,30 @@ class SoftnixAppChannel(BaseChannel):
     _SUPPORTED_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp", ".avif"}
     _SUPPORTED_AUDIO_EXTS = {".mp3", ".wav", ".m4a", ".ogg", ".aac", ".flac", ".webm"}
     _SUPPORTED_VIDEO_EXTS = {".mp4", ".mov", ".m4v", ".webm"}
+
+    def _rtsp_sources_path(self) -> Path:
+        return self.relay_dir / "rtsp_sources.json"
+
+    def _register_rtsp_source(self, media_url: str) -> str:
+        digest = hashlib.sha256(str(media_url or "").strip().encode("utf-8")).hexdigest()[:24]
+        file_name = f"{digest}.jpg"
+        path = self._rtsp_sources_path()
+        payload: dict[str, Any] = {"sources": {}}
+        if path.exists():
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except Exception:
+                payload = {"sources": {}}
+        sources = payload.get("sources")
+        if not isinstance(sources, dict):
+            sources = {}
+        sources[file_name] = {
+            "url": str(media_url or "").strip(),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        payload["sources"] = sources
+        path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        return file_name
 
     @classmethod
     def _infer_media_kind(cls, ref: str, mime_type: str) -> str:
@@ -321,10 +346,31 @@ class SoftnixAppChannel(BaseChannel):
             "url": media_url,
         }
 
+    def _rtsp_media_ref(self, media_url: str) -> dict[str, Any] | None:
+        parsed = urlparse(str(media_url or "").strip())
+        if parsed.scheme not in {"rtsp", "rtsps"} or not parsed.netloc:
+            return None
+        file_name = self._register_rtsp_source(media_url)
+        display_name = Path(parsed.path).name or "rtsp-snapshot.jpg"
+        return {
+            "name": display_name,
+            "file_name": file_name,
+            "mime_type": "image/jpeg",
+            "size": 0,
+            "kind": "image",
+            "url": (
+                f"/admin/mobile/media?instance_id={quote(self.instance_id, safe='')}"
+                f"&sender_id=rtsp&file={quote(file_name, safe='')}"
+            ),
+            "source_url": media_url,
+        }
+
     def _media_ref(self, sender_id: str, media_ref: str) -> dict[str, Any] | None:
         parsed = urlparse(str(media_ref or "").strip())
         if parsed.scheme in {"http", "https"}:
             return self._remote_media_ref(media_ref)
+        if parsed.scheme in {"rtsp", "rtsps"}:
+            return self._rtsp_media_ref(media_ref)
         return self._relay_media_ref(sender_id, media_ref)
 
     @classmethod
@@ -333,7 +379,9 @@ class SoftnixAppChannel(BaseChannel):
         if not raw:
             return False
         parsed = urlparse(raw)
-        if parsed.scheme in {"http", "https", "sandbox", "file"}:
+        if parsed.scheme in {"http", "https", "rtsp", "rtsps", "sandbox", "file"}:
+            if parsed.scheme in {"rtsp", "rtsps"}:
+                return True
             suffix = Path(parsed.path).suffix.lower()
         else:
             suffix = Path(raw).suffix.lower()
@@ -357,7 +405,7 @@ class SoftnixAppChannel(BaseChannel):
             if not raw_path:
                 continue
             parsed = urlparse(raw_path)
-            if parsed.scheme in {"http", "https"} and parsed.netloc:
+            if parsed.scheme in {"http", "https", "rtsp", "rtsps"} and parsed.netloc:
                 matches.append(raw_path)
                 continue
             if parsed.scheme in {"sandbox", "file"}:

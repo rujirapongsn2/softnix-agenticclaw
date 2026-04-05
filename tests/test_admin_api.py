@@ -294,6 +294,44 @@ def test_admin_service_transcribes_mobile_audio(tmp_path) -> None:
     assert result["name"] == "voice.webm"
 
 
+def test_admin_service_get_mobile_media_file_generates_rtsp_snapshot(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    config_path = tmp_path / "config.json"
+
+    config = Config()
+    config.agents.defaults.workspace = str(workspace)
+    save_config(config, config_path)
+
+    service = AdminService(config_path=config_path)
+    instance_id = service.list_instances()[0]["id"]
+    rtsp_url = "rtsp://camera.local/live/stream"
+    digest = __import__("hashlib").sha256(rtsp_url.encode("utf-8")).hexdigest()[:24]
+    mapping_path = workspace / "mobile_relay" / "rtsp_sources.json"
+    mapping_path.parent.mkdir(parents=True, exist_ok=True)
+    mapping_path.write_text(
+        json.dumps({"sources": {f"{digest}.jpg": {"url": rtsp_url}}}),
+        encoding="utf-8",
+    )
+
+    def _fake_run(*args, **kwargs):  # noqa: ANN002, ANN003
+        output_path = Path(args[0][-1])
+        output_path.write_bytes(b"jpeg-bytes")
+        return subprocess.CompletedProcess(args=args[0], returncode=0, stdout=b"", stderr=b"")
+
+    with patch("subprocess.run", side_effect=_fake_run):
+        path, content_type = service.get_mobile_media_file(
+            instance_id,
+            "rtsp",
+            f"{digest}.jpg",
+            accessible_instance_ids={instance_id},
+        )
+
+    assert content_type == "image/jpeg"
+    assert path.exists()
+    assert path.read_bytes() == b"jpeg-bytes"
+
+
 def test_admin_server_resolves_mobile_transcribe_route(tmp_path) -> None:
     class DummyService:
         def transcribe_mobile_audio(self, **kwargs):  # noqa: ANN003
