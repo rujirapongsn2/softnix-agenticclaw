@@ -42,7 +42,12 @@ class MessageTool(Tool):
 
     @property
     def description(self) -> str:
-        return "Send a message to the user. Use this when you want to communicate something."
+        return (
+            "Send a message to the user. Use this for user-visible replies. "
+            "When attaching media, prefer local files for real attachments. "
+            "On softnix_app, RTSP/RTSPS URLs may be passed directly so the channel can "
+            "generate a snapshot attachment; do not rewrite live streams to generic HTTP/HLS links."
+        )
 
     @property
     def parameters(self) -> dict[str, Any]:
@@ -64,7 +69,12 @@ class MessageTool(Tool):
                 "media": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Optional: list of local file paths or HTTP(S) URLs to attach (images, audio, video, documents)"
+                    "description": (
+                        "Optional: list of media references to attach. Prefer local file paths "
+                        "for actual attachments. HTTP(S) URLs are forwarded as remote links when "
+                        "the channel supports them. On softnix_app, RTSP/RTSPS URLs can be passed "
+                        "directly to request a generated snapshot attachment."
+                    ),
                 }
             },
             "required": ["content"]
