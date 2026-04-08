@@ -916,7 +916,7 @@ async function deleteJson(path, payload) {
 
 function summarizeCommandResult(result) {
   const detail = result.stderr || result.stdout || "Command completed.";
-  return `Instance '${result.instance.name}' ${result.action}: ${result.ok ? "ok" : "failed"}. ${detail}`;
+  return `Claw '${result.instance.name}' ${result.action}: ${result.ok ? "ok" : "failed"}. ${detail}`;
 }
 
 function setBanner(message, type = "warning") {
@@ -1034,7 +1034,7 @@ function renderAuthPanel() {
         <div>
           <p class="eyebrow">First-time Setup</p>
           <h2>Bootstrap owner account</h2>
-          <p class="meta">Create the first owner for this Softnix Admin Console.</p>
+          <p class="meta">Create the first owner for this Claw Control workspace.</p>
         </div>
         <div class="field">
           <label for="bootstrap-display-name">Display name</label>
@@ -1065,8 +1065,8 @@ function renderAuthPanel() {
   target.innerHTML = `
     <div class="stack">
       <div>
-        <p class="eyebrow">Authentication</p>
-        <h2>Sign in to Softnix Admin</h2>
+        <p class="eyebrow">Softnix Claw Control Plane</p>
+        <h2>Sign in to Claw Control</h2>
         <p class="meta">Use your username or email and password.</p>
       </div>
       <div class="field">
@@ -1321,15 +1321,15 @@ function renderUserModal() {
       </div>
       `}
       <div class="field">
-        <label>Instance access</label>
+        <label>Claw access</label>
         <div class="user-instance-scope-toggle">
           <label class="user-instance-scope-option">
             <input type="radio" name="modal-user-instance-scope" value="all" ${scopeMode === "all" ? "checked" : ""}>
-            <span>All accessible instances</span>
+            <span>All accessible claws</span>
           </label>
           <label class="user-instance-scope-option">
             <input type="radio" name="modal-user-instance-scope" value="selected" ${scopeMode === "selected" ? "checked" : ""}>
-            <span>Selected instances</span>
+            <span>Selected claws</span>
           </label>
         </div>
         <div class="user-instance-scope-list" id="modal-user-instance-list">
@@ -1351,10 +1351,10 @@ function renderUserModal() {
                     </label>
                   `)
                   .join("")
-              : `<p class="meta">No instances are available to assign.</p>`
+              : `<p class="meta">No claws are available to assign.</p>`
           }
         </div>
-        <p class="meta">Selected instances limit what the user can see and manage after login.</p>
+        <p class="meta">Selected claws limit what the user can see and manage after login.</p>
       </div>
       ${isEdit ? `
       <div class="field">
@@ -1861,14 +1861,14 @@ function renderSummary() {
     .reduce((total, entry) => total + Number(entry?.events?.filter((event) => event.status === "error").length || 0), 0);
   const metrics = [
     {
-      label: "Number of Instances",
+      label: "Number of Claws",
       value: formatNumber(summary.instance_count),
-      note: "Managed instances",
+      note: "Managed claws",
     },
     {
       label: "Sessions",
       value: formatNumber(summary.session_count),
-      note: "Sessions across all instances",
+      note: "Sessions across all claws",
     },
     {
       label: "Operations",
@@ -1962,7 +1962,7 @@ function renderOverviewDashboard() {
   instanceTarget.innerHTML = `
     <div class="overview-instance-panels">
       <div class="item-card">
-        <h4>Sessions by Instance</h4>
+        <h4>Sessions by Claw</h4>
         <div class="overview-hbars">
           ${instances.map((instance) => `
             <div class="overview-hbar-row">
@@ -1986,7 +1986,7 @@ function renderOverviewDashboard() {
         </div>
       </div>
       <div class="item-card">
-        <h4>Success Rate by Instance</h4>
+        <h4>Success Rate by Claw</h4>
         <div class="overview-stacked-list">
           ${instanceHealthRows.map((row) => `
             <div class="overview-stack-row">
@@ -2312,16 +2312,16 @@ function renderInstances() {
 
   target.innerHTML = `
     <div class="instance-toolbar">
-      <div class="table-primary">${escapeHtml(state.overview.instances.length)} instances</div>
+      <div class="table-primary">${escapeHtml(state.overview.instances.length)} claws</div>
       <div class="inline-actions">
-        <button id="instance-create-shortcut" class="primary-button is-small" ${!canCreateInstance ? "disabled" : ""}>Add Instance</button>
+        <button id="instance-create-shortcut" class="primary-button is-small" ${!canCreateInstance ? "disabled" : ""}>Add Claw</button>
       </div>
     </div>
     <div class="table-wrap">
       <table class="instances-table">
         <thead>
           <tr>
-            <th>Instance</th>
+            <th>Claw</th>
             <th>Status</th>
             <th>Provider</th>
             <th>Sessions</th>
@@ -2330,7 +2330,7 @@ function renderInstances() {
             <th>Actions</th>
           </tr>
         </thead>
-        <tbody>${rows || `<tr><td colspan="7" class="table-empty">No instances registered yet.</td></tr>`}</tbody>
+        <tbody>${rows || `<tr><td colspan="7" class="table-empty">No claws registered yet.</td></tr>`}</tbody>
       </table>
     </div>
   `;
@@ -2362,10 +2362,10 @@ function renderInstanceWorkspace() {
   }
   if (title) {
     title.textContent = selected
-      ? `${selected.name} (instance_id: ${selected.id})`
+      ? `${selected.name} (claw_id: ${selected.id})`
       : editor.mode === "create" && state.instanceCreateOpen
-        ? "Create New Instance"
-        : "No instance selected";
+        ? "Create New Claw"
+        : "No claw selected";
   }
   renderInstanceWorkspaceTabs();
   syncInstanceWorkspacePanels();
@@ -5244,7 +5244,7 @@ function renderInstanceForm() {
     ? state.overview.instances.some((instance) => instance.id === derived.instanceId)
     : false;
   const busy = state.busyKey === "instance-form" ? "disabled" : "";
-  const modeLabel = editor.mode === "edit" ? `Edit ${editor.targetId}` : "Create New Instance";
+  const modeLabel = editor.mode === "edit" ? `Edit ${editor.targetId}` : "Create New Claw";
   const showSandboxConfig = editor.runtimeMode === "sandbox" || editor.sandboxExecutionStrategy === "tool_ephemeral";
   const runtimeCustom = isCustomRuntimeConfig(editor);
   const showRuntimeOverrideControls = editor.mode === "edit" || editor.advanced;
@@ -5256,8 +5256,8 @@ function renderInstanceForm() {
   if (!selected && editor.mode === "create" && !state.instanceCreateOpen) {
     target.innerHTML = `
       <div class="item-card">
-        <h4>Instance Workspace</h4>
-        <p class="meta">Select an instance from the table to manage it, or click <strong>Add Instance</strong> to create a new one.</p>
+        <h4>Claw Workspace</h4>
+        <p class="meta">Select a claw from the table to manage it, or click <strong>Add Claw</strong> to create a new one.</p>
       </div>
     `;
     return;
@@ -5272,7 +5272,7 @@ function renderInstanceForm() {
     ${selected ? `
     <div class="instance-focus-banner">
       <div>
-        <p class="eyebrow">Selected Instance</p>
+        <p class="eyebrow">Selected Claw</p>
         <h4>${escapeHtml(selected.name)}</h4>
         <p class="meta">${escapeHtml(selected.runtime.status)} · ${escapeHtml(selected.runtime.probe?.detail || selected.runtime.reason)}</p>
       </div>
@@ -5341,7 +5341,7 @@ function renderInstanceForm() {
         </div>
         <div class="instance-summary-list">
           <div class="instance-summary-row">
-            <span>Instance ID</span>
+            <span>Claw ID</span>
             <strong id="instance-preview-instance-id">${escapeHtml(derived.instanceId || "")}</strong>
           </div>
           <div class="instance-summary-row">
@@ -5370,13 +5370,13 @@ function renderInstanceForm() {
             <strong id="instance-preview-template">${escapeHtml(derived.sourceConfig || "~/.nanobot/config.json (system default)")}</strong>
           </div>` : ""}
         </div>
-        <p id="instance-preview-instance-id-note" class="meta"${duplicate ? ` style="color:#9a3e36"` : ""}>${duplicate ? "Instance ID already exists in registry." : "Generated automatically from Name + Environment."}</p>
+        <p id="instance-preview-instance-id-note" class="meta"${duplicate ? ` style="color:#9a3e36"` : ""}>${duplicate ? "Claw ID already exists in registry." : "Generated automatically from Name + Environment."}</p>
       </div>
       ${editor.advanced || editor.mode === "edit" ? `
       <div class="instance-advanced-section">
         <p class="eyebrow">Advanced Settings</p>
         <div class="field">
-          <label for="instance-form-id">Instance ID Override</label>
+          <label for="instance-form-id">Claw ID Override</label>
           <input id="instance-form-id" value="${escapeHtml(editor.instanceId)}" ${editor.mode === "edit" ? "disabled" : formDisabled}>
         </div>
         <div class="field">
@@ -5462,7 +5462,7 @@ function renderInstanceForm() {
       </div>
       ` : ""}
       <div class="inline-actions">
-        <button id="instance-form-save" class="primary-button" ${!canSaveInstance || busy || duplicate ? "disabled" : ""}>${editor.mode === "edit" ? "Save Instance" : "Add Instance"}</button>
+        <button id="instance-form-save" class="primary-button" ${!canSaveInstance || busy || duplicate ? "disabled" : ""}>${editor.mode === "edit" ? "Save Claw" : "Add Claw"}</button>
       </div>
     </div>
     ${editor.mode === "edit" ? renderInstanceConfigEditor() : ""}
@@ -5598,7 +5598,7 @@ function refreshInstancePreview() {
   const note = document.getElementById("instance-preview-instance-id-note");
   if (note) {
     note.textContent = duplicate
-      ? "Instance ID already exists in registry."
+      ? "Claw ID already exists in registry."
       : "Generated automatically from Name + Environment.";
     note.style.color = duplicate ? "#9a3e36" : "";
   }
@@ -5670,9 +5670,9 @@ function renderInstanceDeleteConfirm() {
         </div>
         <span class="badge ${badgeClass("error")}">Confirm</span>
       </div>
-      <p class="meta">This removes the instance from registry and permanently deletes its instance files, including the workspace directory on disk.</p>
+      <p class="meta">This removes the claw from registry and permanently deletes its claw files, including the workspace directory on disk.</p>
       <div class="inline-actions">
-        <button id="instance-delete-confirm" type="button" class="danger-button" ${state.busyKey === "instance-form" ? "disabled" : ""}>Delete Instance</button>
+        <button id="instance-delete-confirm" type="button" class="danger-button" ${state.busyKey === "instance-form" ? "disabled" : ""}>Delete Claw</button>
         <button id="instance-delete-cancel" type="button" class="secondary-button" ${state.busyKey === "instance-form" ? "disabled" : ""}>Cancel</button>
       </div>
     </div>
@@ -6798,7 +6798,7 @@ function renderProviders() {
         <section class="panel">
           <div class="panel-header">
             <div>
-              <p class="eyebrow">Instance</p>
+              <p class="eyebrow">Claw</p>
               <h3>${escapeHtml(instance.name)}</h3>
             </div>
           </div>
@@ -6883,7 +6883,7 @@ function renderSchedules() {
         <section class="panel">
           <div class="panel-header">
             <div>
-              <p class="eyebrow">Instance</p>
+              <p class="eyebrow">Claw</p>
               <h3>${escapeHtml(instance.instance_name)}</h3>
             </div>
           </div>
@@ -6941,7 +6941,7 @@ function renderScheduleCreateForm() {
   target.innerHTML = `
     ${!canUpdateSchedules ? `<div class="item-card"><p class="meta">Schedule creation is read-only for your current role.</p></div>` : ""}
     <div class="field">
-      <label for="schedule-instance">Instance</label>
+      <label for="schedule-instance">Claw</label>
       <select id="schedule-instance" ${disabled}>${instanceOptions}</select>
     </div>
     <div class="field">
@@ -7065,7 +7065,7 @@ function renderMcp() {
         <section class="panel">
           <div class="panel-header">
             <div>
-              <p class="eyebrow">Instance</p>
+              <p class="eyebrow">Claw</p>
               <h3>${escapeHtml(instance.name)}</h3>
             </div>
           </div>
@@ -7183,7 +7183,7 @@ function renderChannels() {
         <section class="panel">
           <div class="panel-header">
             <div>
-              <p class="eyebrow">Instance</p>
+              <p class="eyebrow">Claw</p>
               <h3>${escapeHtml(instance.name)}</h3>
             </div>
           </div>
@@ -7239,7 +7239,7 @@ function renderSecurityTable() {
       <div class="panel-header">
         <div>
           <p class="eyebrow">Policy Runtime</p>
-          <h3>Policy Detected by Instance</h3>
+          <h3>Policy Detected by Claw</h3>
         </div>
       </div>
       <div class="stack">
@@ -7283,7 +7283,7 @@ function renderSecurityTable() {
                     <div class="item-card">
                       <div class="row-between">
                         <div>
-                          <h4>${escapeHtml(event.instance_name || event.instance_id || "Instance")}</h4>
+                          <h4>${escapeHtml(event.instance_name || event.instance_id || "Claw")}</h4>
                           <p class="meta">${escapeHtml(event.scope || "")} · ${(event.rule_ids || []).map((ruleId) => escapeHtml(ruleId)).join(", ")}</p>
                         </div>
                         <span class="badge ${badgeClass((event.policy_action || "") === "block" || (event.policy_action || "") === "escalate" ? "warning" : "ok")}">${escapeHtml(event.policy_action || "allow")}</span>
@@ -7371,7 +7371,7 @@ function renderSecurityControls() {
     </section>
     <div class="security-subtabs">
       <button class="security-subtab ${showRulesSection ? "is-active" : ""}" type="button" data-security-policy-section="rules">Policy Rules</button>
-      <button class="security-subtab ${showRulesSection ? "" : "is-active"}" type="button" data-security-policy-section="instances">Instance Restrictions</button>
+      <button class="security-subtab ${showRulesSection ? "" : "is-active"}" type="button" data-security-policy-section="instances">Claw Restrictions</button>
     </div>
     <section class="policy-workspace ${showRulesSection ? "" : "is-hidden"}">
       <div class="panel policy-rule-panel">
@@ -7476,7 +7476,7 @@ function renderSecurityControls() {
         <div class="panel-header">
           <div>
             <p class="eyebrow">Runtime Guardrails</p>
-            <h3>Instance Restrictions</h3>
+            <h3>Claw Restrictions</h3>
           </div>
           <p class="meta">Control workspace restriction per instance without mixing this into rule management.</p>
         </div>
@@ -8322,13 +8322,13 @@ async function handleInstanceAction(key) {
     // Handle HTTP errors (like 502) with better context
     let errorMessage = error.message || "Unknown error";
     if (error.message?.includes("502")) {
-      errorMessage = "Instance failed to start. Check the instance logs for details. Common issues: missing API key, invalid config, or port conflict.";
+      errorMessage = "Claw failed to start. Check the claw logs for details. Common issues: missing API key, invalid config, or port conflict.";
     } else if (error.message?.includes("403")) {
       errorMessage = `Permission denied. You need '${action}' permission to perform this action.`;
     } else if (error.message?.includes("API key") || error.message?.includes("provider")) {
       errorMessage = error.message;
     }
-    setBanner(`Unable to ${action} instance '${instanceId}': ${errorMessage}`, "error");
+    setBanner(`Unable to ${action} claw '${instanceId}': ${errorMessage}`, "error");
   } finally {
     state.busyKey = "";
     renderInstances();
@@ -8361,7 +8361,7 @@ async function runAutoLifecycleAfterSave(instance) {
   const runtimeStatus = String(instance?.runtime?.status || "").toLowerCase();
   if (action === "start" && runtimeStatus !== "running") {
     const label = instance?.name || instanceId;
-    const confirmed = window.confirm(`Instance '${label}' is stopped. Start it now?`);
+    const confirmed = window.confirm(`Claw '${label}' is stopped. Start it now?`);
     if (!confirmed) {
       return;
     }
@@ -8384,11 +8384,11 @@ async function handleInstanceFormSubmit() {
   const sourceConfig = derived.sourceConfig;
   const targetConfigPath = `${inferSoftnixHome()}/instances/${instanceId.trim() || "<instance-id>"}/config.json`;
   if (!instanceId.trim()) {
-    setBanner("Instance ID must not be empty.", "error");
+    setBanner("Claw ID must not be empty.", "error");
     return;
   }
   if (editor.mode === "create" && state.overview.instances.some((instance) => instance.id === instanceId)) {
-    setBanner(`Instance ID '${instanceId}' already exists.`, "error");
+    setBanner(`Claw ID '${instanceId}' already exists.`, "error");
     return;
   }
   if (editor.mode === "create" && normalizePath(sourceConfig) && normalizePath(sourceConfig) === normalizePath(targetConfigPath)) {
@@ -8476,7 +8476,7 @@ async function handleInstanceFormSubmit() {
     } else if (errorMessage.includes("config") || errorMessage.includes("Config")) {
       errorMessage = "Configuration error: " + errorMessage;
     }
-    setBanner(`Unable to save instance: ${errorMessage}`, "error");
+    setBanner(`Unable to save claw: ${errorMessage}`, "error");
   } finally {
     state.busyKey = "";
     renderInstances();
@@ -8487,7 +8487,7 @@ async function handleInstanceFormSubmit() {
 async function handleInstanceDelete(instanceId) {
   const instance = state.overview.instances.find((item) => item.id === instanceId);
   if (!instance) {
-    setBanner(`Instance '${instanceId}' was not found. Refresh the dashboard and try again.`, "error");
+    setBanner(`Claw '${instanceId}' was not found. Refresh the dashboard and try again.`, "error");
     return;
   }
   state.selectedInstanceId = instanceId;
@@ -8534,7 +8534,7 @@ async function confirmInstanceDelete() {
     state.runtimeAudit.executionUnreadTraceCount = 0;
     await loadDashboard();
   } catch (error) {
-    setBanner(`Unable to delete instance '${instanceId}': ${error.message}`, "error");
+    setBanner(`Unable to delete claw '${instanceId}': ${error.message}`, "error");
   } finally {
     state.busyKey = "";
     renderInstances();
@@ -8756,9 +8756,9 @@ async function handleProviderValidate(key) {
       // Restart failed but validation succeeded - show as additional info
       const restartError = result.instance_restart_warning;
       if (restartError.includes("docker") || restartError.includes("permission")) {
-        bannerMessage = `${validationMessage} Note: Instance restart failed due to Docker permission issues. The Admin service needs to be restarted with proper Docker group access. Provider validation: ${result.status}.`;
+        bannerMessage = `${validationMessage} Note: Claw restart failed due to Docker permission issues. The Admin service needs to be restarted with proper Docker group access. Provider validation: ${result.status}.`;
       } else {
-        bannerMessage = `${validationMessage} Note: Instance restart failed: ${restartError}. Provider validation: ${result.status}.`;
+        bannerMessage = `${validationMessage} Note: Claw restart failed: ${restartError}. Provider validation: ${result.status}.`;
       }
       bannerType = "warning";
     } else {
@@ -8782,9 +8782,9 @@ function buildProviderRestartMessage(instanceId, restart, actionLabel) {
     return "";
   }
   if (restart.ok) {
-    return `Instance '${instanceId}' restarted before provider was ${actionLabel}.`;
+    return `Claw '${instanceId}' restarted before provider was ${actionLabel}.`;
   }
-  return `Provider ${actionLabel}, but instance '${instanceId}' restart failed: ${restart.stderr || restart.stdout || "Unknown error"}.`;
+  return `Provider ${actionLabel}, but claw '${instanceId}' restart failed: ${restart.stderr || restart.stdout || "Unknown error"}.`;
 }
 
 function handleProviderRestartBanner(instanceId, restart, successMessage) {

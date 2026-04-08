@@ -2290,7 +2290,7 @@ async function approveWebChatLogin(loginTicket) {
     const confirmLines = [
       "Approve Web Chat sign-in?",
       "",
-      `Instance: ${device.instance_id || "-"}`,
+      `Claw: ${device.instance_id || "-"}`,
       `Mobile device: ${device.label || device.device_id || "-"}`,
       `Browser: ${browserLabel}`,
     ];
