@@ -58,6 +58,18 @@ class AgentLoop:
         "internal server error",
         "request failed",
     )
+    _PROGRESS_MESSAGE_PATTERNS = (
+        "กำลัง",
+        "processing",
+        "analyzing",
+        "analysing",
+        "checking",
+        "loading",
+        "working on",
+        "please wait",
+        "one moment",
+        "stand by",
+    )
 
     def __init__(
         self,
@@ -765,13 +777,14 @@ class AgentLoop:
         self.sessions.save(session)
 
         if (mt := self.tools.get("message")) and isinstance(mt, MessageTool) and mt._sent_in_turn:
-            self._runtime_audit.log_message_event(
-                "completed",
-                channel=msg.channel,
-                session_key=key,
-                content="Response sent via message tool.",
-            )
-            return None
+            if not self._should_emit_final_reply_after_message_tool(mt, final_content):
+                self._runtime_audit.log_message_event(
+                    "completed",
+                    channel=msg.channel,
+                    session_key=key,
+                    content="Response sent via message tool.",
+                )
+                return None
 
         preview = final_content[:120] + "..." if len(final_content) > 120 else final_content
         logger.info("Response to {}:{}: {}", msg.channel, msg.sender_id, preview)
@@ -788,6 +801,32 @@ class AgentLoop:
 
     def _should_delegate_tool_tasks(self) -> bool:
         return self.tool_execution_strategy == "tool_ephemeral" and self.tool_task_runner is not None
+
+    @classmethod
+    def _normalize_message_text(cls, content: str) -> str:
+        return re.sub(r"\s+", " ", str(content or "").strip()).lower()
+
+    @classmethod
+    def _looks_like_progress_message(cls, content: str) -> bool:
+        normalized = cls._normalize_message_text(content)
+        if not normalized:
+            return False
+        return any(pattern in normalized for pattern in cls._PROGRESS_MESSAGE_PATTERNS)
+
+    @classmethod
+    def _should_emit_final_reply_after_message_tool(
+        cls,
+        message_tool: MessageTool,
+        final_content: str,
+    ) -> bool:
+        if not message_tool._sent_in_turn:
+            return False
+        last_content = str(message_tool._last_sent_content or "").strip()
+        if not last_content or not str(final_content or "").strip():
+            return False
+        if not cls._looks_like_progress_message(last_content):
+            return False
+        return cls._normalize_message_text(last_content) != cls._normalize_message_text(final_content)
 
     async def _process_with_tool_strategy(
         self,

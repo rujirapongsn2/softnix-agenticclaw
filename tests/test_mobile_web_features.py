@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 
 from unittest.mock import AsyncMock, patch
@@ -891,6 +892,39 @@ async def test_softnix_app_channel_maps_rtsp_urls_to_snapshot_media(tmp_path: Pa
     mapping_path = workspace / "mobile_relay" / "rtsp_sources.json"
     mapping = json.loads(mapping_path.read_text(encoding="utf-8"))
     assert attachment["file_name"] in mapping["sources"]
+
+
+async def test_softnix_app_channel_falls_back_to_latest_timestamped_snapshot(tmp_path: Path) -> None:
+    class _Config:
+        allow_from = ["*"]
+
+    workspace = tmp_path / "workspace"
+    snapshot_dir = workspace / "rtsp_capture"
+    snapshot_dir.mkdir(parents=True)
+    older = snapshot_dir / "altura_out_110601.jpg"
+    latest = snapshot_dir / "altura_out_110657.jpg"
+    older.write_bytes(b"older")
+    latest.write_bytes(b"latest")
+    os.utime(older, (1, 1))
+    os.utime(latest, (2, 2))
+
+    channel = SoftnixAppChannel(_Config(), MessageBus(), workspace)
+
+    await channel.send(
+        OutboundMessage(
+            channel="softnix_app",
+            chat_id="mobile-mob-16",
+            content="snapshot ready",
+            media=["rtsp_capture/altura_out_110699.jpg"],
+            metadata={"sender_id": "mob-16"},
+        )
+    )
+
+    outbound_path = workspace / "mobile_relay" / "outbound.jsonl"
+    payload = json.loads(outbound_path.read_text(encoding="utf-8").splitlines()[0])
+    attachment = payload["attachments"][0]
+    assert attachment["name"] == "altura_out_110657.jpg"
+    assert attachment["source_path"].endswith("rtsp_capture/altura_out_110657.jpg")
 
 
 async def test_softnix_app_channel_extracts_sender_id_from_mobile_session_id(tmp_path: Path) -> None:

@@ -29,6 +29,7 @@ class SoftnixAppChannel(BaseChannel):
     """
 
     name: str = "softnix_app"
+    _TIMESTAMPED_MEDIA_PATTERN = re.compile(r"^(?P<prefix>.+[_-])\d{4,}(?P<suffix>\.[^.]+)$")
 
     def __init__(self, config: Any, bus: MessageBus, workspace_path: Path):
         super().__init__(config, bus)
@@ -209,7 +210,29 @@ class SoftnixAppChannel(BaseChannel):
                 continue
             if resolved.exists() and resolved.is_file():
                 return resolved
+            fallback = self._resolve_timestamped_media_fallback(resolved)
+            if fallback is not None:
+                return fallback
         return self._resolve_workspace_mirrored_media_path(str(media_ref or "").strip())
+
+    def _resolve_timestamped_media_fallback(self, target_path: Path) -> Path | None:
+        match = self._TIMESTAMPED_MEDIA_PATTERN.match(target_path.name)
+        if not match:
+            return None
+        parent = target_path.parent
+        if not parent.exists() or not parent.is_dir():
+            return None
+        prefix = match.group("prefix")
+        suffix = match.group("suffix")
+        matches = [
+            candidate
+            for candidate in parent.iterdir()
+            if candidate.is_file() and candidate.name.startswith(prefix) and candidate.name.endswith(suffix)
+        ]
+        if not matches:
+            return None
+        matches.sort(key=lambda path: path.stat().st_mtime, reverse=True)
+        return matches[0]
 
     def _resolve_workspace_mirrored_media_path(self, media_ref: str) -> Path | None:
         raw = str(media_ref or "").strip()

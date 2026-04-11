@@ -86,6 +86,34 @@ class TestMessageToolSuppressLogic:
         assert result is not None
         assert "Hello" in result.content
 
+    @pytest.mark.asyncio
+    async def test_emit_final_when_message_tool_only_sent_progress_placeholder(self, tmp_path: Path) -> None:
+        loop = _make_loop(tmp_path)
+        tool_call = ToolCallRequest(
+            id="call1",
+            name="message",
+            arguments={"content": "กำลังวิเคราะห์ภาพจากกล้องภายนอก...", "channel": "telegram", "chat_id": "chat123"},
+        )
+        calls = iter([
+            LLMResponse(content="", tool_calls=[tool_call]),
+            LLMResponse(content="✅ ส่งภาพจากกล้องภายนอกแล้ว", tool_calls=[]),
+        ])
+        loop.provider.chat = AsyncMock(side_effect=lambda *a, **kw: next(calls))
+        loop.tools.get_definitions = MagicMock(return_value=[])
+
+        sent: list[OutboundMessage] = []
+        mt = loop.tools.get("message")
+        if isinstance(mt, MessageTool):
+            mt.set_send_callback(AsyncMock(side_effect=lambda m: sent.append(m)))
+
+        msg = InboundMessage(channel="telegram", sender_id="user1", chat_id="chat123", content="Send")
+        result = await loop._process_message(msg)
+
+        assert len(sent) == 1
+        assert sent[0].content == "กำลังวิเคราะห์ภาพจากกล้องภายนอก..."
+        assert result is not None
+        assert result.content == "✅ ส่งภาพจากกล้องภายนอกแล้ว"
+
 
 class TestMessageToolTurnTracking:
 
@@ -99,5 +127,9 @@ class TestMessageToolTurnTracking:
     def test_start_turn_resets(self) -> None:
         tool = MessageTool()
         tool._sent_in_turn = True
+        tool._last_sent_content = "กำลังวิเคราะห์"
+        tool._last_sent_media = ["snapshot.jpg"]
         tool.start_turn()
         assert not tool._sent_in_turn
+        assert tool._last_sent_content is None
+        assert tool._last_sent_media == []
